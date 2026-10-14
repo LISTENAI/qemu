@@ -1,6 +1,7 @@
 config ARCS
     bool
     depends on RISCV32
+    select LISTENAI_NOR
     select SSI
     select I2C
     select SDHCI

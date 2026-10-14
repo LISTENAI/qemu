@@ -2,17 +2,10 @@
 #ifndef HW_RISCV_ARCS_STORAGE_H
 #define HW_RISCV_ARCS_STORAGE_H
 
-#include "system/memory.h"
+#include "hw/block/listenai_nor.h"
 typedef struct ArcsSoC ArcsSoC;
 
-/* Board-owned external 16 MiB NOR, separate from the SPIB controller. */
-typedef struct ArcsNOR {
-    MemoryRegion rom;
-    hwaddr address;
-    FILE *backing;
-    uint8_t status[3];
-    bool wel, asleep, reset_enabled, four_byte;
-} ArcsNOR;
+typedef ListenAINOR ArcsNOR;
 
 typedef struct ArcsFlash {
     ArcsSoC *soc;

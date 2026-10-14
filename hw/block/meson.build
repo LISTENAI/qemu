@@ -1,3 +1,4 @@
+system_ss.add(when: 'CONFIG_LISTENAI_NOR', if_true: files('listenai_nor.c'))
 system_ss.add(files(
   'block.c',
   'cdrom.c',
