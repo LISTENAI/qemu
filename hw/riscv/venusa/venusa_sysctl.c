@@ -160,7 +160,8 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         }
         if (address == 0x4310001c || address == 0x43100020 ||
             (address >= 0x43000000 && address <= 0x43000018)) { venusa_spi_clock(s); }
-        if (address == 0x43100034) { venusa_dvp_clock(s); }
+        if (address == 0x43100028 || address == 0x43100034 ||
+            (address >= 0x43000000 && address <= 0x43000018)) { venusa_dvp_clock(s); }
         if (address == 0x43100034) { listenai_luna_clock(&s->luna, (value & 0x80) != 0); }
         if (address == 0x43100030 || address == 0x43100034) { venusa_audio_clock(s); }
         if (address == 0x43000008) {

@@ -53,3 +53,7 @@ config BCM2835_I2C
 config LISTENAI_I2C
     bool
     select I2C
+
+config GC0328
+    bool
+    select I2C

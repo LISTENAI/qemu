@@ -19,7 +19,7 @@ arcs_sources = files(
   'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c',
   'arcs_wifi_ap.c', 'arcs_wifi_security.c', 'arcs_hsu.c',
   'arcs_aes.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c',
-  '../../i2c/gc0328.c', '../../i2c/cst328.c',
+  '../../i2c/cst328.c',
 )
 arcs_assets = declare_dependency(
   sources: [rom_header],

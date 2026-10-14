@@ -1,4 +1,5 @@
 config VENUSA
+    select GC0328
     select LISTENAI_LUNA
     select AT24C
     select LISTENAI_SPI
@@ -21,6 +22,7 @@ config VENUSA
     select LISTENAI_UART
 
 config ARCS
+    select GC0328
     select LISTENAI_LUNA
     select LISTENAI_HOST_AUDIO
     bool

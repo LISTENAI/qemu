@@ -175,14 +175,36 @@ void venusa_dvp_reset(VenusASoC *s)
     d->frame = d->last_vsync = d->last_hsync = d->request = false;
     signals(d);
 }
+void venusa_dvp_xclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *denominator)
+{
+    VenusADVP *d = &s->dvp;
+    uint32_t cfg = s->syscfg[0x28 / 4];
+    *n = 0; *denominator = 1;
+    if (!(cfg & (1u << 17)) || !listenai_pinmux_function(&s->pinmux, 35, 13)) { return; }
+    *n = 24000000; *denominator = d->xclk_div;
+    if (cfg & (1u << 18)) {
+        if (!(s->buscfg[2] & 1) || !(s->buscfg[2] & (1u << 26))) { *n = 0; return; }
+        uint64_t mult = (uint64_t)(s->buscfg[6] & 0x1ff) << 27;
+        if (s->buscfg[6] & (1u << 9)) { mult += s->buscfg[5] & 0x7ffffff; }
+        *n *= mult;
+        *denominator *= (UINT64_C(1) << 27) * (((s->buscfg[3] >> 12) & 15) + 6);
+    }
+}
 void venusa_dvp_clock(VenusASoC *s)
 {
+    uint32_t cfg = s->syscfg[0x28 / 4];
+    if ((cfg & (1u << 16)) && !(s->dvp.xclk_config & (1u << 16))) {
+        s->dvp.xclk_div = (cfg >> 7) & 511;
+        if (!s->dvp.xclk_div) { s->dvp.xclk_div = 512; }
+    }
+    s->dvp.xclk_config = cfg;
     s->dvp.clock = !!(s->syscfg[0x34 / 4] & 0x800);
     signals(&s->dvp);
+    if (s->dvp.camera_clock_changed) { s->dvp.camera_clock_changed(s->dvp.camera_opaque); }
 }
 void venusa_dvp_init(VenusASoC *s)
 {
-    VenusADVP *d = &s->dvp; d->soc = s;
+    VenusADVP *d = &s->dvp; d->soc = s; d->xclk_div = 1;
     memory_region_init_io(&d->io, OBJECT(s), &ops, d, "venusa-dvp", 0x100);
     memory_region_init_io(&d->fifo_io, OBJECT(s), &fifo_ops, d, "venusa-dvp-fifo", 4);
     d->fifo_io.disable_reentrancy_guard = true;
