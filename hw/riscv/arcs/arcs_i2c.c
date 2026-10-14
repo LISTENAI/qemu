@@ -30,6 +30,9 @@ void arcs_i2c_reset(ArcsSoC *soc, unsigned index)
 }
 void arcs_i2c_init(ArcsSoC *soc)
 {
+    static const ListenaiI2CProfile profile = {
+        .fifo_depth = 8, .configuration = 1,
+    };
     for (unsigned i = 0; i < 2; i++) {
         ArcsI2C *s = &soc->i2c[i];
         s->soc = soc; s->index = i;
@@ -38,6 +41,6 @@ void arcs_i2c_init(ArcsSoC *soc)
         };
         listenai_i2c_init(&s->controller, DEVICE(soc),
                           i ? "arcs-i2c1" : "arcs-i2c0",
-                          0x46d00000 + i * 0x100000, callbacks);
+                          0x46d00000 + i * 0x100000, callbacks, &profile);
     }
 }

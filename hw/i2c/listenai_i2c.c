@@ -6,8 +6,12 @@
 /* Byte-paced master transactions. Slaves and board routing are independent. */
 static uint32_t i2c_status(ListenaiI2C *s)
 {
+    bool half = s->count >= s->profile.fifo_depth / 2;
+    if (s->profile.directional_half && !(s->regs[0x24 / 4] & 0x100)) {
+        half = s->count <= s->profile.fifo_depth / 2;
+    }
     return s->regs[0x18 / 4] | (i2c_bus_busy(s->bus) ? 0x800 : 0) | 0x6000u | (!s->count ? 1 : 0) |
-           (s->count >= 4 ? 4 : 0) | (s->count == 8 ? 2 : 0);
+           (half ? 4 : 0) | (s->count == s->profile.fifo_depth ? 2 : 0);
 }
 
 static void i2c_irq(ListenaiI2C *s)
@@ -32,7 +36,7 @@ static int64_t byte_ns(ListenaiI2C *s)
 static void schedule(ListenaiI2C *s)
 {
     if (s->active && !timer_pending(s->event) &&
-        (s->address_phase || s->stop_only || (s->receiving ? s->count < 8 : s->count))) {
+        (s->address_phase || s->stop_only || (s->receiving ? s->count < s->profile.fifo_depth : s->count))) {
         timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   (s->stop_only ? MAX(1, byte_ns(s) / 9) : byte_ns(s)));
     }
@@ -74,14 +78,14 @@ static void byte_event(void *opaque)
         }
     } else {
         /* FIFO contents may change after a byte event was scheduled. */
-        if (s->receiving ? s->count == 8 : s->count == 0) { return; }
+        if (s->receiving ? s->count == s->profile.fifo_depth : s->count == 0) { return; }
         bool nack = false;
         if (s->receiving) {
-            s->fifo[(s->head + s->count++) % 8] = i2c_recv(s->bus);
+            s->fifo[(s->head + s->count++) % s->profile.fifo_depth] = i2c_recv(s->bus);
             s->regs[0x18 / 4] |= 0x100;
         } else {
             nack = i2c_send(s->bus, s->fifo[s->head]);
-            s->head = (s->head + 1) % 8;
+            s->head = (s->head + 1) % s->profile.fifo_depth;
             s->count--;
             s->regs[0x18 / 4] |= 0x80;
         }
@@ -120,7 +124,7 @@ static uint64_t i2c_read(void *opaque, hwaddr off, unsigned size)
     if (off == 0x18) { return i2c_status(s) >> shift; }
     if (off == 0x20) {
         uint8_t value = 0;
-        if (s->count) { value = s->fifo[s->head]; s->head = (s->head + 1) % 8; s->count--; }
+        if (s->count) { value = s->fifo[s->head]; s->head = (s->head + 1) % s->profile.fifo_depth; s->count--; }
         i2c_irq(s); schedule(s); return value;
     }
     return s->regs[off / 4] >> shift;
@@ -142,8 +146,8 @@ static void i2c_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     off = aligned;
     if (off == 0x18) { s->regs[off / 4] &= ~(value & 0x3f8); }
     else if (off == 0x20) {
-        if (s->count == 8) { goto fail; }
-        s->fifo[(s->head + s->count++) % 8] = value;
+        if (s->count == s->profile.fifo_depth) { goto fail; }
+        s->fifo[(s->head + s->count++) % s->profile.fifo_depth] = value;
     } else if (off == 0x28) {
         if (value == 5) {
             /* Command reset aborts transfer but retains bus timing/config. */
@@ -192,14 +196,20 @@ void listenai_i2c_reset(ListenaiI2C *s)
 {
     timer_del(s->event); i2c_end_transfer(s->bus);
     s->active = s->address_phase = s->receiving = s->stop = s->stop_only = false;
-    memset(s->regs, 0, sizeof(s->regs)); s->regs[0x10 / 4] = 1;
+    memset(s->regs, 0, sizeof(s->regs));
+    s->regs[0] = s->profile.identification;
+    s->regs[0x10 / 4] = s->profile.configuration;
     s->head = s->count = 0; i2c_irq(s);
 }
 
 void listenai_i2c_init(ListenaiI2C *s, DeviceState *owner, const char *name,
-                       hwaddr base, ListenaiI2CCallbacks callbacks)
+                       hwaddr base, ListenaiI2CCallbacks callbacks,
+                       const ListenaiI2CProfile *profile)
 {
     assert(callbacks.fail && callbacks.irq && callbacks.clock);
+    assert(profile && profile->fifo_depth >= 2 && profile->fifo_depth <= sizeof(s->fifo) &&
+           !(profile->fifo_depth & (profile->fifo_depth - 1)));
+    s->profile = *profile;
     s->base = base;
     s->callbacks = callbacks;
     s->bus = i2c_init_bus(owner, name);

@@ -59,6 +59,58 @@ static void eeprom(void)
     }
     qtest_quit(q);
 }
+static void fifo_profile(void)
+{
+    QTestState *q = start();
+    for (unsigned n = 0; n < 2; n++) {
+        uint32_t base = 0x43b00000 + n * 0x100000;
+        g_assert_cmphex(qtest_readl(q, base), ==, 0x02021011);
+        g_assert_cmphex(qtest_readl(q, base + 0x10), ==, 3);
+        for (unsigned rx = 0; rx < 2; rx++) {
+            qtest_writel(q, base + 0x28, 4);
+            qtest_writel(q, base + 0x24, rx ? 0x100 : 0);
+            for (unsigned count = 0; count <= 16; count++) {
+                uint32_t status = qtest_readl(q, base + 0x18);
+                g_assert_cmpuint(!!(status & 1), ==, count == 0);
+                g_assert_cmpuint(!!(status & 2), ==, count == 16);
+                g_assert_cmpuint(!!(status & 4), ==,
+                                 rx ? count >= 8 : count <= 8);
+                if (count < 16) { qtest_writel(q, base + 0x20, count); }
+            }
+            for (unsigned count = 0; count < 16; count++) {
+                g_assert_cmpuint(qtest_readl(q, base + 0x20), ==, count);
+            }
+        }
+        qtest_writel(q, base + 0x28, 5);
+        g_assert_cmphex(qtest_readl(q, base + 0x18) & 3, ==, 1);
+    }
+    qtest_quit(q);
+}
+
+static void receive_backpressure(void)
+{
+    QTestState *q = start();
+    uint32_t base = 0x43b00000;
+    qtest_writel(q, base + 0x2c, 5);
+    qtest_writel(q, base + 0x1c, 0x50);
+    command(q, base, 0x1f14); /* Address plus twenty EEPROM bytes. */
+    qtest_clock_step(q, 17 * 3000);
+    g_assert_cmphex(qtest_readl(q, base + 0x18) & 0x202, ==, 2);
+    g_assert_cmpuint(qtest_readl(q, base + 0x24) & 255, ==, 4);
+    qtest_clock_step(q, 100000);
+    g_assert_cmpuint(qtest_readl(q, base + 0x24) & 255, ==, 4);
+    for (unsigned i = 0; i < 4; i++) { qtest_readl(q, base + 0x20); }
+    qtest_clock_step(q, 12000);
+    g_assert_cmphex(qtest_readl(q, base + 0x18) & 0x202, ==, 0x202);
+    qtest_writel(q, base + 0x28, 5);
+    command(q, base, 0x1f14);
+    qtest_clock_step(q, 6000);
+    qtest_writel(q, base + 0x28, 5);
+    qtest_clock_step(q, 100000);
+    g_assert_cmphex(qtest_readl(q, base + 0x18) & 0x203, ==, 1);
+    qtest_quit(q);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -67,6 +119,8 @@ int main(int argc, char **argv)
     g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
     close(fd);
     qtest_add_func("venusa/i2c/eeprom-repeated-start-nack", eeprom);
+    qtest_add_func("venusa/i2c/fifo-profile", fifo_profile);
+    qtest_add_func("venusa/i2c/receive-backpressure-reset", receive_backpressure);
     int result = g_test_run();
     unlink(flash); g_free(flash);
     return result;

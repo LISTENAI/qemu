@@ -81,7 +81,12 @@ void venusa_peripherals_init(VenusASoC *s)
         snprintf(name, sizeof(name), "venusa-i2c%u", i);
         ListenaiI2CCallbacks cb = { .opaque = &s->i2c_context[i], .fail = fault,
             .irq = i2c_irq, .clock = i2c_clock };
-        listenai_i2c_init(&s->i2c[i], DEVICE(s), name, 0x43b00000 + i * 0x100000, cb);
+        static const ListenaiI2CProfile profile = {
+            .fifo_depth = 16, .configuration = 3,
+            .identification = 0x02021011, .directional_half = true,
+        };
+        listenai_i2c_init(&s->i2c[i], DEVICE(s), name,
+                         0x43b00000 + i * 0x100000, cb, &profile);
     }
 }
 void venusa_peripherals_reset(VenusASoC *s)
