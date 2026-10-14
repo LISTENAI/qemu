@@ -9,7 +9,7 @@ typedef void (*ListenAIDMAFault)(void *opaque, hwaddr address, unsigned size,
 typedef struct ListenAIDMATransfer {
     uint32_t remaining;
     unsigned width, source_mode, dest_mode, request;
-    bool active;
+    bool active, receive;
 } ListenAIDMATransfer;
 typedef struct ListenAIDMA {
     MemoryRegion io;
@@ -20,6 +20,7 @@ typedef struct ListenAIDMA {
     unsigned channel_count;
     ListenAIDMAIRQ irq;
     ListenAIDMAFault fault;
+    void (*done)(void *opaque, unsigned request, bool receive);
     void *opaque;
 } ListenAIDMA;
 

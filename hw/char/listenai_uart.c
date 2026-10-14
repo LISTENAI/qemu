@@ -9,10 +9,16 @@ static bool rx_enabled(ListenAIUART *u)
     return (u->control & 1) && !(u->control & (1u << 25));
 }
 
+bool listenai_uart_rx_request(const ListenAIUART *u)
+{
+    return (u->control & DMA_MODE) && (u->control & 1) &&
+           !(u->control & (1u << 25)) && u->count > (u->triggers & 63);
+}
+
 static uint32_t interrupts(ListenAIUART *u)
 {
     return !(u->control & 1) ? 0 : 4 |
-        ((u->control & DMA_MODE) ? (u->timeout_pending ? 0x80 : 0) :
+        ((u->control & DMA_MODE) ? ((u->timeout_pending ? 0x80 : 0) | u->dma_done) :
          (u->count > (u->triggers & 63) ? 2 : 0) |
          (u->timeout_pending ? 8 : 0));
 }
@@ -24,14 +30,27 @@ static void update(ListenAIUART *u)
         u->irq(u->opaque, (interrupts(u) & u->mask) != 0);
     }
     if (u->dma) {
-        u->dma(u->opaque, dma && rx_enabled(u) && u->count, dma);
+        u->dma(u->opaque, listenai_uart_rx_request(u), dma);
     }
+}
+
+void listenai_uart_dma_done(ListenAIUART *u, bool receive)
+{
+    u->dma_done |= receive ? 0x40 : 0x20;
+    if (receive) {
+        /* Done ends the preceding receive activity, including a queued tail.
+         * A later character arrival starts a new idle qualification. */
+        u->dma_received = false;
+        timer_del(u->idle);
+    }
+    update(u);
 }
 
 static void idle(void *opaque)
 {
     ListenAIUART *u = opaque;
-    u->timeout_pending = (u->control & DMA_MODE) ? u->dma_received : u->count != 0;
+    u->timeout_pending = (u->control & DMA_MODE) ?
+        u->dma_received && (!u->dma_idle_requires_fifo || u->count) : u->count != 0;
     u->dma_received = false;
     update(u);
 }
@@ -119,6 +138,7 @@ bool listenai_uart_write(ListenAIUART *u, unsigned offset, uint32_t value)
         break;
     case 12: u->mask = value; break;
     case 16:
+        u->dma_done &= ~(value & 0x60);
         if (value & ((u->control & DMA_MODE) ? 0x80 : 8)) {
             u->timeout_pending = false;
         }
@@ -142,7 +162,7 @@ bool listenai_uart_write(ListenAIUART *u, unsigned offset, uint32_t value)
 void listenai_uart_reset(ListenAIUART *u)
 {
     timer_del(u->idle);
-    u->control = u->mask = u->triggers = u->commands = 0;
+    u->control = u->mask = u->triggers = u->commands = u->dma_done = 0;
     u->head = u->count = 0;
     u->timeout_pending = u->dma_received = false;
     update(u);

@@ -86,6 +86,7 @@ static void service(ListenAIDMA *s)
                 transfer(s, ch);
             } else {
                 R(0x3a0) &= ~(1u << ch);
+                if (s->done) { s->done(s->opaque, t->request, t->receive); }
                 if (R(off + 0x18) & 1) { R(0x2c0) |= 1u << ch; }
             }
         }
@@ -128,7 +129,7 @@ static void transfer(ListenAIDMA *s, unsigned ch)
                 fail(s, off + 0x18, control);
             }
             s->channel[ch] = (ListenAIDMATransfer) {
-                .active = true, .remaining = count, .width = sw,
+                .active = true, .receive = receive, .remaining = count, .width = sw,
                 .source_mode = sm, .dest_mode = dm,
                 .request = (R(off + 0x44) >> (receive ? 7 : 11)) & 15,
             };

@@ -19,13 +19,26 @@ static void uart_dma(void *opaque, bool receive, bool transmit)
         ((mux >> (2 * dma_requests[u->index][1])) & 3) == selection);
 }
 
+static void uart_dma_done(void *opaque, unsigned request, bool receive)
+{
+    ArcsSoC *s = opaque;
+    uint32_t mux = s->sysctl.common_regs[0x94 / 4];
+    for (unsigned i = 0; i < 3; i++) {
+        unsigned selected = i == 2 ? 1 : 0;
+        if (request == dma_requests[i][receive ? 0 : 1] &&
+            ((mux >> (2 * request)) & 3) == selected) {
+            listenai_uart_dma_done(&s->uart[i].device, receive);
+        }
+    }
+}
+
 void arcs_uart_update_dma(ArcsSoC *s)
 {
     for (unsigned i = 0; i < 3; i++) {
         ArcsUART *u = &s->uart[i];
         ListenAIUART *device = &u->device;
         bool enabled = (device->control & DMA_MODE) && (device->control & 1);
-        uart_dma(u, enabled && !(device->control & (1u << 25)) && device->count,
+        uart_dma(u, listenai_uart_rx_request(device),
                  enabled);
     }
 }
@@ -65,6 +78,7 @@ void arcs_uart_reset(ArcsSoC *s, unsigned index)
 
 void arcs_uart_init(ArcsSoC *s)
 {
+    s->dma.done = uart_dma_done;
     qdev_init_gpio_out_named(DEVICE(s), s->uart_dma, "uart-dma", 6);
     for (unsigned i = 0; i < 3; i++) {
         ArcsUART *u = &s->uart[i];

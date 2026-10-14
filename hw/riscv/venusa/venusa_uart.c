@@ -16,12 +16,25 @@ static void uart_dma(void *opaque, bool receive, bool transmit)
     }
 }
 
+static void uart_dma_done(void *opaque, unsigned request, bool receive)
+{
+    VenusASoC *s = opaque;
+    uint32_t mux = s->syscfg[0xa0 / 4];
+    if (request < 6 && !(mux & (1u << request)) &&
+        (request & 1) == !receive) {
+        listenai_uart_dma_done(&s->uart[request / 2].device, receive);
+    } else if ((request == 6 || request == 7) &&
+               (mux & (1u << request)) && (request & 1) == !receive) {
+        listenai_uart_dma_done(&s->uart[1].device, receive);
+    }
+}
+
 void venusa_uart_update_dma(VenusASoC *s)
 {
     for (unsigned i = 0; i < 3; i++) {
         ListenAIUART *d = &s->uart[i].device;
         bool enable = (d->control & (1u << 22)) && (d->control & 1);
-        uart_dma(&s->uart[i], enable && !(d->control & (1u << 25)) && d->count, enable);
+        uart_dma(&s->uart[i], listenai_uart_rx_request(d), enable);
     }
 }
 
@@ -54,6 +67,7 @@ void venusa_uart_reset(VenusASoC *s, unsigned index)
 
 void venusa_uart_init(VenusASoC *s)
 {
+    s->dma.done = uart_dma_done;
     for (unsigned i = 0; i < 3; i++) {
         VenusAUART *u = &s->uart[i];
         u->soc = s;
@@ -61,6 +75,7 @@ void venusa_uart_init(VenusASoC *s)
         u->device.opaque = u;
         u->device.irq = uart_irq;
         u->device.dma = uart_dma;
+        u->device.dma_idle_requires_fifo = true;
         listenai_uart_init(&u->device, serial_hd(i));
     }
 }
