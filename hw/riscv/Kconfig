@@ -4,6 +4,7 @@ config ARCS
     select LISTENAI_UART
     select LISTENAI_SPIMEM
     select LISTENAI_PSRAM
+    select LISTENAI_DMA
     select NUCLEI_SYSTIMER
     select SSI
     select I2C
