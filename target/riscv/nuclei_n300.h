@@ -6,16 +6,17 @@
 typedef struct NucleiN300State {
     uint32_t csrs[64];
     uint32_t mtvt;
-    uint8_t irq_count, intctl_bits;
+    uint16_t irq_count;
+    uint8_t intctl_bits, clic_version;
     uint8_t threshold, level, config;
     int best, acknowledged;
-    uint8_t irq[80][4];
-    bool line[80];
+    uint8_t irq[256][4];
+    bool line[256];
     uint64_t exceptions, interrupts;
 } NucleiN300State;
 
 void nuclei_n300_init(RISCVCPU *cpu, bool dsp, unsigned irq_count,
-                      unsigned intctl_bits);
+                      unsigned intctl_bits, unsigned clic_version);
 void nuclei_n300_reset(RISCVCPU *cpu);
 bool nuclei_n300_interrupt(CPUState *cs);
 void nuclei_n300_trap(CPURISCVState *env, bool interrupt);

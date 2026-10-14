@@ -177,7 +177,7 @@ static void realize(DeviceState *dev, Error **errp)
         s->cpu[i].env.mhartid = i;
         qdev_prop_set_uint64(DEVICE(&s->cpu[i]), "resetvec", 0);
         qdev_realize(DEVICE(&s->cpu[i]), NULL, &error_fatal);
-        nuclei_n300_init(&s->cpu[i], true, 67, 3);
+        nuclei_n300_init(&s->cpu[i], true, 83, 3, 1);
         nuclei_systimer_init(&s->timer[i], timer_irq, &s->cpu[i]);
         riscv_cpu_set_rdtime_fn(&s->cpu[i].env, nuclei_systimer_value, &s->timer[i]);
     }

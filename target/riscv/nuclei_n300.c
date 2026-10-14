@@ -287,9 +287,11 @@ void nuclei_n300_reset(RISCVCPU *cpu)
 {
     NucleiN300State *s = cpu->env.nuclei_state;
     unsigned irq_count = s->irq_count, intctl_bits = s->intctl_bits;
+    unsigned clic_version = s->clic_version;
     memset(s, 0, sizeof(*s));
     s->irq_count = irq_count;
     s->intctl_bits = intctl_bits;
+    s->clic_version = clic_version;
     s->config = intctl_bits << 1;
     s->best = s->acknowledged = -1;
     for (unsigned i = 0; i < s->irq_count; i++) { s->irq[i][3] = 0xff >> intctl_bits; }
@@ -297,14 +299,16 @@ void nuclei_n300_reset(RISCVCPU *cpu)
 }
 
 void nuclei_n300_init(RISCVCPU *cpu, bool dsp, unsigned irq_count,
-                      unsigned intctl_bits)
+                      unsigned intctl_bits, unsigned clic_version)
 {
     static bool installed;
     NucleiN300State *s = g_new0(NucleiN300State, 1);
     assert(irq_count > 0 && irq_count <= G_N_ELEMENTS(s->irq));
     assert(intctl_bits > 0 && intctl_bits <= 8);
+    assert(clic_version <= 255);
     s->irq_count = irq_count;
     s->intctl_bits = intctl_bits;
+    s->clic_version = clic_version;
     cpu->env.nuclei_state = s;
     cpu->env.arcs_dsp = dsp;
     if (!installed) {
@@ -341,7 +345,7 @@ uint64_t nuclei_n300_eclic_read(CPURISCVState *env, hwaddr offset, unsigned size
     for (unsigned n = 0; n < size; n++) {
         unsigned off = offset + n, b;
         if (off == 0) { b = s->config | 1; }
-        else if (off >= 4 && off < 8) { b = (s->irq_count | (s->intctl_bits << 21)) >> (8 * (off - 4)); }
+        else if (off >= 4 && off < 8) { b = (s->irq_count | (s->clic_version << 13) | (s->intctl_bits << 21)) >> (8 * (off - 4)); }
         else if (off == 11) { b = s->threshold; }
         else if (off >= 0x1000 && off < 0x1000 + s->irq_count * 4) { b = s->irq[(off - 0x1000) / 4][off & 3]; }
         else if (off < 12) { b = 0; }

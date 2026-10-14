@@ -13,22 +13,22 @@ static void test_parameters_and_reset(void)
     QTestState *qts = qtest_initf("-machine venusa-rd-evb "
                                 "-drive if=pflash,format=raw,file=%s", flash_arg);
 
-    g_assert_cmphex(qtest_readl(qts, ECLIC_BASE + 4), ==, 67 | (3 << 21));
+    g_assert_cmphex(qtest_readl(qts, ECLIC_BASE + 4), ==, 0x00602053);
     g_assert_cmphex(qtest_readb(qts, ECLIC_BASE), ==, 7);
-    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 66 * 4 + 3), ==, 0x1f);
-    qtest_writeb(qts, IRQ_BASE + 66 * 4 + 3, 0x80);
-    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 66 * 4 + 3), ==, 0x9f);
-    qtest_writeb(qts, IRQ_BASE + 66 * 4 + 1, 0xff);
-    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 66 * 4 + 1), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 82 * 4 + 3), ==, 0x1f);
+    qtest_writeb(qts, IRQ_BASE + 82 * 4 + 3, 0x80);
+    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 82 * 4 + 3), ==, 0x9f);
+    qtest_writeb(qts, IRQ_BASE + 82 * 4 + 1, 0xff);
+    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 82 * 4 + 1), ==, 1);
     qtest_writeb(qts, ECLIC_BASE + 11, 0xff);
     g_assert_cmphex(qtest_readb(qts, ECLIC_BASE + 11), ==, 0xff);
 
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readl(qts, ECLIC_BASE + 4), ==, 67 | (3 << 21));
+    g_assert_cmphex(qtest_readl(qts, ECLIC_BASE + 4), ==, 0x00602053);
     g_assert_cmphex(qtest_readb(qts, ECLIC_BASE), ==, 7);
     g_assert_cmphex(qtest_readb(qts, ECLIC_BASE + 11), ==, 0);
-    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 66 * 4 + 1), ==, 0);
-    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 66 * 4 + 3), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 82 * 4 + 1), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, IRQ_BASE + 82 * 4 + 3), ==, 0x1f);
     qtest_quit(qts);
 }
 
