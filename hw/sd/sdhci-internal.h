@@ -154,6 +154,7 @@ FIELD(SDHC_TIMEOUTCON, COUNTER,        0, 4);
 /* ROC/RW1C Error Interrupt Status Register 0x0 */
 #define SDHC_ERRINTSTS                 0x32
 #define SDHC_EIS_CMDTIMEOUT            0x0001
+#define SDHC_EIS_DATATIMEOUT           0x0010
 #define SDHC_EIS_BLKGAP                0x0004
 #define SDHC_EIS_CMDIDX                0x0008
 #define SDHC_EIS_CMD12ERR              0x0100
@@ -173,6 +174,7 @@ FIELD(SDHC_TIMEOUTCON, COUNTER,        0, 4);
 /* R/W Error Interrupt Status Enable Register 0x0 */
 #define SDHC_ERRINTSTSEN               0x36
 #define SDHC_EISEN_CMDTIMEOUT          0x0001
+#define SDHC_EISEN_DATATIMEOUT         0x0010
 #define SDHC_EISEN_BLKGAP              0x0004
 #define SDHC_EISEN_CMDIDX              0x0008
 #define SDHC_EISEN_ADMAERR             0x0200

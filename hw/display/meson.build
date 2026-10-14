@@ -1,3 +1,4 @@
+system_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs_st7789.c', 'lisa_display.c'))
 hw_display_modules = {}
 
 system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))

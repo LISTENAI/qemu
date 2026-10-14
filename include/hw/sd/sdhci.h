@@ -94,6 +94,7 @@ struct SDHCIState {
     /* RO Host Controller Version Register always reads as 0x2401 */
 
     /* Configurable properties */
+    bool no_card_detect;  /* Media changes do not drive the detect input. */
     bool pending_insert_quirk; /* Quirk for Raspberry Pi card insert int */
     uint32_t quirks;
     uint8_t endianness;

@@ -248,6 +248,23 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
     SDHCIState *s = (SDHCIState *)dev;
 
     trace_sdhci_set_inserted(level ? "insert" : "eject");
+    if (s->no_card_detect) {
+        /* Media removal does not drive an unwired mechanical detect input. */
+        if (!level && (s->prnsts & SDHC_DATA_INHIBIT)) {
+            timer_del(s->transfer_timer);
+            s->prnsts &= ~(SDHC_DOING_READ | SDHC_DOING_WRITE |
+                          SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE |
+                          SDHC_DATA_AVAILABLE | SDHC_SPACE_AVAILABLE);
+            s->data_count = 0;
+            s->stopped_state = sdhc_not_stopped;
+            if (s->errintstsen & SDHC_EISEN_DATATIMEOUT) {
+                s->errintsts |= SDHC_EIS_DATATIMEOUT;
+                s->norintsts |= SDHC_NIS_ERR;
+            }
+            sdhci_update_irq(s);
+        }
+        return;
+    }
     if ((s->norintsts & SDHC_NIS_REMOVE) && level) {
         /* Give target some time to notice card ejection */
         timer_mod(s->insert_timer,
@@ -299,6 +316,11 @@ static void sdhci_reset(SDHCIState *s)
      * initialization
      */
     memset(&s->sdmasysad, 0, (uintptr_t)&s->capareg - (uintptr_t)&s->sdmasysad);
+
+    /* An unwired detect input stays stable and deasserted across media swaps. */
+    if (s->no_card_detect) {
+        s->prnsts = 0x1fa0000;
+    }
 
     /* Reset other state based on current card insertion/readonly status */
     sdhci_set_inserted(dev, sdbus_get_inserted(&s->sdbus));
@@ -698,6 +720,7 @@ static void sdhci_sdma_transfer_single_block(SDHCIState *s)
                         MEMTXATTRS_UNSPECIFIED);
         sdbus_write_data(&s->sdbus, s->fifo_buffer, datacnt);
     }
+    s->sdmasysad += datacnt;
     s->blkcnt--;
 
     if (s->norintstsen & SDHC_NISEN_DMA) {
@@ -1184,11 +1207,15 @@ sdhci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
 
     switch (offset & ~0x3) {
     case SDHC_SYSAD:
-        if (!TRANSFERRING_DATA(s->prnsts)) {
+        if (!TRANSFERRING_DATA(s->prnsts) ||
+            ((s->trnmod & SDHC_TRNS_DMA) &&
+             SDHC_DMA_TYPE(s->hostctl1) == SDHC_CTRL_SDMA)) {
             s->sdmasysad = (s->sdmasysad & mask) | value;
             MASKED_WRITE(s->sdmasysad, mask, value);
             /* Writing to last byte of sdmasysad might trigger transfer */
             if (!(mask & 0xFF000000) && s->blkcnt &&
+                (s->prnsts & SDHC_DATA_INHIBIT) &&
+                (s->trnmod & SDHC_TRNS_DMA) &&
                 (s->blksize & BLOCK_SIZE_MASK) &&
                 SDHC_DMA_TYPE(s->hostctl1) == SDHC_CTRL_SDMA) {
                 sdhci_sdma_transfer(s);
@@ -1266,7 +1293,8 @@ sdhci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         MASKED_WRITE(s->hostctl1, mask, value);
         MASKED_WRITE(s->pwrcon, mask >> 8, value >> 8);
         MASKED_WRITE(s->wakcon, mask >> 24, value >> 24);
-        if (!(s->prnsts & SDHC_CARD_PRESENT) || ((s->pwrcon >> 1) & 0x7) < 5 ||
+        if ((!s->no_card_detect && !(s->prnsts & SDHC_CARD_PRESENT)) ||
+                ((s->pwrcon >> 1) & 0x7) < 5 ||
                 !(s->capareg & (1 << (31 - ((s->pwrcon >> 1) & 0x7))))) {
             s->pwrcon &= ~SDHC_POWER_ON;
         }
@@ -1559,6 +1587,7 @@ void sdhci_common_class_init(ObjectClass *klass, const void *data)
 
 static const Property sdhci_sysbus_properties[] = {
     DEFINE_SDHCI_COMMON_PROPERTIES(SDHCIState),
+    DEFINE_PROP_BOOL("no-card-detect", SDHCIState, no_card_detect, false),
     DEFINE_PROP_BOOL("pending-insert-quirk", SDHCIState, pending_insert_quirk,
                      false),
     DEFINE_PROP_LINK("dma", SDHCIState,
