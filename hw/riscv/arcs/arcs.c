@@ -835,7 +835,7 @@ static bool camera_sccb_route(void *opaque)
     }
     /* Loss of the sensor clock during an owned SCCB transaction is not
      * approximated as successful data. An idle, unclocked sensor NACKs. */
-    return (!i2c_bus_busy(s->soc.i2c[0].bus) || camera_clock(s)) &&
+    return (!i2c_bus_busy(s->soc.i2c[0].controller.bus) || camera_clock(s)) &&
            arcs_pinmux_function(&s->soc.pinmux[0], 38, 8) &&
            arcs_pinmux_function(&s->soc.pinmux[0], 39, 8);
 }
@@ -1009,9 +1009,9 @@ static void connect_camera(ArcsMachine *s)
     I2CSlave *sensor = i2c_slave_new(TYPE_GC0328, 0x21);
     s->camera = DEVICE(sensor);
     object_property_add_child(OBJECT(s), "camera", OBJECT(sensor));
-    i2c_slave_realize_and_unref(sensor, s->soc.i2c[0].bus, &error_fatal);
-    s->soc.i2c[0].route_valid = camera_sccb_route;
-    s->soc.i2c[0].route_opaque = s;
+    i2c_slave_realize_and_unref(sensor, s->soc.i2c[0].controller.bus, &error_fatal);
+    s->soc.i2c[0].controller.route_valid = camera_sccb_route;
+    s->soc.i2c[0].controller.route_opaque = s;
     s->soc.dvp.begin_frame = camera_begin;
     s->soc.dvp.clock_changed = camera_clock_changed;
     s->soc.dvp.opaque = s;
@@ -1037,7 +1037,7 @@ static void connect_touch(ArcsMachine *s)
     I2CSlave *touch = i2c_slave_new(TYPE_CST328, 0x1d);
     s->touch = DEVICE(touch);
     object_property_add_child(OBJECT(s), "touch", OBJECT(touch));
-    i2c_slave_realize_and_unref(touch, s->soc.i2c[0].bus, &error_fatal);
+    i2c_slave_realize_and_unref(touch, s->soc.i2c[0].controller.bus, &error_fatal);
     qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
                                 qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 24));
 }

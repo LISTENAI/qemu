@@ -3,7 +3,7 @@
 #define HW_RISCV_ARCS_AUX_H
 #include "hw/sysbus.h"
 #include "hw/sd/listenai_sd.h"
-#include "hw/i2c/i2c.h"
+#include "hw/i2c/listenai_i2c.h"
 #include "qemu/timer.h"
 typedef struct ArcsSoC ArcsSoC;
 typedef struct ArcsADC {
@@ -16,16 +16,9 @@ typedef struct ArcsADC {
     unsigned head[16], count[16];
 } ArcsADC;
 typedef struct ArcsI2C {
+    ListenaiI2C controller;
     ArcsSoC *soc;
-    MemoryRegion io;
-    uint32_t regs[0x34 / 4];
-    uint8_t fifo[8];
-    unsigned head, count, index, remaining;
-    I2CBus *bus;
-    QEMUTimer *event;
-    bool active, address_phase, receiving, stop, stop_only;
-    bool (*route_valid)(void *opaque);
-    void *route_opaque;
+    unsigned index;
 } ArcsI2C;
 typedef ListenAISD ArcsSD;
 typedef struct ArcsUSBHost ArcsUSBHost;
