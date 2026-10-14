@@ -1,4 +1,5 @@
 config VENUSA
+    select LISTENAI_SPI
     bool
     select LISTENAI_I2C
     depends on RISCV32

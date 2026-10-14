@@ -151,6 +151,7 @@ static void reset(DeviceState *dev)
     venusa_peripherals_reset(s);
     venusa_codec_reset(s);
     venusa_audio_reset(s);
+    venusa_spi_reset(s);
     venusa_aon_reset(s);
     listenai_psram_reset(&s->psram_ctrl);
     if (s->reset_preserve_aon) {
@@ -234,6 +235,7 @@ static void realize(DeviceState *dev, Error **errp)
     nuclei_cidu_init(&s->cidu, OBJECT(s), "venusa-cidu", 0x47000000, 2, 80, 32, 20, 19);
     venusa_gpio_init(s);
     venusa_dma_init(s);
+    venusa_spi_init(s);
     venusa_uart_init(s);
     venusa_peripherals_init(s);
     venusa_aon_init(s);

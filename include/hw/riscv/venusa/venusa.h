@@ -21,6 +21,7 @@
 #include "hw/watchdog/listenai_wdt.h"
 #include "hw/adc/venusa_gpadc.h"
 #include "hw/intc/nuclei_cidu.h"
+#include "hw/riscv/venusa/venusa_spi.h"
 
 #define TYPE_VENUSA_SOC "venusa-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(VenusASoC, VENUSA_SOC)
@@ -41,6 +42,7 @@ struct VenusASoC {
     VenusAAudio audio;
     VenusGPADC gpadc;
     NucleiCIDU cidu;
+    VenusASPI spi[2];
     bool core1_held;
     RISCVCPU cpu[2];
     MemoryRegion io, ram[6], rom, psram_alias;

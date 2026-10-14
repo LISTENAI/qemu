@@ -7,7 +7,15 @@
 
 static uint32_t spi_pending(ListenaiSPI *s)
 {
-    return s->pending | (s->count <= ((s->regs[0x30 / 4] >> 16) & 31) ? 8 : 0);
+    uint32_t thresholds =
+        (s->count <= ((s->regs[0x30 / 4] >> 16) & 31) ? 8 : 0);
+    if (s->receive_supported &&
+        s->rx_count >= ((s->regs[0x30 / 4] >> 8) & 31)) { thresholds |= 4; }
+    if (s->masked_status) {
+        s->pending |= thresholds & s->regs[0x38 / 4];
+        return s->pending & s->regs[0x38 / 4];
+    }
+    return s->pending | thresholds;
 }
 
 static void signals(ListenaiSPI *s)
@@ -15,12 +23,14 @@ static void signals(ListenaiSPI *s)
     uint32_t control = s->regs[0x30 / 4];
     s->callbacks.cs(s->callbacks.opaque,
                     control & (1u << 21) ? !!(control & (1u << 22)) : !s->active);
-    s->callbacks.dma(s->callbacks.opaque, false, (control & 16) && s->count < 16);
+    s->callbacks.dma(s->callbacks.opaque,
+                    (control & 8) && s->rx_count,
+                    (control & 16) && s->count < s->tx_depth);
     s->callbacks.irq(s->callbacks.opaque,
                     !!(spi_pending(s) & s->regs[0x38 / 4]));
 }
 
-/* LCM(1..15) times the SPI SYSPLL /12 branch divider. Work is
+/* Exact common scale for integer PLL and cascaded SPI dividers. Work is
  * measured in source-clock cycles, scaled by 1e9 for nanosecond accounting. */
 #define SPI_CLOCK_SCALE LISTENAI_SPI_CLOCK_SCALE
 
@@ -44,9 +54,15 @@ static void account(ListenaiSPI *s, int64_t now)
     s->updated = now;
 }
 
+static bool ready(ListenaiSPI *s)
+{
+    return s->active && (s->mode == 2 || s->count) &&
+        (s->mode == 1 || s->rx_count < s->rx_depth);
+}
+
 static void schedule(ListenaiSPI *s)
 {
-    if (!s->active || !s->count) { return; }
+    if (!ready(s)) { return; }
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (!s->phase) {
         unsigned frames = s->regs[0x10 / 4] & 0x80 ? MIN(s->remaining, 4) : 1;
@@ -92,44 +108,64 @@ static void drain(void *opaque)
     ListenaiSPI *s = opaque;
     account(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     s->phase = false;
-    if (!s->active || !s->count) { s->work = int128_zero(); return; }
+    if (!ready(s)) { s->work = int128_zero(); return; }
     bool merge = s->regs[0x10 / 4] & 0x80;
     bool lsb = s->regs[0x10 / 4] & 8;
     if (merge && s->bits != 8) { fail(s, 0x10, s->regs[0x10 / 4]); }
     if (s->route_valid && !s->route_valid(s->route_opaque)) {
         fail(s, 0x2c, s->fifo[s->head]);
     }
-    uint32_t word = s->fifo[s->head];
-    s->head = (s->head + 1) % 16; s->count--;
+    uint32_t word = s->mode == 2 ? 0 : s->fifo[s->head];
+    if (s->mode != 2) { s->head = (s->head + 1) % s->tx_depth; s->count--; }
+    uint32_t received = 0;
     for (unsigned i = 0; i < (merge ? 4 : 1) && s->remaining; i++) {
         uint32_t frame = merge ? (word >> (8 * i)) & 255 : word;
+        uint32_t result = 0;
         for (unsigned b = 0; b < s->bits / 8; b++) {
-            uint8_t data = frame >> (lsb ? 8 * b : s->bits - 8 - 8 * b);
-            ssi_transfer(s->bus, lsb ? reverse(data) : data);
+            unsigned shift = lsb ? 8 * b : s->bits - 8 - 8 * b;
+            uint8_t data = frame >> shift;
+            uint8_t input = ssi_transfer(s->bus, lsb ? reverse(data) : data);
+            result |= (uint32_t)(lsb ? reverse(input) : input) << shift;
         }
+        received |= merge ? result << (8 * i) : result;
         s->remaining--; s->frames++;
+    }
+    if (s->mode != 1) {
+        s->rx_fifo[(s->rx_head + s->rx_count++) % s->rx_depth] = received;
     }
     if (!s->remaining) { s->active = false; s->pending |= 16; }
     /* Retain sub-nanosecond credit only across contiguous FIFO words. */
     if (!s->active) { s->work = int128_zero(); }
     signals(s);  /* May synchronously refill from the DMA request endpoint. */
-    if (!s->count) { s->work = int128_zero(); }
+    if (!ready(s)) { s->work = int128_zero(); }
     schedule(s);
 }
 
 static uint64_t spi_read(void *opaque, hwaddr off, unsigned size)
 {
     ListenaiSPI *s = opaque;
-    if ((off & 3) || off > 0x7c || off == 0x2c) {
+    if ((off & 3) || off > 0x7c || (off == 0x2c && !s->receive_supported)) {
         s->callbacks.fail(s->callbacks.opaque, s->base + off, size, false, 0);
         return 0;
     }
     switch (off) {
+    case 0x2c: {
+        if (!s->rx_count) {
+            s->callbacks.fail(s->callbacks.opaque, s->base + off, size, false, 0);
+            return 0;
+        }
+        uint32_t value = s->rx_fifo[s->rx_head];
+        s->rx_head = (s->rx_head + 1) % s->rx_depth; s->rx_count--;
+        signals(s); schedule(s);
+        return value;
+    }
     case 0: return 0x02002044;
     case 0x34: return s->active | (s->count << 16) | (!s->count ? 1u << 22 : 0) |
-                      (s->count == 16 ? 1u << 23 : 0) | (1u << 14);
+                      (s->count == s->tx_depth ? 1u << 23 : 0) |
+                      (s->rx_count << 8) | (!s->rx_count ? 1u << 14 : 0) |
+                      (s->rx_depth && s->rx_count == s->rx_depth ? 1u << 15 : 0);
     case 0x3c: return spi_pending(s);
-    case 0x7c: return 0x33;
+    case 0x7c: return s->feature;
     default: return s->regs[off / 4];
     }
 }
@@ -146,16 +182,17 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value, unsigned si
     if ((off & 3) || off > 0x7c) { fail(s, off, value); }
     switch (off) {
     case 0x2c:
-        if (s->count == 16) { fail(s, off, value); }
-        s->fifo[(s->head + s->count++) % 16] = value;
+        if (s->count == s->tx_depth) { fail(s, off, value); }
+        s->fifo[(s->head + s->count++) % s->tx_depth] = value;
         break;
     case 0x30:
-        if (value & 8) { fail(s, off, value); }
+        if ((value & 8) && !s->receive_supported) { fail(s, off, value); }
         if (value & 1) {
             s->active = s->phase = false; s->work = int128_zero();
             timer_del(s->service); s->pending = 0;
         }
         if (value & 5) { s->head = s->count = 0; }
+        if (value & 3) { s->rx_head = s->rx_count = 0; }
         s->regs[off / 4] = value & ~7u;
         break;
     case 0x40:
@@ -166,10 +203,16 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value, unsigned si
     case 0x24: {
         uint32_t format = s->regs[0x10 / 4];
         s->bits = ((format >> 8) & 31) + 1;
+        uint32_t transfer = s->regs[0x20 / 4] & 0x6fc00000;
+        s->mode = (transfer >> 24) & 15;
         if (s->active || (format & 0x14) ||
             (s->bits != 8 && s->bits != 16 && s->bits != 32) ||
-            (s->regs[0x20 / 4] & 0x6fc00000) != 0x01000000) { fail(s, off, value); }
-        s->remaining = (uint64_t)s->regs[0x18 / 4] + 1;
+            (transfer & ~0x03000000u) || s->mode > 2 ||
+            (!s->receive_supported && s->mode != 1) ||
+            (s->mode == 0 && s->regs[0x18 / 4] != s->regs[0x1c / 4])) {
+            fail(s, off, value);
+        }
+        s->remaining = (uint64_t)s->regs[(s->mode == 2 ? 0x1c : 0x18) / 4] + 1;
         s->active = true; s->pending &= ~16u; s->regs[off / 4] = value;
         break;
     }
@@ -204,6 +247,8 @@ void listenai_spi_init(ListenaiSPI *s, DeviceState *owner, const char *name,
     assert(callbacks.fail && callbacks.irq && callbacks.dma &&
            callbacks.cs && callbacks.clock_rate);
     s->base = base; s->callbacks = callbacks;
+    if (!s->tx_depth) { s->tx_depth = 16; }
+    if (!s->feature) { s->feature = 0x33; }
     s->bus = ssi_create_bus(owner, name);
     s->service = timer_new_ns(QEMU_CLOCK_VIRTUAL, drain, s);
     memory_region_init_io(&s->io, OBJECT(owner), &spi_ops, s, name, 0x1000);
@@ -213,7 +258,8 @@ void listenai_spi_init(ListenaiSPI *s, DeviceState *owner, const char *name,
 void listenai_spi_reset(ListenaiSPI *s)
 {
     memset(s->regs, 0, sizeof(s->regs));
-    s->head = s->count = s->pending = 0;
+    s->head = s->count = s->rx_head = s->rx_count = s->pending = 0;
+    s->mode = 1;
     s->remaining = s->frames = 0;
     s->active = s->phase = false; s->work = int128_zero();
     timer_del(s->service); signals(s);

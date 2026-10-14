@@ -6,7 +6,7 @@
 #include "qemu/timer.h"
 #include "qemu/int128.h"
 /* Exact rate scale for the supported integer PLL and N/M dividers. */
-#define LISTENAI_SPI_CLOCK_SCALE UINT64_C(4324320)
+#define LISTENAI_SPI_CLOCK_SCALE UINT64_C(4328644320)
 typedef struct ListenaiSPICallbacks {
     void *opaque;
     void (*fail)(void *opaque, hwaddr address, unsigned size, bool write,
@@ -23,8 +23,11 @@ typedef struct ListenaiSPI {
     MemoryRegion io;
     SSIBus *bus;
     QEMUTimer *service;
-    uint32_t regs[32], fifo[16], pending;
-    unsigned head, count, bits;
+    uint32_t regs[32], fifo[16], rx_fifo[16], pending;
+    unsigned head, count, rx_head, rx_count, bits, mode;
+    unsigned tx_depth, rx_depth;
+    bool receive_supported, masked_status;
+    uint32_t feature;
     uint64_t remaining, frames;
     Int128 work;
     uint64_t rate;

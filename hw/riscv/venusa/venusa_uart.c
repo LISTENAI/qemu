@@ -8,11 +8,11 @@ static void uart_dma(void *opaque, bool receive, bool transmit)
     VenusAUART *u = opaque;
     uint32_t mux = u->soc->syscfg[0xa0 / 4];
     unsigned rx = 2 * u->index, tx = rx + 1;
-    listenai_dma_request(&u->soc->dma, rx, receive && !(mux & (1u << rx)));
-    listenai_dma_request(&u->soc->dma, tx, transmit && !(mux & (1u << tx)));
+    if (!(mux & (1u << rx))) { listenai_dma_request(&u->soc->dma, rx, receive); }
+    if (!(mux & (1u << tx))) { listenai_dma_request(&u->soc->dma, tx, transmit); }
     if (u->index == 1) {
-        listenai_dma_request(&u->soc->dma, 6, receive && (mux & (1u << 6)));
-        listenai_dma_request(&u->soc->dma, 7, transmit && (mux & (1u << 7)));
+        if (mux & (1u << 6)) { listenai_dma_request(&u->soc->dma, 6, receive); }
+        if (mux & (1u << 7)) { listenai_dma_request(&u->soc->dma, 7, transmit); }
     }
 }
 
