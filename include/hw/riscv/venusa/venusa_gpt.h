@@ -17,6 +17,9 @@ typedef struct VenusAGPTChannel {
     uint32_t clock, control;
     uint16_t reload, shadow, count[2], prediv;
     uint8_t divider;
+    uint16_t duty[4], duty_shadow[4];
+    uint32_t pwm_position;
+    bool shadow_pending;
     bool channel_on, counter_on, done[2], descending[2], initialized[2];
 } VenusAGPTChannel;
 struct VenusAGPT {

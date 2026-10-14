@@ -47,3 +47,11 @@ void venusa_gpio_init(VenusASoC *s)
                           32 * i, &s->pinmux, cb);
     }
 }
+
+void venusa_gpt_output(VenusASoC *s, unsigned output, bool level)
+{
+    /* Verified SoC mux route: PWM0 to PA14, alternate function 11. */
+    if (output == 0) {
+        listenai_pinmux_output(&s->pinmux, 14, 11, level);
+    }
+}

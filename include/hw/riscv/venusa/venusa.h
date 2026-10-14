@@ -105,6 +105,7 @@ void venusa_aon_init(VenusASoC *s);
 void venusa_aon_reset(VenusASoC *s);
 void venusa_reset_cpu(VenusASoC *s, unsigned index);
 void venusa_gpio_init(VenusASoC *s);
+void venusa_gpt_output(VenusASoC *s, unsigned output, bool level);
 void venusa_dma_init(VenusASoC *s);
 void venusa_uart_reset(VenusASoC *s, unsigned index);
 uint32_t venusa_uart_read(VenusASoC *s, unsigned index, unsigned offset);

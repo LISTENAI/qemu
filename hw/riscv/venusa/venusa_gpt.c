@@ -49,6 +49,92 @@ static bool enabled(VenusAGPTChannel *c, unsigned timer)
            (c->gpt->count_control & (1u << (24 + timer * 2 + c->index)));
 }
 
+/* PWM has one additional tick in each high/low segment (manual 18.3). */
+static bool pwm_running(VenusAGPTChannel *c)
+{
+    return mode(c) == 4 && c->channel_on && c->counter_on &&
+           (c->gpt->count_control & (1u << (26 + c->index)));
+}
+
+static bool pwm_enabled(VenusAGPTChannel *c)
+{
+    return pwm_running(c) && c->gpt->clock_enabled &&
+           !(c->clock & (1u << 21)) && !(c->control & (1u << 13));
+}
+
+static void load_shadow(VenusAGPTChannel *c)
+{
+    c->shadow = c->reload;
+    memcpy(c->duty_shadow, c->duty, sizeof(c->duty));
+    c->shadow_pending = false;
+}
+
+static void pwm_outputs(VenusAGPTChannel *c)
+{
+    if (pwm_running(c)) {
+        if (direction(c, 0) || direction(c, 1)) {
+            venusa_fail(c->gpt->soc, BASE + 0x1c, 4, true,
+                        c->gpt->count_control);
+        }
+        if (~c->gpt->mask & ((1u << (4 + c->index)) |
+                            (1u << (11 + c->index)))) {
+            venusa_fail(c->gpt->soc, BASE + 0x80, 4, true, c->gpt->mask);
+        }
+    }
+    for (unsigned port = 0; port < 4; port++) {
+        bool level = !!(c->control & (1u << (16 + port)));
+        if (pwm_running(c) &&
+            (c->control & (1u << (24 + port)))) {
+            unsigned period = (unsigned)c->shadow + 2;
+            if (c->duty_shadow[port] > c->shadow) {
+                /* Saturated waveforms have undocumented shadow behavior. */
+                venusa_fail(c->gpt->soc, BASE + 0x24 + c->index * 0x1c +
+                            (port / 2) * 4, 4, true, c->duty_shadow[port]);
+            }
+            unsigned high = (unsigned)c->duty_shadow[port] + 1;
+            bool high_first = c->control & (1u << (20 + port));
+            level = high_first ? c->pwm_position < high :
+                                c->pwm_position >= period - high;
+        }
+        venusa_gpt_output(c->gpt->soc, c->index * 4 + port, level);
+    }
+}
+
+static uint64_t pwm_next_ticks(VenusAGPTChannel *c)
+{
+    unsigned period = (unsigned)c->shadow + 2;
+    uint64_t next = period - c->pwm_position;
+    for (unsigned port = 0; port < 4; port++) {
+        if (c->control & (1u << (24 + port))) {
+            unsigned high = (unsigned)c->duty_shadow[port] + 1;
+            unsigned edge = (c->control & (1u << (20 + port))) ?
+                            high : period - high;
+            if (edge > c->pwm_position) {
+                next = MIN(next, edge - c->pwm_position);
+            }
+        }
+    }
+    return next;
+}
+
+static void pwm_advance(VenusAGPTChannel *c, uint64_t ticks)
+{
+    while (ticks) {
+        unsigned period = (unsigned)c->shadow + 2;
+        unsigned left = period - c->pwm_position;
+        if (ticks < left) {
+            c->pwm_position += ticks;
+            break;
+        }
+        ticks -= left;
+        c->pwm_position = 0;
+        c->gpt->pending |= 1u << (13 + c->index);
+        if (c->shadow_pending) { load_shadow(c); }
+    }
+    c->count[0] = c->pwm_position;
+    pwm_outputs(c);
+}
+
 static void rate(VenusAGPTChannel *c)
 {
     uint64_t n = 24000000, d = c->gpt->soc->gpt_t0_div;
@@ -115,11 +201,12 @@ static void advance(VenusAGPTChannel *c, unsigned timer, uint64_t ticks)
 static void sync_time(VenusAGPTChannel *c)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    if (c->rate_n && (enabled(c, 0) || enabled(c, 1))) {
+    if (c->rate_n && (enabled(c, 0) || enabled(c, 1) || pwm_enabled(c))) {
         Int128 den = multiply(c->rate_d, UINT64_C(1000000000));
         Int128 work = int128_add(c->phase, multiply(now - c->epoch, c->rate_n));
         uint64_t ticks = int128_get64(int128_divu(work, den));
         c->phase = int128_remu(work, den);
+        if (pwm_enabled(c)) { pwm_advance(c, ticks); }
         for (unsigned timer = 0; timer < 2; timer++) {
             if (enabled(c, timer)) { advance(c, timer, ticks); }
         }
@@ -132,6 +219,7 @@ static void arm(VenusAGPTChannel *c)
 {
     uint64_t ticks = UINT64_MAX;
     timer_del(c->event);
+    if (pwm_enabled(c)) { ticks = pwm_next_ticks(c); }
     for (unsigned timer = 0; timer < 2; timer++) {
         if (enabled(c, timer)) { ticks = MIN(ticks, terminal_ticks(c, timer)); }
     }
@@ -154,6 +242,17 @@ static void expire(void *opaque)
 
 static void start(VenusAGPTChannel *c)
 {
+    if (mode(c) == 4 && (c->control & 7) == 3) {
+        if (direction(c, 0) || direction(c, 1)) {
+            venusa_fail(c->gpt->soc, BASE + 0x1c, 4, true,
+                        c->gpt->count_control);
+        }
+        c->pwm_position = 0;
+        c->phase = int128_zero();
+        c->counter_on = true;
+        rate(c);
+        return;
+    }
     if (mode(c) != 1 && mode(c) != 2) {
         venusa_fail(c->gpt->soc, BASE + 12 + c->index * 4, 4, true, c->control);
     }
@@ -176,9 +275,21 @@ static void start(VenusAGPTChannel *c)
     rate(c);
 }
 
+static bool packed_configuration(hwaddr off)
+{
+    return off == 0x14 || off == 0x18 ||
+           (off >= 0x24 && off <= 0x34) ||
+           (off >= 0x40 && off <= 0x50) || off == 0x90 || off == 0x94;
+}
+
 static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 {
     VenusAGPT *s = opaque;
+    if ((size == 1 || size == 2) && !(off & (size - 1)) &&
+        packed_configuration(off & ~3u)) {
+        return (read_reg(opaque, off & ~3u, 4) >> (8 * (off & 3))) &
+               MAKE_64BIT_MASK(0, size * 8);
+    }
     if (size != 4 || (off & 3)) { goto fail; }
     for (unsigned i = 0; i < 2; i++) { sync_time(&s->channel[i]); }
     if (off == 0) { return 0x10; }
@@ -193,6 +304,15 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
     if (off == 0x80) { return s->mask | ((s->pending & ~s->mask) << 16); }
     if (off == 0x84) { return s->pending; }
     if (off == 0xa0) { return 0; }
+    for (unsigned i = 0; i < 2; i++) {
+        unsigned base = 0x24 + i * 0x1c;
+        if (off == base || off == base + 4) {
+            unsigned port = (off - base) / 2;
+            return s->channel[i].duty[port] | ((uint32_t)s->channel[i].duty[port + 1] << 16);
+        }
+        if (off >= base + 8 && off <= base + 16) { return 0; }
+    }
+    if (off == 0x90 || off == 0x94) { return 0; }
 fail:
     venusa_fail(s->soc, BASE + off, size, false, 0);
 }
@@ -200,6 +320,14 @@ fail:
 static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     VenusAGPT *s = opaque;
+    if ((size == 1 || size == 2) && !(off & (size - 1)) &&
+        packed_configuration(off & ~3u)) {
+        unsigned shift = 8 * (off & 3);
+        uint32_t mask = MAKE_64BIT_MASK(shift, size * 8);
+        uint32_t old = read_reg(opaque, off & ~3u, 4);
+        write_reg(opaque, off & ~3u, (old & ~mask) | ((value << shift) & mask), 4);
+        return;
+    }
     if (size != 4 || (off & 3)) { goto fail; }
     for (unsigned i = 0; i < 2; i++) { sync_time(&s->channel[i]); }
     if (off == 4 || off == 8) {
@@ -232,24 +360,51 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
             if (value & (1u << i)) { start(c); }
         }
     } else if (off == 0x80) {
+        for (unsigned i = 0; i < 2; i++) {
+            if (mode(&s->channel[i]) == 4 &&
+                (~value & ((1u << (4 + i)) | (1u << (11 + i))))) {
+                goto fail;
+            }
+        }
         s->mask = value & IRQ_MASK;
     } else if (off == 0x84) {
         s->pending &= ~(value >> 16);
     } else if (off == 0xa0) {
         if (value & ~15u) { goto fail; }
         for (unsigned i = 0; i < 2; i++) {
-            if (value & (5u << i)) {
-                /* Deferred live shadow transfer requires PWM boundary wiring. */
-                if ((value & (1u << i)) &&
-                    (enabled(&s->channel[i], 0) || enabled(&s->channel[i], 1))) {
-                    goto fail;
-                }
-                s->channel[i].shadow = s->channel[i].reload;
+            VenusAGPTChannel *c = &s->channel[i];
+            if (value & (4u << i)) {
+                load_shadow(c);
+                c->pwm_position %= (unsigned)c->shadow + 2;
+            } else if (value & (1u << i)) {
+                if (pwm_running(c)) { c->shadow_pending = true; }
+                else if (enabled(c, 0) || enabled(c, 1)) { goto fail; }
+                else { load_shadow(c); }
             }
         }
-    } else { goto fail; }
+    } else {
+        bool handled = false;
+        for (unsigned i = 0; i < 2; i++) {
+            unsigned base = 0x24 + i * 0x1c;
+            if (off == base || off == base + 4) {
+                unsigned port = (off - base) / 2;
+                s->channel[i].duty[port] = value;
+                s->channel[i].duty[port + 1] = value >> 16;
+                handled = true;
+            } else if (off >= base + 8 && off <= base + 16) {
+                /* Start/phase delay modes need independent timing validation. */
+                if (value) { goto fail; }
+                handled = true;
+            }
+        }
+        if ((off == 0x90 || off == 0x94) && !value) { handled = true; }
+        if (!handled) { goto fail; }
+    }
     irq(s);
-    for (unsigned i = 0; i < 2; i++) { arm(&s->channel[i]); }
+    for (unsigned i = 0; i < 2; i++) {
+        pwm_outputs(&s->channel[i]);
+        arm(&s->channel[i]);
+    }
     return;
 fail:
     venusa_fail(s->soc, BASE + off, size, true, value);
@@ -283,10 +438,15 @@ void venusa_gpt_reset(VenusASoC *soc)
         c->control = 1u << 13;
         c->reload = c->shadow = c->count[0] = c->count[1] = c->prediv = 0;
         c->divider = 0;
+        memset(c->duty, 0, sizeof(c->duty));
+        memset(c->duty_shadow, 0, sizeof(c->duty_shadow));
+        c->pwm_position = 0;
+        c->shadow_pending = false;
         c->channel_on = c->counter_on = false;
         c->done[0] = c->done[1] = c->descending[0] = c->descending[1] = false;
         c->initialized[0] = c->initialized[1] = false;
         rate(c);
+        pwm_outputs(c);
     }
     irq(s);
 }
