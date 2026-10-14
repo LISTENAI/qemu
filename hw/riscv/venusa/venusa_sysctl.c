@@ -28,9 +28,10 @@ void venusa_clock_update(VenusASoC *s)
     if (!s->follow_hclk) { return; }
     uint64_t n, d;
     venusa_hclk_ratio(s, &n, &d);
-    uint64_t hz = n / d;
-    if (!hz || hz > UINT32_MAX) { venusa_fail(s, 0x43000000, 4, true, s->buscfg[0]); }
-    for (unsigned i = 0; i < 2; i++) { icount_clock_set_hz(CPU(&s->cpu[i]), hz); }
+    if (!n || !d || n / d > UINT32_MAX) { venusa_fail(s, 0x43000000, 4, true, s->buscfg[0]); }
+    uint64_t a = n, b = d;
+    while (b) { uint64_t r = a % b; a = b; b = r; }
+    for (unsigned i = 0; i < 2; i++) { icount_clock_set_ratio(CPU(&s->cpu[i]), n / a, d / a); }
 }
 
 static uint32_t *configuration(VenusASoC *s, hwaddr address)
