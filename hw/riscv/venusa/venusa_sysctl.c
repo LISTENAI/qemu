@@ -133,7 +133,11 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         if (address == 0x45000090 && (value & 0x2000) && !(previous & 0x2000)) {
             warn_report("VenusA RTC calibration has no analog effect; result registers unsupported");
         }
-        if (address == 0x431000a0) { venusa_uart_update_dma(s); }
+        if (address == 0x431000a0) {
+            venusa_uart_update_dma(s);
+            venusa_audio_dma_update(s);
+        }
+        if (address == 0x43100034) { venusa_audio_clock(s); }
         if (address == 0x43000008) {
             /* Functional PLL lock follows enable; analog settling is not modeled. */
             *reg = (value & ~(1u << 22)) | ((value & 1) ? 1u << 22 : 0);
@@ -142,9 +146,13 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         return true;
     }
     if (address == 0x43100014) {
-        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (1u << 14);
+        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (15u << 17) | (1u << 14);
         if (value & ~supported) { return false; }
         if (value & (1u << 14)) { venusa_gpadc_reset(&s->gpadc); }
+        if (value & (1u << 17)) { venusa_audio_reset(s); }
+        if (value & (1u << 18)) { venusa_codec_reset(s); }
+        if (value & (1u << 19)) { venusa_i2s_reset(s, 1); }
+        if (value & (1u << 20)) { venusa_i2s_reset(s, 0); }
         if (value & (1u << 9)) { venusa_gpt_reset(s); }
         for (unsigned i = 0; i < 2; i++) {
             if (value & (1u << (5 + i))) { listenai_i2c_reset(&s->i2c[i]); }

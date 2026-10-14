@@ -3,6 +3,7 @@
 #define HW_RISCV_VENUSA_H
 #include "hw/sysbus.h"
 #include "qemu/units.h"
+#include "hw/riscv/venusa/venusa_audio.h"
 #include "target/riscv/cpu.h"
 #include "target/riscv/nuclei_n300.h"
 #include "hw/char/listenai_uart.h"
@@ -36,6 +37,7 @@ typedef struct VenusAPeripheral {
 
 struct VenusASoC {
     SysBusDevice parent_obj;
+    VenusAAudio audio;
     VenusGPADC gpadc;
     RISCVCPU cpu[2];
     MemoryRegion io, ram[6], rom, psram_alias;

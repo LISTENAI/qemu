@@ -152,6 +152,8 @@ static void reset(DeviceState *dev)
     venusa_storage_reset(s);
     listenai_dma_reset(&s->dma);
     venusa_peripherals_reset(s);
+    venusa_codec_reset(s);
+    venusa_audio_reset(s);
     venusa_aon_reset(s);
     listenai_psram_reset(&s->psram_ctrl);
     if (s->reset_preserve_aon) {
@@ -225,6 +227,7 @@ static void realize(DeviceState *dev, Error **errp)
     venusa_uart_init(s);
     venusa_peripherals_init(s);
     venusa_aon_init(s);
+    venusa_audio_init(s);
     venusa_runtime_init(s);
 }
 
