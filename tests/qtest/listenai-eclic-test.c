@@ -48,7 +48,7 @@ int main(int argc, char **argv)
     int result;
     g_test_init(&argc, &argv, NULL);
     create_image("listenai-eclic-rom-XXXXXX", &rom_path, 32768);
-    create_image("listenai-eclic-flash-XXXXXX", &flash_path, 4);
+    create_image("listenai-eclic-flash-XXXXXX", &flash_path, 16 * 1024 * 1024);
     qtest_add_func("listenai/eclic/parameters-reset", test_parameters_and_reset);
     result = g_test_run();
     unlink(rom_path);
