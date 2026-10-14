@@ -42,6 +42,21 @@ extern ICountMode use_icount;
  * cpus-tcg vCPU thread so the main-loop can see time has moved forward.
  */
 void icount_update(CPUState *cpu);
+void icount_clock_configure(CPUState *cpu, uint32_t hz, uint64_t quantum);
+void icount_clock_set_hz(CPUState *cpu, uint32_t hz);
+void icount_clock_enable_pacing(void);
+void icount_clock_pace(void);
+bool icount_clock_idle_advance(void);
+int64_t icount_clock_audio_epoch(void);
+void icount_clock_audio_cursor(const uint64_t *cursor);
+int64_t icount_clock_budget(CPUState *cpu, int64_t deadline);
+void icount_clock_finish(CPUState *cpu);
+int64_t icount_get_cpu_raw(CPUState *cpu);
+int64_t icount_get_cpu_cycles(CPUState *cpu);
+void icount_clock_snapshot(CPUState *cpu, int64_t *frontier_ns,
+                           uint64_t *phase);
+void icount_clock_set_ratio(CPUState *cpu, uint64_t numerator,
+                            uint32_t denominator);
 
 /* get raw icount value */
 int64_t icount_get_raw(void);

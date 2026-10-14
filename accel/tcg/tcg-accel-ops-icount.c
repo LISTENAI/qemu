@@ -68,8 +68,9 @@ static int64_t icount_get_limit(void)
 
 static void icount_notify_aio_contexts(void)
 {
-    /* Wake up other AioContexts.  */
-    qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
+    /* Empty AioContexts cannot service this deadline. Their first timer
+     * insertion has its own notification, so no wakeup is lost. */
+    qemu_clock_notify_active(QEMU_CLOCK_VIRTUAL);
     qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
 }
 
@@ -116,7 +117,9 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
 
     replay_mutex_lock();
 
-    cpu->icount_budget = MIN(icount_get_limit(), cpu_budget);
+    cpu->icount_budget = cpu->icount_hz ?
+        icount_clock_budget(cpu, icount_get_limit()) :
+        MIN(icount_get_limit(), cpu_budget);
     insns_left = MIN(0xffff, cpu->icount_budget);
     cpu->neg.icount_decr.u16.low = insns_left;
     cpu->icount_extra = cpu->icount_budget - insns_left;
@@ -136,6 +139,9 @@ void icount_process_data(CPUState *cpu)
 {
     /* Account for executed instructions */
     icount_update(cpu);
+    if (cpu->icount_hz) {
+        icount_clock_finish(cpu);
+    }
 
     /* Reset the counters */
     cpu->neg.icount_decr.u16.low = 0;

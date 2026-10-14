@@ -25,7 +25,44 @@
 #include "qemu/guest-random.h"
 #include "qemu/main-loop.h"
 #include "hw/core/cpu.h"
-#include "accel/dummy-cpus.h"
+
+/* A non-executing CPU needs one wait primitive. Switching between sigwait
+ * and halt_cond can lose a coalesced kick during repeated pause/resume. All
+ * work and waits here are serialized by BQL; no guest instructions execute. */
+static void *qtest_cpu_thread(void *opaque)
+{
+    CPUState *cpu = opaque;
+    rcu_register_thread();
+    bql_lock();
+    qemu_thread_get_self(cpu->thread);
+    cpu->thread_id = qemu_get_thread_id();
+    current_cpu = cpu;
+    cpu_thread_signal_created(cpu);
+    qemu_guest_random_seed_thread_part2(cpu->random_seed);
+    do {
+        qemu_wait_io_event_common(cpu);
+        if (!cpu->unplug) {
+            qemu_cond_wait_bql(cpu->halt_cond);
+        }
+    } while (!cpu->unplug);
+    bql_unlock();
+    rcu_unregister_thread();
+    return NULL;
+}
+
+static void qtest_start_cpu(CPUState *cpu)
+{
+    char name[VCPU_THREAD_NAME_SIZE];
+    snprintf(name, sizeof(name), "CPU %d/QTEST", cpu->cpu_index);
+    qemu_thread_create(cpu->thread, name, qtest_cpu_thread, cpu,
+                       QEMU_THREAD_JOINABLE);
+}
+
+static void qtest_kick_cpu(CPUState *cpu)
+{
+    /* qemu_cpu_kick already broadcasts halt_cond while holding BQL. */
+    assert(bql_locked());
+}
 
 static int64_t qtest_clock_counter;
 
@@ -65,7 +102,8 @@ static void qtest_accel_ops_class_init(ObjectClass *oc, const void *data)
 {
     AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
 
-    ops->create_vcpu_thread = dummy_start_vcpu_thread;
+    ops->create_vcpu_thread = qtest_start_cpu;
+    ops->kick_vcpu_thread = qtest_kick_cpu;
     ops->get_virtual_clock = qtest_get_virtual_clock;
     ops->set_virtual_clock = qtest_set_virtual_clock;
     ops->handle_interrupt = generic_handle_interrupt;

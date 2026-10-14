@@ -81,13 +81,20 @@ static int64_t icount_get_executed(CPUState *cpu)
  * account executed instructions. This is done by the TCG vCPU
  * thread so the main-loop can see time has moved forward.
  */
+#include "icount-percpu.inc"
+#include "icount-pace.inc"
+
 static void icount_update_locked(CPUState *cpu)
 {
     int64_t executed = icount_get_executed(cpu);
     cpu->icount_budget -= executed;
+    qatomic_set_i64(&cpu->icount_executed, cpu->icount_executed + executed);
 
     qatomic_set_i64(&timers_state.qemu_icount,
                     timers_state.qemu_icount + executed);
+    if (cpu->icount_hz) {
+        icount_clock_advance(cpu, executed);
+    }
 }
 
 /*
@@ -124,7 +131,7 @@ static int64_t icount_get_locked(void)
 {
     int64_t icount = icount_get_raw_locked();
     return qatomic_read_i64(&timers_state.qemu_icount_bias) +
-        icount_to_ns(icount);
+        (icount_clock_quantum ? 0 : icount_to_ns(icount));
 }
 
 int64_t icount_get_raw(void)
@@ -301,13 +308,23 @@ void icount_start_warp_timer(void)
      * Nothing to do if the VM is stopped: QEMU_CLOCK_VIRTUAL timers
      * do not fire, so computing the deadline does not make sense.
      */
-    if (!runstate_is_running()) {
+    if (!runstate_is_running() ||
+        qemu_reset_requested_get() != SHUTDOWN_CAUSE_NONE) {
         return;
     }
 
     if (replay_mode != REPLAY_MODE_PLAY) {
         if (!all_cpu_threads_idle()) {
             return;
+        }
+
+        /* A pending debugger stop is not guest idle time. The I/O thread
+         * may observe stopped=true before it processes the debug request. */
+        CPUState *cpu;
+        CPU_FOREACH(cpu) {
+            if (cpu->stopped || cpu->stop) {
+                return;
+            }
         }
 
         if (qtest_enabled()) {
@@ -340,6 +357,10 @@ void icount_start_warp_timer(void)
         if (!icount_sleep) {
             warn_report_once("icount sleep disabled and no active timers");
         }
+        return;
+    }
+
+    if (deadline > 0 && icount_pace_defer_warp(deadline)) {
         return;
     }
 

@@ -499,6 +499,19 @@ struct CPUState {
     int singlestep_enabled;
     int64_t icount_budget;
     int64_t icount_extra;
+    /* Lifetime accounted TCG instructions, excluding idle time warps.
+     * Same semantics as qemu_icount; not hardware retired instructions.
+     * CPU reset must not clear it independently of the aggregate count. */
+    int64_t icount_executed;
+    /* Opt-in fixed-frequency serial TCG experiment; zero Hz keeps legacy. */
+    int64_t icount_time_ns, icount_slice_end;
+    __uint128_t icount_phase;
+    int64_t icount_cycle_epoch;
+    uint64_t icount_cycles;
+    __uint128_t icount_cycle_phase;
+    uint64_t icount_hz, icount_clock_scale;
+    uint32_t icount_hz_den;
+    uint32_t icount_max_skew_ns;
     uint64_t random_seed;
     sigjmp_buf jmp_env;
 

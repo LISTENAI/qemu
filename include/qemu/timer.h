@@ -199,6 +199,11 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask);
  */
 void qemu_clock_notify(QEMUClockType type);
 
+/* Notify only lists with pending timers. A first insertion independently
+ * rearms and notifies its list, including when racing this check.
+ * Caller must hold the same list-lifetime protection as qemu_clock_notify. */
+void qemu_clock_notify_active(QEMUClockType type);
+
 /**
  * qemu_clock_enable:
  * @type: the clock type

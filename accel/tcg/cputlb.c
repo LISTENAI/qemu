@@ -1272,7 +1272,7 @@ static inline void cpu_unaligned_access(CPUState *cpu, vaddr addr,
 
 static MemoryRegionSection *
 io_prepare(hwaddr *out_offset, CPUState *cpu, hwaddr xlat,
-           MemTxAttrs attrs, vaddr addr, uintptr_t retaddr)
+           MemTxAttrs attrs, vaddr addr, uintptr_t retaddr, unsigned read_size)
 {
     MemoryRegionSection *section;
     hwaddr mr_offset;
@@ -1281,7 +1281,16 @@ io_prepare(hwaddr *out_offset, CPUState *cpu, hwaddr xlat,
     mr_offset = (xlat & TARGET_PAGE_MASK) + addr;
     cpu->mem_io_pc = retaddr;
     if (!cpu->neg.can_do_io) {
-        cpu_io_recompile(cpu, retaddr);
+        MemoryRegion *mr = section->mr;
+        bool safe = read_size == 4 && !(addr & 3) && !(mr_offset & 3) &&
+            (cpu->tcg_cflags & CF_USE_ICOUNT) &&
+            !(cpu->tcg_cflags & CF_PARALLEL) && !cpu->singlestep_enabled &&
+            QTAILQ_EMPTY(&cpu->breakpoints) && QTAILQ_EMPTY(&cpu->watchpoints) &&
+            !mr->flush_coalesced_mmio && mr->ops && mr->ops->icount_read_safe &&
+            mr->ops->icount_read_safe(mr->opaque, mr_offset);
+        if (!safe) {
+            cpu_io_recompile(cpu, retaddr);
+        }
     }
 
     *out_offset = mr_offset;
@@ -1990,7 +1999,8 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
     tcg_debug_assert(size > 0 && size <= 8);
 
     attrs = full->attrs;
-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra,
+                         type == MMU_DATA_LOAD ? size : 0);
     mr = section->mr;
 
     BQL_LOCK_GUARD();
@@ -2011,7 +2021,7 @@ static Int128 do_ld16_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
     tcg_debug_assert(size > 8 && size <= 16);
 
     attrs = full->attrs;
-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra, 0);
     mr = section->mr;
 
     BQL_LOCK_GUARD();
@@ -2531,7 +2541,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
     tcg_debug_assert(size > 0 && size <= 8);
 
     attrs = full->attrs;
-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra, 0);
     mr = section->mr;
 
     BQL_LOCK_GUARD();
@@ -2551,7 +2561,7 @@ static uint64_t do_st16_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
     tcg_debug_assert(size > 8 && size <= 16);
 
     attrs = full->attrs;
-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra, 0);
     mr = section->mr;
 
     BQL_LOCK_GUARD();

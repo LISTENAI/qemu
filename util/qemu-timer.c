@@ -148,6 +148,24 @@ void qemu_clock_notify(QEMUClockType type)
     }
 }
 
+void qemu_clock_notify_active(QEMUClockType type)
+{
+    QEMUTimerList *timer_list;
+    QEMUClock *clock = qemu_clock_ptr(type);
+
+    QLIST_FOREACH(timer_list, &clock->timerlists, list) {
+        bool active;
+        qemu_mutex_lock(&timer_list->active_timers_lock);
+        active = timer_list->active_timers != NULL;
+        qemu_mutex_unlock(&timer_list->active_timers_lock);
+        /* A concurrent first insertion calls timerlist_rearm itself.
+         * Do not hold active_timers_lock over an arbitrary notifier. */
+        if (active) {
+            timerlist_notify(timer_list);
+        }
+    }
+}
+
 /* Disabling the clock will wait for related timerlists to stop
  * executing qemu_run_timers.  Thus, this functions should not
  * be used from the callback of a timer that is based on @clock.

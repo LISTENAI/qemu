@@ -218,6 +218,7 @@ static void *rr_cpu_thread_fn(void *arg)
         /* Only used for icount_enabled() */
         int64_t cpu_budget = 0;
 
+        icount_clock_pace();
         bql_unlock();
         replay_mutex_lock();
         bql_lock();
@@ -232,6 +233,9 @@ static void *rr_cpu_thread_fn(void *arg)
              * waking up the I/O thread and waiting for completion.
              */
             icount_handle_deadline();
+            if (!all_cpu_threads_idle()) {
+                rr_start_kick_timer();
+            }
 
             cpu_budget = icount_percpu_budget(cpu_count);
         }
@@ -291,6 +295,10 @@ static void *rr_cpu_thread_fn(void *arg)
         }
 
         if (icount_enabled() && all_cpu_threads_idle()) {
+            rr_stop_kick_timer();
+            if (icount_clock_idle_advance()) {
+                continue;
+            }
             /*
              * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
              * in the main_loop, wake it up in order to start the warp timer.

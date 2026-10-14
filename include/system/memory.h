@@ -314,6 +314,13 @@ struct MemoryRegionOps {
                                     unsigned size,
                                     MemTxAttrs attrs);
 
+    /* Optional, pure declaration for an aligned DWORD data read. If true,
+     * read() must not read clocks, change state, raise interrupts, access
+     * other memory or depend on the executing CPU. It may read device state
+     * maintained by separately scheduled events. Single-thread icount only;
+     * normal dispatch, access validation and BQL still apply. */
+    bool (*icount_read_safe)(void *opaque, hwaddr addr);
+
     enum device_endian endianness;
     /* Guest-visible constraints: */
     struct {
