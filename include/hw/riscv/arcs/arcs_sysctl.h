@@ -4,6 +4,7 @@
 
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
+#include "hw/rtc/listenai_calendar.h"
 #include "hw/timer/listenai_dual_timer.h"
 typedef struct ArcsSoC ArcsSoC;
 typedef struct ArcsConfigIO {
@@ -33,16 +34,9 @@ typedef struct ArcsSysctl {
     ArcsAONTimer aon_timer;
     ArcsAONWDT aon_wdt;
     ArcsDualTimer dual_timer[2];
-    ArcsConfigIO common, pll, aon, ap, calendar;
+    ArcsConfigIO common, pll, aon, ap;
     MemoryRegion remap[2][4];
-    uint32_t calendar_regs[10];
-    int64_t calendar_epoch, calendar_started;
-    int64_t calendar_alarm;
-    QEMUTimer *calendar_event;
-    uint32_t calendar_pending;
-    uint8_t calendar_weekday;
-    bool calendar_alarm_enabled, calendar_interval_enabled;
-    bool calendar_wakeup;
+    ListenAICalendar calendar;
     ArcsConfigIO wdt[2];
     uint32_t wdt_control[2];
     bool wdt_unlocked[2];

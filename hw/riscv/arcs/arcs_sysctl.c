@@ -9,61 +9,15 @@
 #include "qemu/units.h"
 #include "exec/icount.h"
 
-static int64_t calendar_now(ArcsSysctl *s)
+static void calendar_irq(void *opaque, bool level)
 {
-    return s->calendar_epoch +
-           (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->calendar_started) / 1000000000;
+    arcs_soc_irq(opaque, 34, level);
 }
 
-static void calendar_irq(ArcsSoC *soc)
+static void calendar_fault(void *opaque, hwaddr address, unsigned size,
+                           bool write, uint64_t value)
 {
-    ArcsSysctl *s = &soc->sysctl;
-    arcs_soc_irq(soc, 34, ((s->calendar_pending & 1) && s->calendar_interval_enabled) ||
-                          ((s->calendar_pending & 2) && s->calendar_alarm_enabled));
-}
-
-static void calendar_arm(ArcsSoC *soc)
-{
-    static const unsigned periods[] = {0, 1, 60, 3600};
-    ArcsSysctl *s = &soc->sysctl;
-    int64_t now = calendar_now(s), next = INT64_MAX;
-    unsigned period = periods[s->calendar_regs[0] & 3];
-    if (s->calendar_interval_enabled && period) { next = now + period - now % period; }
-    if (s->calendar_alarm_enabled && s->calendar_alarm > now) {
-        next = MIN(next, s->calendar_alarm);
-    }
-    timer_del(s->calendar_event);
-    if (next != INT64_MAX) {
-        timer_mod(s->calendar_event, s->calendar_started +
-                  (next - s->calendar_epoch) * INT64_C(1000000000));
-    }
-}
-
-static void calendar_expire(void *opaque)
-{
-    static const unsigned periods[] = {0, 1, 60, 3600};
-    ArcsSoC *soc = opaque;
-    ArcsSysctl *s = &soc->sysctl;
-    int64_t now = calendar_now(s);
-    unsigned period = periods[s->calendar_regs[0] & 3];
-    if (s->calendar_interval_enabled && period && !(now % period)) { s->calendar_pending |= 1; }
-    if (s->calendar_alarm_enabled && now == s->calendar_alarm) { s->calendar_pending |= 2; }
-    calendar_irq(soc); calendar_arm(soc);
-}
-
-static void calendar_reset(ArcsSoC *soc)
-{
-    ArcsSysctl *s = &soc->sysctl;
-    memset(s->calendar_regs, 0, sizeof(s->calendar_regs));
-    s->calendar_epoch = 946684800; /* 2000-01-01T00:00:00Z, never host time. */
-    s->calendar_started = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    s->calendar_wakeup = false;
-    s->calendar_alarm_enabled = s->calendar_interval_enabled = false;
-    s->calendar_pending = 0;
-    s->calendar_weekday = 6;
-    s->calendar_alarm = 0;
-    timer_del(s->calendar_event);
-    calendar_irq(soc);
+    arcs_soc_fail(opaque, address, size, write, value);
 }
 
 static void request_chip_reset(ArcsSoC *soc, uint32_t status, bool aon_wdt)
@@ -75,81 +29,6 @@ static void request_chip_reset(ArcsSoC *soc, uint32_t status, bool aon_wdt)
     }
     s->warm_reset = true;
     qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-}
-
-static uint64_t calendar_read(void *opaque, hwaddr off, unsigned size)
-{
-    ArcsConfigIO *io = opaque;
-    ArcsSysctl *s = &io->soc->sysctl;
-    if (size != 4 || (off & 3) || off > 0x24) {
-        arcs_soc_fail(io->soc, io->base + off, size, false, 0);
-    }
-    if (off == 4) { return 0; } /* Synchronous load commands. */
-    if (off == 8) {
-        return s->calendar_pending | (s->calendar_wakeup ? 0x100 : 0) |
-               (s->calendar_interval_enabled ? 0x1000 : 0) |
-               ((s->calendar_pending & 1) ? 0x10000 : 0) |
-               (s->calendar_alarm_enabled ? 0x100000 : 0);
-    }
-    if (off == 0x14 || off == 0x18) {
-        int64_t seconds = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->calendar_started) / 1000000000;
-        GDateTime *date = g_date_time_new_from_unix_utc(s->calendar_epoch + seconds);
-        assert(date);
-        uint32_t value = off == 0x14 ?
-            (g_date_time_get_hour(date) << 16) | (g_date_time_get_minute(date) << 8) |
-            g_date_time_get_second(date) :
-            (((s->calendar_weekday + (s->calendar_epoch % 86400 + seconds) / 86400) % 7) << 24) |
-            ((g_date_time_get_year(date) - 2000) << 16) |
-            (g_date_time_get_month(date) << 8) | g_date_time_get_day_of_month(date);
-        g_date_time_unref(date);
-        return value;
-    }
-    return s->calendar_regs[off / 4];
-}
-
-static void calendar_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
-{
-    ArcsConfigIO *io = opaque;
-    ArcsSysctl *s = &io->soc->sysctl;
-    if (size != 4 || (off & 3) || off > 0x24) { goto fail; }
-    switch (off) {
-    case 0: s->calendar_regs[0] = value & 3; calendar_arm(io->soc); return;
-    case 4:
-        if (value & ~0x30371u) { goto fail; }
-        if (value & 1) {
-            uint32_t lo = s->calendar_regs[3], hi = s->calendar_regs[4];
-            if ((lo & 63) > 59) { goto fail; }
-            GDateTime *date = g_date_time_new_utc(2000 + ((hi >> 16) & 127),
-                (hi >> 8) & 15, hi & 31, (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
-            if (!date) { goto fail; }
-            s->calendar_epoch = g_date_time_to_unix(date);
-            s->calendar_weekday = (hi >> 24) & 7;
-            if (s->calendar_weekday > 6) { g_date_time_unref(date); goto fail; }
-            g_date_time_unref(date);
-            s->calendar_started = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        }
-        if (value & 0x10) {
-            uint32_t lo = s->calendar_regs[7], hi = s->calendar_regs[8];
-            GDateTime *date = g_date_time_new_utc(2000 + ((hi >> 16) & 127),
-                (hi >> 8) & 15, hi & 31, (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
-            if (!date) { goto fail; }
-            s->calendar_alarm = g_date_time_to_unix(date);
-            g_date_time_unref(date);
-        }
-        if (value & 0x20) { s->calendar_alarm_enabled = true; }
-        if (value & 0x40) { s->calendar_alarm_enabled = false; }
-        if (value & 0x100) { s->calendar_pending &= ~2u; }
-        if (value & 0x200) { s->calendar_pending &= ~1u; }
-        if (value & 0x10000) { s->calendar_interval_enabled = true; }
-        if (value & 0x20000) { s->calendar_interval_enabled = false; }
-        calendar_irq(io->soc); calendar_arm(io->soc);
-        return;
-    case 0xc: case 0x10: case 0x1c: case 0x20: s->calendar_regs[off / 4] = value; return;
-    case 0x24: s->calendar_regs[off / 4] = value & 0x7ffffff; return;
-    default: break;
-    }
-fail:
-    arcs_soc_fail(io->soc, io->base + off, size, true, value);
 }
 
 static bool common_register(hwaddr offset)
@@ -271,7 +150,7 @@ static void common_write(void *opaque, hwaddr off, uint64_t value, unsigned size
     if (!common_register(off)) { goto fail; }
     if (off == 0x8c && (value & 15)) { goto fail; }
     if (off == 0x28) { arcs_trng_clock(soc, value & 8); }
-    if (off == 0x6c) { s->calendar_wakeup = value & 1; }
+    if (off == 0x6c) { s->calendar.wakeup = value & 1; }
     if (off == 0x10) {
         uint32_t divisor = (value >> 9) & 63;
         if (!divisor) { goto fail; }
@@ -576,7 +455,7 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     case 0x68:
         if (value & ~0x34u) { goto fail; }
         if (value & 4) { arcs_aon_timer_reset(soc); }
-        if (value & 0x10) { calendar_reset(soc); }
+        if (value & 0x10) { listenai_calendar_reset(&soc->sysctl.calendar); }
         if (value & 0x20) { memset(soc->pinmux[1].config, 0, sizeof(soc->pinmux[1].config)); }
         return;
     case 0x84:
@@ -642,7 +521,6 @@ static const MemoryRegionOps pll_ops = CONFIG_OPS(pll_read, pll_write);
 static const MemoryRegionOps aon_ops = CONFIG_OPS(aon_read, aon_write);
 static const MemoryRegionOps ap_ops = CONFIG_OPS(ap_read, ap_write);
 static const MemoryRegionOps wdt_ops = CONFIG_OPS(wdt_read, wdt_write);
-static const MemoryRegionOps calendar_ops = CONFIG_OPS(calendar_read, calendar_write);
 
 void arcs_sysctl_init(ArcsSoC *soc)
 {
@@ -658,10 +536,10 @@ void arcs_sysctl_init(ArcsSoC *soc)
             memory_region_add_subregion_overlap(get_system_memory(), virtual_bases[region], alias, kind);
         }
     }
-    ArcsConfigIO *blocks[] = { &s->common, &s->pll, &s->aon, &s->ap, &s->calendar };
-    const char *names[] = { "arcs-common", "arcs-pll", "arcs-aon", "arcs-ap-config", "arcs-calendar" };
-    const uint32_t bases[] = { 0x46000000, 0x46100000, 0x48000000, 0x45800000, 0x46400000 };
-    const MemoryRegionOps *ops[] = { &common_ops, &pll_ops, &aon_ops, &ap_ops, &calendar_ops };
+    ArcsConfigIO *blocks[] = { &s->common, &s->pll, &s->aon, &s->ap };
+    const char *names[] = { "arcs-common", "arcs-pll", "arcs-aon", "arcs-ap-config" };
+    const uint32_t bases[] = { 0x46000000, 0x46100000, 0x48000000, 0x45800000 };
+    const MemoryRegionOps *ops[] = { &common_ops, &pll_ops, &aon_ops, &ap_ops };
     for (unsigned i = 0; i < G_N_ELEMENTS(blocks); i++) {
         blocks[i]->soc = soc; blocks[i]->base = bases[i];
         memory_region_init_io(&blocks[i]->io, OBJECT(soc), ops[i], blocks[i], names[i], 0x1000);
@@ -675,7 +553,8 @@ void arcs_sysctl_init(ArcsSoC *soc)
         memory_region_add_subregion(get_system_memory(), io->base, &io->io);
         s->wdt_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL, wdt_expire, io);
     }
-    s->calendar_event = timer_new_ns(QEMU_CLOCK_VIRTUAL, calendar_expire, soc);
+    listenai_calendar_init(&s->calendar, OBJECT(soc), "arcs-calendar",
+                           0x46400000, calendar_irq, calendar_fault, soc);
     arcs_aon_timer_init(soc);
     arcs_aon_wdt_init(soc);
     arcs_dual_timer_init(soc);
@@ -685,7 +564,7 @@ void arcs_sysctl_init(ArcsSoC *soc)
 void arcs_sysctl_reset(ArcsSoC *soc)
 {
     ArcsSysctl *s = &soc->sysctl;
-    calendar_reset(soc);
+    listenai_calendar_reset(&soc->sysctl.calendar);
     arcs_aon_timer_reset(soc);
     arcs_aon_wdt_reset(soc);
     arcs_dual_timer_reset(soc);

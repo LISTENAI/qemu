@@ -1,5 +1,6 @@
 config ARCS
     bool
+    select LISTENAI_CALENDAR
     select LISTENAI_I2C
     select LISTENAI_DUAL_TIMER
     depends on RISCV32
