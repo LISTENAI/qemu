@@ -153,6 +153,8 @@ static void reset(DeviceState *dev)
     venusa_audio_reset(s);
     venusa_luna_reset(s);
     venusa_spi_reset(s);
+    venusa_dvp_reset(s);
+    venusa_dvp_clock(s);
     venusa_aon_reset(s);
     listenai_psram_reset(&s->psram_ctrl);
     if (s->reset_preserve_aon) {
@@ -237,6 +239,7 @@ static void realize(DeviceState *dev, Error **errp)
     venusa_gpio_init(s);
     venusa_dma_init(s);
     venusa_spi_init(s);
+    venusa_dvp_init(s);
     venusa_uart_init(s);
     venusa_peripherals_init(s);
     venusa_aon_init(s);

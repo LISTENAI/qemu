@@ -181,3 +181,5 @@ if config_all_devices.has_key('CONFIG_LISTENAI_LUNA')
   system_ss.add(when: 'CONFIG_LISTENAI_LUNA',
                 if_true: [files('listenai_luna.c'), luna_assets])
 endif
+
+system_ss.add(when: 'CONFIG_VENUSA', if_true: files('listenai_video_source.c'))

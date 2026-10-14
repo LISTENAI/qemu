@@ -279,7 +279,7 @@ qtests_s390x = \
    'migration-test']
 
 qtests_riscv32 = \
-  (config_all_devices.has_key('CONFIG_VENUSA') ? ['listenai-eclic-test', 'venusa-peripherals-test', 'venusa-audio-test', 'listenai-dma-peripheral-test', 'venusa-gpadc-test', 'venusa-spi-test', 'venusa-i2c-test', 'venusa-pwm-test', 'venusa-luna-test', 'venusa-calendar-test', 'listenai-uart-dma-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_VENUSA') ? ['listenai-eclic-test', 'venusa-peripherals-test', 'venusa-audio-test', 'listenai-dma-peripheral-test', 'venusa-gpadc-test', 'venusa-spi-test', 'venusa-i2c-test', 'venusa-pwm-test', 'venusa-luna-test', 'venusa-calendar-test', 'listenai-uart-dma-test', 'venusa-dvp-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : [])
 
 qtests_riscv64 = ['riscv-csr-test'] + \
