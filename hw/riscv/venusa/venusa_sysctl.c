@@ -61,7 +61,7 @@ static uint32_t *configuration(VenusASoC *s, hwaddr address)
     case 0x45000030: case 0x45000034: case 0x45000038:
     case 0x45000040: case 0x45000044: case 0x45000048:
     case 0x45000054: case 0x45000058: case 0x45000080:
-    case 0x45000090: case 0x45000094:
+    case 0x45000084: case 0x45000090: case 0x45000094:
     case 0x45000088: case 0x450000a4: case 0x450000a8:
     case 0x450000ac: case 0x450000b0: case 0x450000c0:
     case 0x450000c4: case 0x450000c8:
@@ -120,6 +120,9 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             if (value & 8) { listenai_calendar_reset(&s->calendar); }
             *reg = 0;
         }
+        if (address == 0x4310002c) {
+            venusa_gpadc_clock(&s->gpadc, (value & 1) != 0);
+        }
         if (address == 0x43100028) {
             if ((value & 0x20) && !(previous & 0x20)) {
                 s->gpt_t0_div = value & 31;
@@ -139,8 +142,9 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         return true;
     }
     if (address == 0x43100014) {
-        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9);
+        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (1u << 14);
         if (value & ~supported) { return false; }
+        if (value & (1u << 14)) { venusa_gpadc_reset(&s->gpadc); }
         if (value & (1u << 9)) { venusa_gpt_reset(s); }
         for (unsigned i = 0; i < 2; i++) {
             if (value & (1u << (5 + i))) { listenai_i2c_reset(&s->i2c[i]); }
@@ -196,6 +200,7 @@ void venusa_sysctl_reset(VenusASoC *s)
     s->gpt_t0_div = 1;
     venusa_clock_update(s);
     s->aon[0x54 / 4] = 0x000bb9dc;
+    s->aon[0x84 / 4] = 1;
     s->aon[0x4c / 4] = 1;
     s->aon[0xa0 / 4] = 0x18100;
 }

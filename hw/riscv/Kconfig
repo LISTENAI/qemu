@@ -12,6 +12,7 @@ config VENUSA
     select LISTENAI_AON
     select LISTENAI_WDT
     select NUCLEI_SYSTIMER
+    select VENUSA_GPADC
     select LISTENAI_UART
 
 config ARCS

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include "system/address-spaces.h"
 #include "hw/riscv/venusa/venusa.h"
 
 static void fault(void *opaque, hwaddr address, unsigned size, bool write, uint64_t value)
@@ -39,8 +40,33 @@ static void i2c_clock(void *opaque, uint64_t *n, uint64_t *d)
     while (b) { uint64_t r = a % b; a = b; b = r; }
     *n /= a; *d /= a;
 }
+static void adc_irq(void *opaque, bool level)
+{
+    venusa_irq(opaque, 23, level);
+}
+static uint32_t adc_reference(void *opaque, unsigned selection)
+{
+    VenusASoC *s = opaque;
+    /* Ideal board supplies; the internal VDD_IO divider is programmable. */
+    if (selection < 2) {
+        return 1200000;
+    }
+    return selection == 2 ? 3300000 / ((s->aon[0x84 / 4] & 2) ? 2 : 3) : 0;
+}
+static void adc_voltage(void *opaque, int channel, int voltage)
+{
+    VenusASoC *s = opaque;
+    if (voltage < 0 || !venusa_gpadc_set_voltage(&s->gpadc, channel, voltage)) {
+        venusa_fail(s, 0x4350000c, 4, true, voltage);
+    }
+}
 void venusa_peripherals_init(VenusASoC *s)
 {
+    VenusGPADCCallbacks adc_cb = { .opaque = s, .irq = adc_irq,
+        .fail = calendar_fault, .reference_uv = adc_reference };
+    venusa_gpadc_init(&s->gpadc, OBJECT(s), "venusa-gpadc", 0x43500000, adc_cb);
+    memory_region_add_subregion(get_system_memory(), 0x43500000, &s->gpadc.io);
+    qdev_init_gpio_in_named(DEVICE(s), adc_voltage, "adc-voltage-uv", 6);
     venusa_gpt_init(s);
     listenai_calendar_init(&s->calendar, OBJECT(s), "venusa-calendar", 0x43400000,
                           calendar_irq, calendar_fault, s);
@@ -59,6 +85,8 @@ void venusa_peripherals_init(VenusASoC *s)
 }
 void venusa_peripherals_reset(VenusASoC *s)
 {
+    venusa_gpadc_reset(&s->gpadc);
+    venusa_gpadc_clock(&s->gpadc, (s->syscfg[0x2c / 4] & 1) != 0);
     venusa_gpt_reset(s);
     venusa_gpt_clock(s, (s->syscfg[0x28 / 4] & 0x40) != 0);
     if (!s->reset_preserve_aon) { listenai_calendar_reset(&s->calendar); }

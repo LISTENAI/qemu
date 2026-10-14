@@ -18,6 +18,7 @@
 #include "hw/riscv/venusa/venusa_gpt.h"
 #include "hw/timer/listenai_aon.h"
 #include "hw/watchdog/listenai_wdt.h"
+#include "hw/adc/venusa_gpadc.h"
 
 #define TYPE_VENUSA_SOC "venusa-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(VenusASoC, VENUSA_SOC)
@@ -35,6 +36,7 @@ typedef struct VenusAPeripheral {
 
 struct VenusASoC {
     SysBusDevice parent_obj;
+    VenusGPADC gpadc;
     RISCVCPU cpu[2];
     MemoryRegion io, ram[6], rom, psram_alias;
     ListenAIXccela psram_chip;
