@@ -26,6 +26,7 @@ void venusa_hclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *d)
 
 void venusa_clock_update(VenusASoC *s)
 {
+    venusa_gpt_clock(s, (s->syscfg[0x28 / 4] & 0x40) != 0);
     if (!s->follow_hclk) { return; }
     uint64_t n, d;
     venusa_hclk_ratio(s, &n, &d);
@@ -108,6 +109,13 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         if (address == 0x43000010 && (value & (1u << 23)) && !(previous & (1u << 23))) {
             s->pll_core_div = ((s->buscfg[3] >> 1) & 15) + 3;
         }
+        if (address == 0x43100028) {
+            if ((value & 0x20) && !(previous & 0x20)) {
+                s->gpt_t0_div = value & 31;
+                if (!s->gpt_t0_div) { return false; }
+            }
+            venusa_gpt_clock(s, (value & 0x40) != 0);
+        }
         if (address == 0x45000090 && (value & 0x2000) && !(previous & 0x2000)) {
             warn_report("VenusA RTC calibration has no analog effect; result registers unsupported");
         }
@@ -120,8 +128,9 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         return true;
     }
     if (address == 0x43100014) {
-        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5);
+        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9);
         if (value & ~supported) { return false; }
+        if (value & (1u << 9)) { venusa_gpt_reset(s); }
         for (unsigned i = 0; i < 2; i++) {
             if (value & (1u << (5 + i))) { listenai_i2c_reset(&s->i2c[i]); }
         }
@@ -173,6 +182,7 @@ void venusa_sysctl_reset(VenusASoC *s)
     }
     s->hclk_n = s->hclk_m = s->pclk_n = s->pclk_m = 1;
     s->pll_core_div = 3;
+    s->gpt_t0_div = 1;
     venusa_clock_update(s);
     s->aon[0x4c / 4] = 1;
     s->aon[0xa0 / 4] = 0x18100;

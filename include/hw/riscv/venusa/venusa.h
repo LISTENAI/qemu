@@ -15,6 +15,7 @@
 #include "hw/timer/listenai_dual_timer.h"
 #include "hw/i2c/listenai_i2c.h"
 #include "hw/rtc/listenai_calendar.h"
+#include "hw/riscv/venusa/venusa_gpt.h"
 
 #define TYPE_VENUSA_SOC "venusa-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(VenusASoC, VENUSA_SOC)
@@ -50,13 +51,14 @@ struct VenusASoC {
     ListenAIDualTimer dual_timer[2];
     ListenaiI2C i2c[2];
     ListenAICalendar calendar;
+    VenusAGPT gpt;
     VenusAPeripheral dual_context[2], i2c_context[2];
     uint32_t board_inputs[2];
     uint8_t otp[64];
     BlockBackend *flash;
     QEMUTimer *deadline;
     bool reported, follow_hclk;
-    uint32_t hclk_n, hclk_m, pclk_n, pclk_m, pll_core_div;
+    uint32_t hclk_n, hclk_m, pclk_n, pclk_m, pll_core_div, gpt_t0_div;
 };
 
 G_NORETURN void venusa_fail(VenusASoC *s, hwaddr address, unsigned size,

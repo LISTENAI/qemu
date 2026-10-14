@@ -41,6 +41,7 @@ static void i2c_clock(void *opaque, uint64_t *n, uint64_t *d)
 }
 void venusa_peripherals_init(VenusASoC *s)
 {
+    venusa_gpt_init(s);
     listenai_calendar_init(&s->calendar, OBJECT(s), "venusa-calendar", 0x43400000,
                           calendar_irq, calendar_fault, s);
     for (unsigned i = 0; i < 2; i++) {
@@ -58,6 +59,8 @@ void venusa_peripherals_init(VenusASoC *s)
 }
 void venusa_peripherals_reset(VenusASoC *s)
 {
+    venusa_gpt_reset(s);
+    venusa_gpt_clock(s, (s->syscfg[0x28 / 4] & 0x40) != 0);
     listenai_calendar_reset(&s->calendar);
     for (unsigned i = 0; i < 2; i++) {
         listenai_dual_timer_reset(&s->dual_timer[i]);

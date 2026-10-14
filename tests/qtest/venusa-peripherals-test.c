@@ -237,6 +237,103 @@ static void dual_timers(void)
     qtest_quit(q);
 }
 
+static void gpt_timers(void)
+{
+    QTestState *q = start(false);
+    const uint32_t base = 0x44000000;
+    qtest_writel(q, 0x43100028, 0x40);
+    for (unsigned channel = 0; channel < 2; channel++) {
+        for (unsigned down = 0; down < 2; down++) {
+            qtest_writel(q, 0x43100014, 0x200);
+            g_assert_cmphex(qtest_readl(q, base), ==, 0x10);
+            g_assert_cmphex(qtest_readl(q, base + 0x80), ==, 0x7bf0);
+            qtest_writel(q, base + 4 + 4 * channel, 0x0180095f);
+            qtest_writel(q, base + 12 + 4 * channel, 8);
+            qtest_writel(q, base + 20 + 4 * channel, 9);
+            qtest_writel(q, base + 0xa0, 1u << channel);
+            uint32_t cfg = (1u << (14 + 4 * channel)) |
+                           (down << (6 + 4 * channel));
+            qtest_writel(q, base + 0x1c, cfg);
+            qtest_writel(q, base + 12 + 4 * channel, 0x8008);
+            qtest_writel(q, base + 0x1c, cfg | (1u << channel) |
+                         (1u << (24 + channel)));
+            qtest_clock_step(q, 999999);
+            g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0);
+            uint32_t count = qtest_readl(q, base + 20 + 4 * channel) >> 16;
+            g_assert_cmphex(count, ==, down ? 0 : 9);
+            qtest_clock_step(q, 1);
+            uint32_t pending = 1u << (6 + channel);
+            g_assert_cmphex(qtest_readl(q, base + 0x84), ==, pending);
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(34)) & 1, ==, 0);
+            qtest_writel(q, base + 0x80, 0x7bf0 & ~pending);
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(34)) & 1, ==, 1);
+            g_assert_cmphex(qtest_readl(q, base + 0x80) >> 16, ==, pending);
+            qtest_writel(q, base + 0x84, pending << 16);
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(34)) & 1, ==, 0);
+            /* A gated module preserves a partially elapsed timer clock. */
+            qtest_clock_step(q, 150000);
+            qtest_writel(q, 0x43100028, 0);
+            count = qtest_readl(q, base + 20 + 4 * channel);
+            qtest_clock_step(q, 10000000);
+            g_assert_cmphex(qtest_readl(q, base + 20 + 4 * channel), ==, count);
+            qtest_writel(q, 0x43100028, 0x40);
+            qtest_clock_step(q, 849999);
+            g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0);
+            qtest_clock_step(q, 1);
+            g_assert_cmphex(qtest_readl(q, base + 0x84), ==, pending);
+        }
+    }
+    /* Two independent 8-bit timers share one channel clock and raw IRQ word. */
+    qtest_writel(q, 0x43100014, 0x200);
+    qtest_writel(q, base + 4, 0x0180095f);
+    qtest_writel(q, base + 12, 0x10);
+    qtest_writel(q, base + 20, 0x0301);
+    qtest_writel(q, base + 0xa0, 1);
+    qtest_writel(q, base + 12, 0x8010);
+    qtest_writel(q, base + 0x1c, 0x05000001);
+    qtest_clock_step(q, 200000);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0x40);
+    qtest_writel(q, base + 0x84, 0x00400000);
+    qtest_clock_step(q, 200000);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0x100);
+    qtest_writel(q, base + 0x84, 0x01000000);
+    qtest_clock_step(q, 10000000);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0);
+    g_assert_cmphex(qtest_readl(q, base + 20), ==, 0x03010301);
+    /* Free-run uses the full counter width, independently of reload. */
+    qtest_writel(q, 0x43100014, 0x200);
+    qtest_writel(q, base + 4, 0x0180095f);
+    qtest_writel(q, base + 12, 0x8008);
+    qtest_writel(q, base + 20, 9);
+    qtest_writel(q, base + 0xa0, 1);
+    qtest_writel(q, base + 0x1c, 0x01008001);
+    qtest_clock_step(q, INT64_C(6553600000) - 1);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0);
+    g_assert_cmphex(qtest_readl(q, base + 20) >> 16, ==, 65535);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0x40);
+    /* Keepgo resumes the stopped count; an external T0 divider is latched. */
+    qtest_writel(q, 0x43100014, 0x200);
+    qtest_writel(q, 0x43100028, 0x62);
+    qtest_writel(q, 0x43100028, 0x42);
+    qtest_writel(q, base + 4, 0x0180095f);
+    qtest_writel(q, base + 12, 0x8008);
+    qtest_writel(q, base + 20, 9);
+    qtest_writel(q, base + 0xa0, 1);
+    qtest_writel(q, base + 0x1c, 0x0100c041);
+    qtest_clock_step(q, 600000);
+    g_assert_cmphex(qtest_readl(q, base + 20) >> 16, ==, 6);
+    qtest_writel(q, base + 0x1c, 0x0100c044);
+    qtest_clock_step(q, 10000000);
+    g_assert_cmphex(qtest_readl(q, base + 20) >> 16, ==, 6);
+    qtest_writel(q, base + 0x1c, 0x0100c041);
+    qtest_clock_step(q, 1399999);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(qtest_readl(q, base + 0x84), ==, 0x40);
+    qtest_quit(q);
+}
+
 static void otp_mapping(void)
 {
     QTestState *q = start(false);
@@ -277,6 +374,7 @@ int main(int argc, char **argv)
     qtest_add_func("venusa/dma-channels", dma_channels);
     qtest_add_func("venusa/calendar", calendar);
     qtest_add_func("venusa/dual-timers", dual_timers);
+    qtest_add_func("venusa/gpt-timers", gpt_timers);
     qtest_add_func("venusa/otp-mapping", otp_mapping);
     int result = g_test_run();
     unlink(flash_path); unlink(sd_path); unlink(otp_path);
