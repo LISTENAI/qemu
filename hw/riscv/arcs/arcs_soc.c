@@ -165,6 +165,8 @@ static void reset(DeviceState *dev)
         arcs_uart_reset(s, i);
     }
     s->legacy_random_probe_reads = 0;
+    arcs_gpdma_reset(s);
+    arcs_i2s_reset(s);
     arcs_gpio_reset(s);
     arcs_psram_reset(s);
     arcs_storage_reset(s);
@@ -181,7 +183,6 @@ static void reset(DeviceState *dev)
     arcs_wifi_reset(s);
     arcs_wifi_dma_reset(s);
     arcs_bluetooth_reset(s);
-    arcs_gpdma_reset(s);
     arcs_dma2d_reset(s);
     arcs_apc_reset(s);
     arcs_codec_reset(s);
@@ -307,7 +308,14 @@ static void class_init(ObjectClass *klass, const void *data)
     dc->user_creatable = false;
 }
 
-static void finalize(Object *obj) { arcs_usb_finalize(ARCS_SOC(obj)); }
+static void finalize(Object *obj)
+{
+    ArcsSoC *s = ARCS_SOC(obj);
+    for (unsigned p = 0; p < 2; p++) {
+        listenai_i2s_destroy(&s->apc.serial[p].engine);
+    }
+    arcs_usb_finalize(s);
+}
 
 static const TypeInfo soc_type = {
     .name = TYPE_ARCS_SOC, .parent = TYPE_SYS_BUS_DEVICE,

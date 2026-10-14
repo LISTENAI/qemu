@@ -140,6 +140,12 @@ static void reset(DeviceState *dev)
     }
     s->core1_held = true;
     nuclei_cidu_reset(&s->cidu);
+    listenai_dma_reset(&s->dma);
+    for (unsigned p = 0; p < 2; p++) {
+        listenai_i2s_reset(&s->audio.serial[p].engine);
+    }
+    venusa_i2s_reset(s, 0);
+    venusa_i2s_reset(s, 1);
     venusa_sysctl_reset(s);
     if (s->reset_preserve_aon) {
         memcpy(s->aon, saved_aon, sizeof(saved_aon));
@@ -147,7 +153,6 @@ static void reset(DeviceState *dev)
     }
     if (s->reset_cause) { s->aon[0x4c / 4] = s->reset_cause; }
     venusa_storage_reset(s);
-    listenai_dma_reset(&s->dma);
     venusa_peripherals_reset(s);
     venusa_codec_reset(s);
     venusa_audio_reset(s);
@@ -262,9 +267,18 @@ static void class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, properties);
 }
 
+static void finalize(Object *obj)
+{
+    VenusASoC *s = VENUSA_SOC(obj);
+    for (unsigned p = 0; p < 2; p++) {
+        listenai_i2s_destroy(&s->audio.serial[p].engine);
+    }
+}
+
 static const TypeInfo soc_type = {
     .name = TYPE_VENUSA_SOC, .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(VenusASoC), .class_init = class_init,
+    .instance_finalize = finalize,
 };
 static void register_types(void) { type_register_static(&soc_type); }
 type_init(register_types)

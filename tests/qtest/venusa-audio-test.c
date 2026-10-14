@@ -24,8 +24,8 @@ static void loopback(void)
     g_assert_cmphex(qtest_readl(q, APC + 0x94), ==, 0x411);
     g_assert_cmphex(qtest_readl(q, APC + 0x10) & 0x1f001f0, ==, 0x100010);
     qtest_writel(q, APC + 0x28, (30u << 16) | (1u << 26));
-    qtest_writel(q, APC + 0x24, (1u << 31) | (1u << 21) | (1u << 13) | 4 | (9u << 5));
-    qtest_clock_step(q, 62499);
+    qtest_writel(q, APC + 0x24, 0x88303124);
+    qtest_clock_step(q, 61249);
     g_assert_cmphex(qtest_readl(q, APC + 0x1c) & 0x1f001f0, ==, 0);
     qtest_clock_step(q, 1);
     g_assert_cmphex(qtest_readl(q, APC + 0x10) & 0x1f001f0, ==, 0);
@@ -53,7 +53,7 @@ static void initial_fifo_wait(void)
     qtest_clock_step(q, 1000000);
     g_assert_cmphex(qtest_readl(q, APC + 0x1c), ==, 0x02010001);
     qtest_writel(q, APC + 0x38, 0x12345678);
-    qtest_clock_step(q, 62499);
+    qtest_clock_step(q, 49999);
     g_assert_cmphex(qtest_readl(q, APC + 0x1c), ==, 0x02010001);
     qtest_clock_step(q, 1);
     g_assert_cmphex(qtest_readl(q, APC + 0x50), ==, 0x12345678);

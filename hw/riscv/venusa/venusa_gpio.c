@@ -14,6 +14,9 @@ static void gpio_irq(void *opaque, unsigned first_pad, bool value)
 static void gpio_output(void *opaque, unsigned pad, bool value)
 {
     VenusASoC *s = opaque;
+    if (pad >= 4 && pad <= 7) {
+        venusa_i2s_pins_changed(s);
+    }
     if (pad < 54) { qemu_set_irq(s->pad_output[pad], value); }
     if (s->dvp.camera_clock_changed && (pad == 35 || (pad >= 21 && pad <= 31))) {
         s->dvp.camera_clock_changed(s->dvp.camera_opaque);
@@ -26,6 +29,7 @@ static void gpio_input(void *opaque, int pad, int value)
     s->board_inputs[pad / 32] = value ? s->board_inputs[pad / 32] | (1u << (pad % 32)) :
         s->board_inputs[pad / 32] & ~(1u << (pad % 32));
     listenai_gpio_input(&s->gpio[pad / 32], pad % 32, value);
+    venusa_i2s_pad_input(s, pad, value);
 }
 static void dma_irq(void *opaque, uint32_t pending)
 {

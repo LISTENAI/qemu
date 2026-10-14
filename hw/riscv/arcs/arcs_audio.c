@@ -244,10 +244,14 @@ static void apc_signals(ArcsAPC *s)
     for (unsigned ch = 0; ch < 8; ch++) {
         unsigned count = s->count[ch], threshold = thresholds[(s->regs[3 + ch / 2] >> 26) & 3];
         bool req = enabled(s, ch) && (ch < 4 ? 16 - count >= threshold : count >= threshold);
-        if (ch >= 4 && mixed(s, ch)) {
+        if (mixed(s, ch)) {
             unsigned left = ch & ~1u;
-            unsigned available = MIN(s->count[left], s->count[left + 1]) *
-                                 (mode(s, left) == 0 ? 1 : 2);
+            unsigned available =
+                ch < 4 ? MIN(16 - s->count[left], 16 - s->count[left + 1])
+                       : MIN(s->count[left], s->count[left + 1]);
+            if (mode(s, left)) {
+                available = available * 2 + s->right_next[left / 2];
+            }
             req = ch == left && enabled(s, left) && enabled(s, left + 1) &&
                   available >= threshold;
         }
@@ -274,11 +278,11 @@ static uint32_t pop(ArcsAPC *s, unsigned ch)
 static void clear_channel(ArcsAPC *s, unsigned ch)
 {
     s->head[ch] = s->count[ch] = 0; s->half_valid[ch] = false;
-    if (ch >= 4) { s->right_next[(ch - 4) / 2] = false; }
+    s->right_next[ch / 2] = false;
 }
 static bool apc_valid(hwaddr off)
 {
-    return !(off & 3) && (off == 0 || (off >= 0xc && off <= 0xe0) || (off >= 0xf4 && off <= 0x130));
+    return !(off & 3) && (off == 0 || (off >= 0xc && off <= 0x130));
 }
 static uint64_t apc_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -295,7 +299,7 @@ static uint64_t apc_read(void *opaque, hwaddr off, unsigned size)
         unsigned ch = (off - 0xf4) / 4;
         if (ch < 4) { goto fail; }
         if (!(ch & 1) && mixed(s, ch)) {
-            unsigned pair = (ch - 4) / 2;
+            unsigned pair = ch / 2;
             if (!mode(s, ch)) { value = (pop(s, ch) & 65535) | (pop(s, ch + 1) << 16); }
             else {
                 value = pop(s, ch + s->right_next[pair]);
@@ -330,7 +334,19 @@ static void apc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (off >= 0xf4 && off <= 0x110) {
         unsigned ch = (off - 0xf4) / 4;
         if (ch >= 4) { goto fail; }
-        if (enabled(s, ch)) { push(s, ch, value); }
+        if (enabled(s, ch)) {
+            if (!(ch & 1) && mixed(s, ch)) {
+                if (!mode(s, ch)) {
+                    push(s, ch, value & 65535);
+                    push(s, ch + 1, value >> 16);
+                } else {
+                    push(s, ch + s->right_next[ch / 2], value);
+                    s->right_next[ch / 2] = !s->right_next[ch / 2];
+                }
+            } else {
+                push(s, ch, value);
+            }
+        }
     } else if (off >= 0xc && off <= 0x18) {
         unsigned ch = (off - 0xc) / 2;
         if (value & 8) { clear_channel(s, ch); }
@@ -342,23 +358,53 @@ static void apc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             if ((value & 0x600) && !(value & 0x80000000)) { goto fail; }
         }
         if (stored & 0x10001) {
-            if (off <= 0x10 && (stored & 0x02000000)) { goto fail; }
-            if (off >= 0x14 && (stored & 0x02000000) && ((stored >> 1) & 3) != ((stored >> 17) & 3)) { goto fail; }
-            if ((off == 0xc && (stored & 0x10000000)) || off == 0x10 ||
-                (off == 0x14 && (stored & 0x30000000)) ||
-                (off == 0x18 && ((stored & 0x30000000) != 0x10000000 ||
-                                 (stored & 0x600)))) { goto fail; }
+            if (off == 0x0c && (stored & 0x02000000) &&
+                !(stored & 0x10000000)) {
+                goto fail;
+            }
+            if ((stored & 0x02000000) &&
+                ((stored >> 1) & 3) != ((stored >> 17) & 3)) {
+                goto fail;
+            }
+            if ((off == 0x14 && (stored & 0x30000000) > 0x10000000) ||
+                (off == 0x18 &&
+                 ((stored & 0x30000000) > 0x10000000 || (stored & 0x600)))) {
+                goto fail;
+            }
         }
         if (off == 0x18) { stored &= ~0x1000u; } /* SRC clear pulse; SRC remains unsupported. */
         s->regs[off / 4] = stored;
+    } else if (off == 0xe4 || off == 0xec) {
+        unsigned p = (off - 0xe4) / 8;
+        uint32_t old = s->regs[off / 4];
+        if (!listenai_i2s_config(&s->serial[p].engine, value)) {
+            goto fail;
+        }
+        if ((old ^ value) & 0xc0000000) {
+            s->serial[p].left_valid = false;
+        }
+        s->regs[off / 4] = value;
+    } else if (off == 0xe8 || off == 0xf0) {
+        unsigned p = (off - 0xe8) / 8;
+        if ((value & (1u << 28)) ||
+            !listenai_i2s_divisor(&s->serial[p].engine, value)) {
+            goto fail;
+        }
+        s->regs[off / 4] = value & ~(1u << 26);
     } else if (!off) {
         if (value & 0x70) { goto fail; }
         if (value & 2) { for (unsigned ch = 4; ch < 8; ch++) { clear_channel(s, ch); } }
         if (value & 4) { for (unsigned ch = 0; ch < 4; ch++) { clear_channel(s, ch); } }
         s->regs[0] = value & ~6u;
-    } else if (off == 0x11c || off == 0x120) { s->pending[(off - 0x11c) / 4] &= ~value; }
-    else if (off >= 0x124) { return; }
-    else { s->regs[off / 4] = off >= 0x1c && off <= 0xe0 ? value & 0xffffff : value; }
+    } else if (off == 0x11c || off == 0x120) {
+        s->pending[(off - 0x11c) / 4] &= ~value;
+    } else if (off >= 0x124) {
+        return;
+    } else {
+        s->regs[off / 4] =
+            off >= 0x1c && off <= 0xe0 ? value & 0xffffff : value;
+    }
+    arcs_i2s_clock(s->soc);
     apc_signals(s); return;
 fail:
     arcs_soc_fail(s->soc, APC_BASE + off, size, true, value);
@@ -382,15 +428,178 @@ static bool transmit_sample(ArcsAPC *s, unsigned ch, int32_t *sample)
     if (!s->count[ch]) { apc_event(s, ch, 4); apc_signals(s); return false; }
     unsigned format = mode(s, ch);
     uint32_t word = s->fifo[ch][s->head[ch]];
-    if (!format) {
+    if (!format && !mixed(s, ch)) {
         *sample = (int16_t)(word >> (s->half_valid[ch] ? 16 : 0));
         if (s->half_valid[ch]) { pop(s, ch); }
         s->half_valid[ch] = !s->half_valid[ch];
     } else {
         pop(s, ch);
-        *sample = format == 1 ? (int32_t)(word << 8) >> 8 : format == 3 ? (int32_t)word >> 8 : (int32_t)word;
+        *sample = !format       ? (int16_t)word
+                  : format == 1 ? (int32_t)(word << 8) >> 8
+                  : format == 3 ? (int32_t)word >> 8
+                                : (int32_t)word;
     }
     apc_signals(s); return true;
+}
+
+static bool i2s_tx_route(ArcsAPC *a, unsigned port)
+{
+    return port || (a->regs[3] & (1u << 28));
+}
+static bool i2s_rx_route(ArcsAPC *a, unsigned port)
+{
+    return (a->regs[5 + port] & 0x30000000) == (port ? 0 : 0x10000000);
+}
+static uint32_t i2s_load(void *opaque, unsigned channel)
+{
+    ArcsI2SPort *p = opaque;
+    ArcsAPC *a = p->apc;
+    unsigned ch = p->index * 2;
+    if (!i2s_tx_route(a, p->index)) {
+        memset(p->frame, 0, sizeof(p->frame));
+        return 0;
+    }
+    if (!channel) {
+        if (!enabled(a, ch) || !a->count[ch]) {
+            return 0;
+        }
+        uint32_t word = a->fifo[ch][a->head[ch]];
+        unsigned format = mode(a, ch);
+        if (!format && !mixed(a, ch)) {
+            return (int16_t)(word >> (a->half_valid[ch] ? 16 : 0));
+        }
+        return !format       ? (int16_t)word
+               : format == 1 ? (int32_t)(word << 8) >> 8
+               : format == 3 ? (int32_t)word >> 8
+                             : word;
+    }
+    transmit_sample(a, ch, &p->frame[0]);
+    transmit_sample(a, ch + 1, &p->frame[1]);
+    return p->frame[1];
+}
+static void i2s_received(void *opaque, unsigned channel, int32_t sample)
+{
+    ArcsI2SPort *p = opaque;
+    if (!i2s_rx_route(p->apc, p->index)) {
+        return;
+    }
+    if (!channel) {
+        p->received_left = sample;
+        p->left_valid = true;
+    } else if (p->left_valid) {
+        p->left_valid = false;
+        receive_sample(p->apc, p->index * 2, p->received_left);
+        receive_sample(p->apc, p->index * 2 + 1, sample);
+    }
+}
+static void i2s_loopback(void *opaque, uint32_t cfg)
+{
+    ArcsI2SPort *p = opaque;
+    i2s_received(p, 0, listenai_i2s_loop_sample(cfg, p->frame[0]));
+    i2s_received(p, 1, listenai_i2s_loop_sample(cfg, p->frame[1]));
+}
+static void i2s_output(void *opaque, unsigned signal, bool level)
+{
+    ArcsI2SPort *p = opaque;
+    static const unsigned pads[] = {12, 13, 15};
+    arcs_pinmux_output(&p->apc->soc->pinmux[0], pads[signal], 9 + p->index,
+                       level);
+}
+static void i2s_release(void *opaque, unsigned signal)
+{
+    ArcsI2SPort *p = opaque;
+    static const unsigned pads[] = { 12, 13, 15 };
+    listenai_pinmux_release_output(&p->apc->soc->pinmux[0], pads[signal],
+                                  9 + p->index);
+}
+
+static void i2s_updated(void *opaque)
+{
+    apc_signals(((ArcsI2SPort *)opaque)->apc);
+}
+void arcs_i2s_clock(ArcsSoC *soc)
+{
+    ArcsAPC *a = &soc->apc;
+    uint32_t clocks = soc->codec.clocks;
+    bool common = a->clock && (a->regs[0] & 1) && (clocks & 0x400);
+    for (unsigned p = 0; p < 2; p++) {
+        ListenaiI2S *engine = &a->serial[p].engine;
+        if (common && (engine->cfg & (1u << 31)) && (clocks & 0x800)) {
+            arcs_soc_fail(soc, 0x45800008, 4, true, clocks);
+        }
+        unsigned ch = p * 2;
+        engine->input_clock = !!(soc->gpio[0].inputs & (1u << 12));
+        engine->input_ws = !!(soc->gpio[0].inputs & (1u << 13));
+        if (!listenai_i2s_clock(
+                engine, 24000000, common,
+                i2s_tx_route(a, p) &&
+                    ((enabled(a, ch) && a->count[ch]) ||
+                     (enabled(a, ch + 1) && a->count[ch + 1])),
+                arcs_pinmux_function(&soc->pinmux[0], 14, 9 + p))) {
+            arcs_soc_fail(soc, 0x45800008, 4, true, clocks);
+        }
+    }
+}
+void arcs_i2s_pins_changed(ArcsSoC *soc)
+{
+    for (unsigned p = 0; p < 2; p++) {
+        ArcsI2SPort *port = &soc->apc.serial[p];
+        ListenaiI2S *s = &port->engine;
+        if (!s->timer) {
+            continue;
+        }
+        uint8_t mask = 0;
+        for (unsigned i = 0; i < 4; i++) {
+            if (arcs_pinmux_function(&soc->pinmux[0], 12 + i, 9 + p)) {
+                mask |= 1u << i;
+            }
+        }
+        if ((port->mux_mask & ~mask) && s->enabled &&
+            (s->tx.known || s->rx.known)) {
+            /*
+             * Independent routing changes during a frame have no calibrated
+             * cancellation semantics. Never splice a frame across the gap.
+             */
+            unsigned pad = 12 + ctz32(port->mux_mask & ~mask);
+            arcs_soc_fail(soc, 0x47500000 + pad * 4, 4, true,
+                          listenai_pinmux_config(&soc->pinmux[0], pad));
+        }
+        port->mux_mask = mask;
+        s->input_enabled = mask & 4;
+    }
+}
+void arcs_i2s_pad_input(ArcsSoC *soc, unsigned pad, bool level)
+{
+    for (unsigned p = 0; p < 2; p++) {
+        ListenaiI2S *s = &soc->apc.serial[p].engine;
+        if (pad == 14) {
+            listenai_i2s_input(s, LISTENAI_I2S_DATA, level);
+        }
+        if (!arcs_pinmux_function(&soc->pinmux[0], 12, 9 + p) ||
+            !arcs_pinmux_function(&soc->pinmux[0], 13, 9 + p)) {
+            continue;
+        }
+        if (pad == 12) {
+            listenai_i2s_input(s, LISTENAI_I2S_BCLK, level);
+        }
+        if (pad == 13) {
+            listenai_i2s_input(s, LISTENAI_I2S_WS, level);
+        }
+    }
+}
+void arcs_i2s_reset(ArcsSoC *soc)
+{
+    ArcsAPC *a = &soc->apc;
+    for (unsigned p = 0; p < 2; p++) {
+        listenai_i2s_reset(&a->serial[p].engine);
+        a->serial[p].left_valid = false;
+        memset(a->serial[p].frame, 0, sizeof(a->serial[p].frame));
+        a->regs[(0xe4 + p * 8) / 4] = 0x00202000;
+        a->regs[(0xe8 + p * 8) / 4] = 0x00050000;
+    }
+    for (unsigned p = 0; p < 2; p++) {
+        listenai_i2s_release_outputs(&a->serial[p].engine);
+    }
 }
 
 void arcs_apc_reset(ArcsSoC *soc)
@@ -400,6 +609,7 @@ void arcs_apc_reset(ArcsSoC *soc)
     memset(s->previous, 0, sizeof(s->previous)); s->reads = s->nonzero = 0;
     s->regs[0x114 / 4] = 0xffffff; s->regs[0x118 / 4] = 0xfffff;
     for (unsigned ch = 0; ch < 8; ch++) { clear_channel(s, ch); }
+    arcs_i2s_reset(soc);
     apc_signals(s);
 }
 
@@ -457,6 +667,9 @@ static void sample(void *opaque)
         int16_t values[2] = { 0, 0 };
         if (s->input) { s->input(s->pcm_opaque, t->rate, values); }
         for (unsigned ch = 0; ch < 2; ch++) {
+            if (i2s_rx_route(apc, 0)) {
+                continue;
+            }
             unsigned analog = ch ? 1 : 2;
             unsigned volume = (s->regs[6] >> (ch ? 0 : 7)) & 127;
             bool active = (s->regs[11] & (analog | (analog << 2))) == analog;
@@ -469,7 +682,11 @@ static void sample(void *opaque)
     } else {
         int32_t values[2];
         for (unsigned ch = 0; ch < 2; ch++) {
-            bool valid = transmit_sample(apc, ch, &values[ch]);
+            bool valid = false;
+            values[ch] = 0;
+            if (!i2s_tx_route(apc, 0)) {
+                valid = transmit_sample(apc, ch, &values[ch]);
+            }
             if (ch == 0 && enabled(apc, ch) && !valid) { s->underruns++; }
             /* RX1 selects the digital TX0 stream, before Codec mute and PA.
              * Keep each lane and its FIFO format independent of board MIC1. */
@@ -533,6 +750,7 @@ void arcs_codec_reset(ArcsSoC *soc)
 void arcs_codec_clocks(ArcsSoC *soc, uint32_t clocks)
 {
     soc->codec.clocks = clocks; soc->apc.clock = clocks & 0x10000;
+    arcs_i2s_clock(soc);
     apc_signals(&soc->apc); codec_update(&soc->codec);
 }
 void arcs_codec_power(ArcsSoC *soc, bool powered)
@@ -551,6 +769,20 @@ void arcs_audio_init(ArcsSoC *soc)
 {
     ArcsGPDMA *d = &soc->gpdma; ArcsAPC *a = &soc->apc; ArcsCodec *c = &soc->codec;
     d->soc = a->soc = c->soc = soc;
+    for (unsigned p = 0; p < 2; p++) {
+        a->serial[p].apc = a;
+        a->serial[p].index = p;
+        ListenaiI2SCallbacks callbacks = {
+            .opaque = &a->serial[p],
+            .load = i2s_load,
+            .received = i2s_received,
+            .output = i2s_output,
+            .release = i2s_release,
+            .loopback = i2s_loopback,
+            .updated = i2s_updated,
+        };
+        listenai_i2s_init(&a->serial[p].engine, callbacks);
+    }
     d->event = timer_new_ns(QEMU_CLOCK_VIRTUAL, service, d);
     c->adc.codec = c->dac.codec = c; c->adc.adc = true;
     c->adc.event = timer_new_ns(QEMU_CLOCK_VIRTUAL, sample, &c->adc);

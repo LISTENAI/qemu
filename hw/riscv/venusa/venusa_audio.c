@@ -177,22 +177,130 @@ static void configure(VenusAAudioClock *c, uint64_t period, bool enable)
     c->enabled = enable;
     arm(c);
 }
-static int32_t serial_sample(uint32_t cfg, int32_t sample)
-{
-    static const unsigned widths[] = { 16, 20, 24, 32 };
-    unsigned width = widths[(cfg >> 10) & 3];
-    uint32_t mask = UINT32_MAX >> (32 - width);
-    uint32_t bits = sample & mask;
-    /* The internal loopback samples with the receive delay and clock edge.
-     * Transmit pad delay does not affect this internal route. */
-    int shift = ((cfg >> 17) & 3) - ((cfg & (1u << 13)) ? 0 : 1);
-    bits = shift < 0 ? bits >> -shift : (bits << shift) & mask;
-    return (int32_t)(bits << (32 - width)) >> (32 - width);
-}
 static unsigned sample_bits(VenusAAudio *a, unsigned ch)
 {
     unsigned format = mode(a, ch);
     return !format ? 16 : format == 2 ? 32 : 24;
+}
+
+static uint32_t serial_load(void *opaque, unsigned channel)
+{
+    VenusAI2SPort *serial = opaque;
+    VenusAAudio *a = serial->audio;
+    unsigned ch = 2 + 2 * serial->port;
+    if (!channel) {
+        /*
+         * The parallel FIFO presents the left word without advancing it.
+         * Both channel pointers advance when the right word starts.
+         */
+        if (!enabled(a, ch) || !a->count[ch]) {
+            return 0;
+        }
+        uint32_t word = a->fifo[ch][a->head[ch]];
+        unsigned format = mode(a, ch);
+        if (!format && !stereo(a, ch)) {
+            return (int16_t)(word >> (a->half_valid[ch] ? 16 : 0));
+        }
+        return !format ? (int16_t)word : format == 1 ?
+            (int32_t)(word << 8) >> 8 : format == 3 ? (int32_t)word >> 8 : word;
+    }
+    serial->frame_valid[0] = tx_sample(a, ch, &serial->frame[0]);
+    serial->frame_valid[1] = tx_sample(a, ch + 1, &serial->frame[1]);
+    signals(a);
+    return serial->frame[1];
+}
+static void serial_received(void *opaque, unsigned channel, int32_t sample)
+{
+    VenusAI2SPort *serial = opaque;
+    VenusAAudio *a = serial->audio;
+    if (!channel) {
+        serial->received_left = sample;
+        serial->left_valid = true;
+    } else if (serial->left_valid) {
+        serial->left_valid = false;
+        rx_sample(a, 8 + 2 * serial->port, serial->received_left);
+        rx_sample(a, 9 + 2 * serial->port, sample);
+        a->frames[serial->port + 1]++;
+        signals(a);
+    }
+}
+static void serial_output(void *opaque, unsigned signal, bool level)
+{
+    VenusAI2SPort *serial = opaque;
+    static const unsigned pads[] = {4, 5, 7};
+    if (!serial->port) {
+        listenai_pinmux_output(&serial->audio->soc->pinmux, pads[signal], 9,
+                               level);
+    }
+}
+static void serial_release(void *opaque, unsigned signal)
+{
+    VenusAI2SPort *serial = opaque;
+    static const unsigned pads[] = { 4, 5, 7 };
+    if (!serial->port) {
+        listenai_pinmux_release_output(&serial->audio->soc->pinmux,
+                                      pads[signal], 9);
+    }
+}
+
+static void serial_updated(void *opaque)
+{
+    signals(((VenusAI2SPort *)opaque)->audio);
+}
+static void serial_loopback(void *opaque, uint32_t cfg)
+{
+    VenusAI2SPort *serial = opaque;
+    VenusAAudio *a = serial->audio;
+    unsigned rx = 8 + 2 * serial->port;
+    rx_sample(a, rx, listenai_i2s_loop_sample(cfg, serial->frame[0]));
+    rx_sample(a, rx + 1, listenai_i2s_loop_sample(cfg, serial->frame[1]));
+    if (serial->port == 1 && (a->apc[7] >> 28) == 2) {
+        if (serial->frame_valid[0]) {
+            rx_sample(a, 8, serial->frame[0]);
+        }
+        if (serial->frame_valid[1]) {
+            rx_sample(a, 9, serial->frame[1]);
+        }
+    }
+    a->frames[serial->port + 1]++;
+}
+void venusa_i2s_pins_changed(VenusASoC *soc)
+{
+    VenusAI2SPort *port = &soc->audio.serial[0];
+    ListenaiI2S *s = &port->engine;
+    if (!s->timer) {
+        return;
+    }
+    uint8_t mask = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        if (listenai_pinmux_function(&soc->pinmux, 4 + i, 9)) {
+            mask |= 1u << i;
+        }
+    }
+    if ((port->mux_mask & ~mask) && s->enabled &&
+        (s->tx.known || s->rx.known)) {
+        unsigned pad = 4 + ctz32(port->mux_mask & ~mask);
+        venusa_fail(soc, 0x44100000 + pad * 4, 4, true,
+                    listenai_pinmux_config(&soc->pinmux, pad));
+    }
+    port->mux_mask = mask;
+    s->input_enabled = mask & 4;
+}
+void venusa_i2s_pad_input(VenusASoC *s, unsigned pad, bool level)
+{
+    ListenaiI2S *serial = &s->audio.serial[0].engine;
+    if (pad == 6) {
+        listenai_i2s_input(serial, LISTENAI_I2S_DATA, level);
+    }
+    if (!listenai_pinmux_function(&s->pinmux, 4, 9) ||
+        !listenai_pinmux_function(&s->pinmux, 5, 9)) {
+        return;
+    }
+    if (pad == 5) {
+        listenai_i2s_input(serial, LISTENAI_I2S_WS, level);
+    } else if (pad == 4) {
+        listenai_i2s_input(serial, LISTENAI_I2S_BCLK, level);
+    }
 }
 
 static int32_t saturate24(double value)
@@ -239,7 +347,7 @@ static void tick(void *opaque)
     c->phase += (now - c->epoch) * AUDIO_HZ;
     c->phase -= c->period;
     c->epoch = now;
-    if (c->index == 4) {
+    if (c->index == 2) {
         /* The ideal analog comparator settles at capacitor code 21. Each
          * search step consumes 128 codec clocks; the final step latches
          * completion. Clock gating preserves the partially elapsed step. */
@@ -255,7 +363,7 @@ static void tick(void *opaque)
         }
         return;
     }
-    a->frames[c->index]++;
+    a->frames[c->index ? 3 : 0]++;
     if (c->index == 0) {
         int32_t sample;
         bool valid = tx_sample(a, 0, &sample);
@@ -275,19 +383,6 @@ static void tick(void *opaque)
                       value);
         }
         (void)valid;
-    } else if (c->index < 3) {
-        unsigned port = c->index - 1, tx = 2 + 2 * port, rx = 8 + 2 * port;
-        uint32_t cfg = a->apc[(0x24 + port * 8) / 4];
-        int32_t left, right;
-        bool l = tx_sample(a, tx, &left), r = tx_sample(a, tx + 1, &right);
-        if (cfg & 4) {
-            rx_sample(a, rx, serial_sample(cfg, left));
-            rx_sample(a, rx + 1, serial_sample(cfg, right));
-        }
-        if (port == 1 && (a->apc[7] >> 28) == 2) {
-            if (l) { rx_sample(a, 8, left); }
-            if (r) { rx_sample(a, 9, right); }
-        }
     } else {
         unsigned rate = AUDIO_HZ * UINT64_C(1000000000) / c->period;
         int16_t input[2] = { 0, 0 };
@@ -312,7 +407,7 @@ void venusa_audio_clock(VenusASoC *s)
     if ((clocks & (1u << 9)) && (clocks & 0x3000)) {
         venusa_fail(s, 0x43100034, 4, true, clocks);
     }
-    configure(&a->clock[4], UINT64_C(128000000000),
+    configure(&a->clock[2], UINT64_C(128000000000),
               a->calibrating && (clocks & (1u << 9)));
     static const unsigned rates[] = { 8000, 0, 0, 16000, 0, 24000, 32000,
                                       0, 48000, 96000 };
@@ -330,27 +425,30 @@ void venusa_audio_clock(VenusASoC *s)
     if (adc && ar != 0 && ar != 3 && ar != 8) {
         venusa_fail(s, CODEC_BASE + 4, 4, true, a->codec[1]);
     }
-    configure(&a->clock[3], ar < ARRAY_SIZE(rates) && rates[ar] ?
-              UINT64_C(1000000000) * (AUDIO_HZ / rates[ar]) : 0, adc);
+    configure(&a->clock[1],
+              ar < ARRAY_SIZE(rates) && rates[ar]
+                  ? UINT64_C(1000000000) * (AUDIO_HZ / rates[ar])
+                  : 0,
+              adc);
     for (unsigned p = 0; p < 2; p++) {
         uint32_t cfg = a->apc[(0x24 + 8 * p) / 4];
         unsigned tx = 2 + 2 * p;
-        bool requested = (cfg & (1u << 31)) && !(cfg & (1u << 30));
-        if (!requested) { a->serial_started[p] = false; }
-        else if ((cfg & (7u << 26)) ||
-                 (enabled(a, tx) && a->count[tx]) ||
-                 (enabled(a, tx + 1) && a->count[tx + 1])) {
-            a->serial_started[p] = true;
-        }
-        bool enable = common && (clocks & (1u << (15 - p))) && requested &&
-                      a->serial_started[p] && (cfg & (1u << 21));
-        if (enable && (s->syscfg[0x30 / 4] & (1u << (29 - p)))) {
+        bool enable = common && (clocks & (1u << (15 - p)));
+        if (enable && (cfg & (1u << 31)) &&
+            (s->syscfg[0x30 / 4] & (1u << (29 - p)))) {
             venusa_fail(s, 0x43100030, 4, true, s->syscfg[0x30 / 4]);
         }
-        static const unsigned widths[] = { 16, 20, 24, 32 };
-        unsigned framebits = 2 * (widths[(cfg >> 10) & 3] + ((cfg >> 5) & 31));
-        configure(&a->clock[1 + p], UINT64_C(1000000000) *
-                  framebits * a->bck_div[p], enable && a->bck_div[p]);
+        if (!p) {
+            a->serial[p].engine.input_clock = !!(s->gpio[0].inputs & (1u << 4));
+            a->serial[p].engine.input_ws = !!(s->gpio[0].inputs & (1u << 5));
+        }
+        if (!listenai_i2s_clock(
+                &a->serial[p].engine, AUDIO_HZ, enable,
+                (enabled(a, tx) && a->count[tx]) ||
+                    (enabled(a, tx + 1) && a->count[tx + 1]),
+                !p && listenai_pinmux_function(&s->pinmux, 6, 9))) {
+            venusa_fail(s, 0x43100034, 4, true, clocks);
+        }
     }
     signals(a);
 }
@@ -439,15 +537,19 @@ static void apc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             }
         }
     } else if (off == 0x24 || off == 0x2c) {
-        /* TDM and channel duplication need their own serial framing model. */
-        if (value & ((3u << 22) | (3u << 24))) { goto fail; }
+        unsigned p = (off - 0x24) / 8;
+        uint32_t old = a->apc[off / 4];
+        if (!listenai_i2s_config(&a->serial[p].engine, value)) {
+            goto fail;
+        }
+        if ((old ^ value) & 0xc0000000) {
+            a->serial[p].left_valid = false;
+        }
         a->apc[off / 4] = value;
     } else if (off == 0x28 || off == 0x30) {
         unsigned p = (off - 0x28) / 8;
-        if (value & (1u << 26)) {
-            unsigned divisor = (value >> 16) & 1023;
-            if (!divisor) { goto fail; }
-            a->bck_div[p] = divisor;
+        if (!listenai_i2s_divisor(&a->serial[p].engine, value)) {
+            goto fail;
         }
         a->apc[off / 4] = value & ~(1u << 26);
     } else if (!off) {
@@ -490,8 +592,8 @@ static void codec_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         a->calibrating = true;
         a->calibration_step = 0;
         a->codec[0x48 / 4] = 0;
-        a->clock[4].phase = 0;
-        a->clock[4].epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        a->clock[2].phase = 0;
+        a->clock[2].epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     }
     if (off == 4 && !(value & 0x100)) {
         memset(a->highpass_x, 0, sizeof(a->highpass_x));
@@ -516,9 +618,10 @@ void venusa_i2s_reset(VenusASoC *s, unsigned index)
     VenusAAudio *a = &s->audio;
     a->apc[(0x24 + index * 8) / 4] = 0x00202000;
     a->apc[(0x28 + index * 8) / 4] = 0x00050000;
-    a->bck_div[index] = 6;
-    a->serial_started[index] = false;
-    configure(&a->clock[index + 1], 0, false);
+    listenai_i2s_reset(&a->serial[index].engine);
+    listenai_i2s_release_outputs(&a->serial[index].engine);
+    a->serial[index].left_valid = false;
+    memset(a->serial[index].frame, 0, sizeof(a->serial[index].frame));
 }
 void venusa_codec_reset(VenusASoC *s)
 {
@@ -530,8 +633,8 @@ void venusa_codec_reset(VenusASoC *s)
     };
     memcpy(a->codec, reset, sizeof(reset));
     configure(&a->clock[0], 0, false);
-    configure(&a->clock[3], 0, false);
-    configure(&a->clock[4], 0, false);
+    configure(&a->clock[1], 0, false);
+    configure(&a->clock[2], 0, false);
     a->calibrating = false;
     a->calibration_step = 0;
     a->dac_last = 0;
@@ -564,6 +667,20 @@ void venusa_audio_init(VenusASoC *s)
 {
     VenusAAudio *a = &s->audio;
     a->soc = s;
+    for (unsigned p = 0; p < 2; p++) {
+        a->serial[p].audio = a;
+        a->serial[p].port = p;
+        ListenaiI2SCallbacks callbacks = {
+            .opaque = &a->serial[p],
+            .load = serial_load,
+            .received = serial_received,
+            .output = serial_output,
+            .release = serial_release,
+            .loopback = serial_loopback,
+            .updated = serial_updated,
+        };
+        listenai_i2s_init(&a->serial[p].engine, callbacks);
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(a->clock); i++) {
         a->clock[i].audio = a;
         a->clock[i].index = i;

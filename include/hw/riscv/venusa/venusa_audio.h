@@ -3,6 +3,7 @@
 #define HW_VENUSA_AUDIO_H
 #include "system/memory.h"
 #include "qemu/timer.h"
+#include "hw/audio/listenai_i2s.h"
 typedef struct VenusASoC VenusASoC;
 typedef struct VenusAAudio VenusAAudio;
 typedef struct VenusAAudioClock {
@@ -13,6 +14,14 @@ typedef struct VenusAAudioClock {
     int64_t epoch;
     bool enabled;
 } VenusAAudioClock;
+typedef struct VenusAI2SPort {
+    VenusAAudio *audio;
+    unsigned port;
+    ListenaiI2S engine;
+    uint8_t mux_mask;
+    int32_t frame[2], received_left;
+    bool left_valid, frame_valid[2];
+} VenusAI2SPort;
 struct VenusAAudio {
     VenusASoC *soc;
     MemoryRegion apc_io, codec_io;
@@ -20,9 +29,8 @@ struct VenusAAudio {
     uint32_t fifo[12][16], half[12], pending[2][6], previous[12];
     uint8_t head[12], count[12];
     bool half_valid[12], right_next[6], valid_previous[3];
-    uint16_t bck_div[2];
-    bool serial_started[2];
-    VenusAAudioClock clock[5];
+    VenusAAudioClock clock[3];
+    VenusAI2SPort serial[2];
     bool calibrating;
     unsigned calibration_step;
     uint64_t frames[4], underruns[3], overruns[3];
@@ -38,6 +46,8 @@ void venusa_audio_init(VenusASoC *s);
 void venusa_audio_reset(VenusASoC *s);
 void venusa_audio_clock(VenusASoC *s);
 void venusa_audio_dma_update(VenusASoC *s);
+void venusa_i2s_pins_changed(VenusASoC *soc);
+void venusa_i2s_pad_input(VenusASoC *s, unsigned pad, bool level);
 void venusa_i2s_reset(VenusASoC *s, unsigned index);
 void venusa_codec_reset(VenusASoC *s);
 #endif

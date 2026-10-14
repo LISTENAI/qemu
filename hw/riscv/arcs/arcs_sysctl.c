@@ -257,8 +257,9 @@ static uint64_t ap_read(void *opaque, hwaddr off, unsigned size)
 static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsConfigIO *io = opaque;
-    if (size != 4 || (off != 0 && off != 8 && off != 12 && off != 16 && off != 0x1c) ||
-        (off == 0 && (value & 0x3d39))) {
+    if (size != 4 ||
+        (off != 0 && off != 8 && off != 12 && off != 16 && off != 0x1c) ||
+        (off == 0 && (value & 0x3d19))) {
         arcs_soc_fail(io->soc, io->base + off, size, true, value);
     }
     /* Reject reset targets whose peripheral model is not connected. */
@@ -266,6 +267,9 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (value & 0x4000) { arcs_jpeg_reset(io->soc); }
         if (value & 2) { arcs_gpdma_reset(io->soc); arcs_dma2d_reset(io->soc); }
         if (value & 4) { arcs_hsu_reset(io->soc); arcs_aes_reset(io->soc); }
+        if (value & 0x20) {
+            arcs_i2s_reset(io->soc);
+        }
         if (value & 0x40) { arcs_codec_reset(io->soc); }
         if (value & 0x80) { arcs_apc_reset(io->soc); }
         if (value & 0x200) { arcs_dvp_reset(io->soc); }

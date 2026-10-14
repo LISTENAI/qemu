@@ -1,8 +1,10 @@
 config VENUSA
     select FT6236
+    select LISTENAI_I2S
+    select LISTENAI_I2S_PEER
+    select GC0328
     select VENUSA_RGB
     select VENUSA_DMA2D
-    select GC0328
     select LISTENAI_LUNA
     select AT24C
     select LISTENAI_SPI
@@ -25,6 +27,8 @@ config VENUSA
     select LISTENAI_UART
 
 config ARCS
+    select LISTENAI_I2S
+    select LISTENAI_I2S_PEER
     select GC0328
     select LISTENAI_LUNA
     select LISTENAI_HOST_AUDIO

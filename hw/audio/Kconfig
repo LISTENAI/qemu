@@ -58,3 +58,9 @@ config VIRTIO_SND
 
 config LISTENAI_HOST_AUDIO
     bool
+
+config LISTENAI_I2S_PEER
+    bool
+
+config LISTENAI_I2S
+    bool
