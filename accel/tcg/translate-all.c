@@ -545,7 +545,12 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
     if (tb) {
         /* We can use retranslation to find the PC.  */
         cpu_restore_state_from_tb(cpu, tb, retaddr);
+        /* Darwin places TB metadata in MAP_JIT memory too. Watchpoint
+         * helpers enter with write protection enabled; the exclusive
+         * store in jmp_lock can otherwise spin indefinitely. */
+        qemu_thread_jit_write();
         tb_phys_invalidate(tb, -1);
+        qemu_thread_jit_execute();
     } else {
         /* The exception probably happened in a helper.  The CPU state should
            have been saved before calling it. Fetch the PC from there.  */

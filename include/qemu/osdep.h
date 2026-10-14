@@ -816,15 +816,7 @@ size_t qemu_get_host_physmem(void);
  * for the current thread.
  */
 #ifdef __APPLE__
-static inline void qemu_thread_jit_execute(void)
-{
-    pthread_jit_write_protect_np(true);
-}
-
-static inline void qemu_thread_jit_write(void)
-{
-    pthread_jit_write_protect_np(false);
-}
+#include "qemu/jit-state.h"
 #else
 static inline void qemu_thread_jit_write(void) {}
 static inline void qemu_thread_jit_execute(void) {}

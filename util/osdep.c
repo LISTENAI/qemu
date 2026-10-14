@@ -31,6 +31,10 @@
 #include "qemu/hw-version.h"
 #include "monitor/monitor.h"
 
+#ifdef __APPLE__
+__thread int qemu_jit_protection;
+#endif
+
 static const char *hw_version = QEMU_HW_VERSION;
 
 int socket_set_cork(int fd, int v)
