@@ -23,3 +23,5 @@ system_ss.add_all(when: 'CONFIG_I2C', if_true: i2c_ss)
 system_ss.add(when: 'CONFIG_LISTENAI_I2C', if_true: files('listenai_i2c.c'))
 
 system_ss.add(when: 'CONFIG_GC0328', if_true: files('gc0328.c'))
+
+system_ss.add(when: 'CONFIG_FT6236', if_true: files('ft6236.c'))

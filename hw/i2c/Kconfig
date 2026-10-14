@@ -57,3 +57,7 @@ config LISTENAI_I2C
 config GC0328
     bool
     select I2C
+
+config FT6236
+    bool
+    select I2C

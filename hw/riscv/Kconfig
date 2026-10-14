@@ -1,4 +1,5 @@
 config VENUSA
+    select FT6236
     select VENUSA_RGB
     select VENUSA_DMA2D
     select GC0328
