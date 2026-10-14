@@ -1,3 +1,10 @@
+config ARCS
+    bool
+    depends on RISCV32
+    select SSI
+    select I2C
+    select SDHCI
+
 config RISCV_IOMMU
     bool
 

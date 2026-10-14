@@ -28,6 +28,8 @@ import sys
 # Options with nonstandard names (e.g. --with/--without) or OS-dependent
 # defaults.  Try not to add any.
 SKIP_OPTIONS = {
+    "lisem_rom_dir",
+    "lisem_luna_dir",
     "default_devices",
     "fuzzing_engine",
 }

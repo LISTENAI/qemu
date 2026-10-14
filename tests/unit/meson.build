@@ -201,3 +201,6 @@ foreach test_name, extra: tests
        priority: slow_tests.get(test_name, 30),
        suite: ['unit'])
 endforeach
+
+test('test-lisem-assets', python, args: files('test-lisem-assets.py'),
+     suite: ['unit'])

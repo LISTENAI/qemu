@@ -1,5 +1,8 @@
 riscv_ss = ss.source_set()
 riscv_ss.add(files('boot.c'))
+if config_all_devices.has_key('CONFIG_ARCS')
+  subdir('arcs')
+endif
 riscv_ss.add(when: 'CONFIG_RISCV_NUMA', if_true: files('numa.c'))
 riscv_ss.add(files('riscv_hart.c'))
 riscv_ss.add(when: 'CONFIG_OPENTITAN', if_true: files('opentitan.c'))

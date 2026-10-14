@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include "lisem_luna_validated.h"
 #include "hw/riscv/arcs/arcs.h"
 #include "system/address-spaces.h"
 #include "crypto/hash.h"

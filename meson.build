@@ -12,7 +12,11 @@ add_test_setup('slow', exclude_suites: ['thorough'],
 add_test_setup('thorough',
                env: ['G_TEST_SLOW=1', 'SPEED=thorough', 'RUST_BACKTRACE=1'])
 
-meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
+# Lisem packages native outputs directly; Windows does not need a symlink
+# install tree (which otherwise requires Developer Mode or elevation).
+if host_machine.system() != 'windows'
+  meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
+endif
 
 ####################
 # Global variables #
@@ -852,7 +856,7 @@ if host_os == 'windows'
 
   win = import('windows')
   version_res = win.compile_resources('version.rc',
-                                      depend_files: files('pc-bios/qemu-nsis.ico'),
+                                      depend_files: files('pc-bios/qemu-nsis.ico', 'lisem.manifest'),
                                       include_directories: include_directories('.'))
   host_dsosuf = '.dll'
 elif host_os == 'darwin'
