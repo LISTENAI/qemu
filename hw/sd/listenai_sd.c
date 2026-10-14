@@ -95,3 +95,8 @@ void listenai_sd_init(ListenAISD *sd, Object *owner, const char *name,
     memory_region_init_io(&sd->io, owner, &sd_ops, sd, name, 0x1000);
     memory_region_add_subregion(get_system_memory(), address, &sd->io);
 }
+
+void listenai_sd_enable_unadvertised_sdma(ListenAISD *sd)
+{
+    SYSBUS_SDHCI(sd->host)->quirks |= SDHCI_QUIRK_SDMA_CAP_MISSING;
+}

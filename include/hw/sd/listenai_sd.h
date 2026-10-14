@@ -20,4 +20,5 @@ void listenai_sd_init(ListenAISD *sd, Object *owner, const char *name,
                       BlockBackend *backend, qemu_irq irq,
                       ListenAISDFault fault, void *opaque);
 void listenai_sd_reset(ListenAISD *sd);
+void listenai_sd_enable_unadvertised_sdma(ListenAISD *sd);
 #endif

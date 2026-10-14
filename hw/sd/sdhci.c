@@ -1259,10 +1259,11 @@ sdhci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         break;
     case SDHC_TRNMOD:
         /*
-         * DMA can be enabled only if it is supported as indicated by
-         * capabilities register
+         * DMA is gated by capabilities unless the integration implements
+         * SDMA without advertising it in the capability register.
          */
-        if (!(s->capareg & R_SDHC_CAPAB_SDMA_MASK)) {
+        if (!(s->capareg & R_SDHC_CAPAB_SDMA_MASK) &&
+            !(s->quirks & SDHCI_QUIRK_SDMA_CAP_MISSING)) {
             value &= ~SDHC_TRNS_DMA;
         }
 
