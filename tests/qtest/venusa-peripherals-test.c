@@ -431,6 +431,46 @@ static void watchdogs(void)
     qtest_quit(q);
 }
 
+static void cluster_interrupts(void)
+{
+    QTestState *q = start(false);
+    const uint64_t idu = 0x47000000, spi = 0x44200000;
+    g_assert_cmpuint(qtest_readl(q, idu + 0xc084), ==, 2);
+    g_assert_cmpuint(qtest_readl(q, idu + 0xc090), ==, 80);
+    g_assert_cmphex(qtest_readl(q, idu + 0x80), ==, 0x3ff);
+    qtest_writel(q, idu + 0x80, 0);
+    qtest_writel(q, idu + 0x80, 1);
+    g_assert_cmpuint(qtest_readl(q, idu + 0x80), ==, 0);
+    qtest_writel(q, idu + 0x80, UINT32_MAX);
+    g_assert_cmphex(qtest_readl(q, idu + 0x80), ==, 0x3ff);
+    qtest_writel(q, idu + 0x403c, 0); /* SPIB IRQ 35, external 15. */
+    qtest_writel(q, spi + 0x10, 0x700);
+    qtest_writel(q, spi + 0x38, 16);
+    qtest_writel(q, spi + 0x20, 0x42000002);
+    qtest_writel(q, spi + 0x24, 0x9f);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(35)), ==, 0);
+    qtest_writel(q, idu + 0x403c, 3);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(35)), ==, 1);
+    qtest_writel(q, idu + 0x803c, 2); /* Core 1 claims first. */
+    qtest_writel(q, idu + 0x803c, 1);
+    g_assert_cmpuint(qtest_readl(q, idu + 0x803c), ==, 2);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(35)), ==, 0);
+    qtest_writel(q, idu + 0x803c, UINT32_MAX);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(35)), ==, 1);
+    qtest_writel(q, spi + 0x3c, 16);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(35)), ==, 0);
+    qtest_writel(q, idu + 0x3ffc, 0x55010000);
+    g_assert_cmphex(qtest_readl(q, idu), ==, 0x55000002);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(19)), ==, 1);
+    qtest_writel(q, idu, 2);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(19)), ==, 0);
+    qtest_system_reset(q);
+    g_assert_cmpuint(qtest_readl(q, idu), ==, 0);
+    g_assert_cmpuint(qtest_readl(q, idu + 0x403c), ==, 3);
+    g_assert_cmpuint(qtest_readl(q, idu + 0x803c), ==, 3);
+    qtest_quit(q);
+}
+
 static void nor_block_persistence(void)
 {
     QTestState *q = start(false);
@@ -483,6 +523,7 @@ int main(int argc, char **argv)
     }
     fclose(otp);
     g_setenv("LISEM_QEMU_OTP_IMAGE", otp_path, true);
+    qtest_add_func("venusa/cluster-interrupts", cluster_interrupts);
     qtest_add_func("venusa/nor-block-persistence", nor_block_persistence);
     qtest_add_func("venusa/systimer", systimer);
     qtest_add_func("venusa/psram", psram);

@@ -44,6 +44,9 @@ static uint32_t *configuration(VenusASoC *s, hwaddr address)
     if (address >= 0x450000d8 && address <= 0x450000f0) {
         return &s->aon[(address - 0x45000000) / 4];
     }
+    if (address == 0x43100010 || address == 0x43100084) {
+        return &s->syscfg[(address - 0x43100000) / 4];
+    }
     if (address == 0x4310000c) { return &s->syscfg[0x0c / 4]; }
     if (address == 0x431000a0) { return &s->syscfg[0xa0 / 4]; }
     if (address >= 0x43100018 && address <= 0x43100034) {
@@ -96,6 +99,21 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
     uint32_t *reg = configuration(s, address);
     if (reg) {
         uint32_t previous = *reg;
+        if (address == 0x43100010) {
+            if (value != 0xcafe000a && value != 0xcafe000b) { return false; }
+            s->core1_held = !(value & 1);
+            *reg = value & 1;
+            if (s->core1_held) {
+                venusa_reset_cpu(s, 1);
+                CPU(&s->cpu[1])->halted = true;
+            } else {
+                if (CPU(&s->cpu[1])->icount_hz) { icount_get(); }
+                s->cpu[1].env.pc = s->syscfg[0x84 / 4];
+                CPU(&s->cpu[1])->halted = false;
+                qemu_cpu_kick(CPU(&s->cpu[1]));
+            }
+            return true;
+        }
         *reg = value;
         if (address == 0x43000000 && (value & (1u << 25)) && !(previous & (1u << 25))) {
             s->hclk_n = (value >> 21) & 15;
@@ -143,6 +161,14 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             *reg = (value & ~(1u << 22)) | ((value & 1) ? 1u << 22 : 0);
         }
         if (address >= 0x43000000 && address <= 0x43000018) { venusa_clock_update(s); }
+        return true;
+    }
+    if (address == 0x43100008) {
+        if (value != 0xcafe000a || (s->syscfg[0x0c / 4] & 0x20)) { return false; }
+        venusa_reset_cpu(s, 1);
+        s->cpu[1].env.pc = s->syscfg[0x84 / 4];
+        CPU(&s->cpu[1])->halted = s->core1_held;
+        if (!s->core1_held) { qemu_cpu_kick(CPU(&s->cpu[1])); }
         return true;
     }
     if (address == 0x43100014) {
@@ -205,6 +231,8 @@ void venusa_sysctl_reset(VenusASoC *s)
     }
     s->hclk_n = s->hclk_m = s->pclk_n = s->pclk_m = 1;
     s->pll_core_div = 3;
+    s->syscfg[0x10 / 4] = 1;
+    s->syscfg[0x84 / 4] = 0x21000000;
     s->gpt_t0_div = 1;
     venusa_clock_update(s);
     s->aon[0x54 / 4] = 0x000bb9dc;

@@ -34,8 +34,8 @@ void venusa_irq(VenusASoC *s, unsigned irq, bool value)
     uint64_t mask = UINT64_C(1) << (irq & 63);
     if (value) { s->irq_levels[irq / 64] |= mask; }
     else { s->irq_levels[irq / 64] &= ~mask; }
-    /* Until CIDU routing is configured, external interrupts target boot core. */
-    nuclei_n300_irq(&s->cpu[0].env, irq, value);
+    if (irq >= 20) { nuclei_cidu_input(&s->cidu, irq - 20, value); }
+    else { nuclei_n300_irq(&s->cpu[0].env, irq, value); }
 }
 
 static void timer_irq(void *opaque, unsigned irq, bool level)
@@ -120,12 +120,7 @@ void venusa_reset_cpu(VenusASoC *s, unsigned index)
     nuclei_systimer_reset(&s->timer[index], 1000000);
     s->cpu[index].env.pc = 0;
     CPU(&s->cpu[index])->halted = false;
-    if (!index) {
-        for (unsigned irq = 16; irq < 83; irq++) {
-            nuclei_n300_irq(&s->cpu[index].env, irq,
-                (s->irq_levels[irq / 64] >> (irq & 63)) & 1);
-        }
-    }
+    nuclei_cidu_redrive(&s->cidu);
 }
 
 static void reset(DeviceState *dev)
@@ -143,6 +138,8 @@ static void reset(DeviceState *dev)
         CPU(&s->cpu[i])->halted = i != 0;
         nuclei_systimer_reset(&s->timer[i], 1000000);
     }
+    s->core1_held = true;
+    nuclei_cidu_reset(&s->cidu);
     venusa_sysctl_reset(s);
     if (s->reset_preserve_aon) {
         memcpy(s->aon, saved_aon, sizeof(saved_aon));
@@ -159,15 +156,24 @@ static void reset(DeviceState *dev)
     if (s->reset_preserve_aon) {
         memcpy(s->psram_chip.modes, saved_modes, sizeof(saved_modes));
     }
-    for (unsigned irq = 16; irq < 83; irq++) {
-        nuclei_n300_irq(&s->cpu[0].env, irq,
-            (s->irq_levels[irq / 64] >> (irq & 63)) & 1);
-    }
+    nuclei_cidu_redrive(&s->cidu);
     s->reset_preserve_aon = false;
     s->reset_cause = 0;
     for (unsigned i = 0; i < 3; i++) {
         venusa_uart_reset(s, i);
     }
+}
+
+static void cidu_irq(void *opaque, unsigned core, unsigned irq, bool level)
+{
+    VenusASoC *s = opaque;
+    /* The remaining CIDU inputs are not connected to this SoC's ECLIC. */
+    if (irq < 83) { nuclei_n300_irq(&s->cpu[core].env, irq, level); }
+}
+static void cidu_fault(void *opaque, hwaddr address, unsigned size,
+                       bool write, uint64_t value)
+{
+    venusa_fail(opaque, address, size, write, value);
 }
 
 static void realize(DeviceState *dev, Error **errp)
@@ -222,6 +228,10 @@ static void realize(DeviceState *dev, Error **errp)
         nuclei_systimer_init(&s->timer[i], timer_irq, &s->cpu[i]);
         riscv_cpu_set_rdtime_fn(&s->cpu[i].env, nuclei_systimer_value, &s->timer[i]);
     }
+    s->cidu.opaque = s;
+    s->cidu.irq = cidu_irq;
+    s->cidu.fail = cidu_fault;
+    nuclei_cidu_init(&s->cidu, OBJECT(s), "venusa-cidu", 0x47000000, 2, 80, 32, 20, 19);
     venusa_gpio_init(s);
     venusa_dma_init(s);
     venusa_uart_init(s);
