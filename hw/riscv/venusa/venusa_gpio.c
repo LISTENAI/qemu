@@ -30,6 +30,7 @@ static void dma_irq(void *opaque, uint32_t pending)
 }
 void venusa_dma_init(VenusASoC *s)
 {
+    s->dma.descriptor_writeback = true;
     listenai_dma_init(&s->dma, OBJECT(s), "venusa-dma", 0x40000000, 6,
                      dma_irq, fault, s);
 }

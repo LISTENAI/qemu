@@ -181,6 +181,30 @@ static void dma_channels(void)
     qtest_quit(q);
 }
 
+static void dma_descriptor_writeback(void)
+{
+    QTestState *q = start(false);
+    const uint32_t base = 0x40000000, lli = 0x20012000;
+    for (unsigned i = 0; i < 8; i++) { qtest_writel(q, 0x20010000 + i * 4, 0xaabb0000 + i); }
+    for (unsigned i = 0; i < 2; i++) {
+        uint32_t descriptor = lli + i * 32;
+        qtest_writel(q, descriptor, 0x20010000 + i * 16);
+        qtest_writel(q, descriptor + 4, 0x20011000 + i * 16);
+        qtest_writel(q, descriptor + 8, i ? 0 : lli + 32);
+        qtest_writel(q, descriptor + 12, i ? 0x25 : 0x18000025);
+        qtest_writel(q, descriptor + 16, 4);
+    }
+    qtest_writel(q, base + 0x10, lli);
+    qtest_writel(q, base + 0x18, 0x18000025);
+    qtest_writel(q, base + 0x398, 1);
+    g_assert_cmphex(qtest_readl(q, lli + 16), ==, 4);
+    qtest_writel(q, base + 0x3a0, 0x101);
+    for (unsigned i = 0; i < 8; i++) { g_assert_cmphex(qtest_readl(q, 0x20011000 + i * 4), ==, 0xaabb0000 + i); }
+    g_assert_cmphex(qtest_readl(q, lli + 16), ==, 0x100004);
+    g_assert_cmphex(qtest_readl(q, lli + 48), ==, 0x100004);
+    qtest_quit(q);
+}
+
 static void calendar(void)
 {
     QTestState *q = start(false);
@@ -529,6 +553,7 @@ int main(int argc, char **argv)
     qtest_add_func("venusa/psram", psram);
     qtest_add_func("venusa/sd-transfers", sd_transfers);
     qtest_add_func("venusa/dma-channels", dma_channels);
+    qtest_add_func("venusa/dma-descriptor-writeback", dma_descriptor_writeback);
     qtest_add_func("venusa/calendar", calendar);
     qtest_add_func("venusa/dual-timers", dual_timers);
     qtest_add_func("venusa/gpt-timers", gpt_timers);

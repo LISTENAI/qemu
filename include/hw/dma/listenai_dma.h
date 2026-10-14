@@ -7,7 +7,7 @@ typedef void (*ListenAIDMAIRQ)(void *opaque, uint32_t pending_channels);
 typedef void (*ListenAIDMAFault)(void *opaque, hwaddr address, unsigned size,
                                bool write, uint64_t value);
 typedef struct ListenAIDMATransfer {
-    uint32_t remaining;
+    uint32_t remaining, descriptor;
     unsigned width, source_mode, dest_mode, request;
     bool active, receive;
 } ListenAIDMATransfer;
@@ -16,6 +16,7 @@ typedef struct ListenAIDMA {
     uint32_t regs[0x3b4 / 4];
     ListenAIDMATransfer channel[8];
     bool requests[16], servicing, transferring;
+    bool descriptor_writeback;
     hwaddr address;
     unsigned channel_count;
     ListenAIDMAIRQ irq;

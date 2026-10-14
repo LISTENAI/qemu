@@ -78,6 +78,9 @@ static void service(ListenAIDMA *s)
             if (t->remaining) { break; }
             t->active = false;
             R(off + 0x1c) |= 0x100000;
+            if (s->descriptor_writeback && t->descriptor) {
+                bus_write(s, t->descriptor + 16, 4, R(off + 0x1c));
+            }
             if (R(off + 0x18) & 1) { R(0x2c8) |= 1u << ch; }
             if ((R(off + 0x18) & 0x18000000) && (R(off + 0x10) & ~3u)) {
                 /* The next packed descriptor is fetched only after this
@@ -107,9 +110,11 @@ static void transfer(ListenAIDMA *s, unsigned ch)
     g_autoptr(GHashTable) seen = g_hash_table_new(g_direct_hash, g_direct_equal);
     for (unsigned block = 0; block < 4096; block++) {
         uint32_t control = R(off + 0x18), link = R(off + 0x10) & ~3u;
+        uint32_t descriptor = 0;
         if ((control & 0x18000000) && link) {
             if ((control & 0x18000000) != 0x18000000 ||
                 !g_hash_table_add(seen, GUINT_TO_POINTER(link))) { fail(s, off + 0x10, link); }
+            descriptor = link;
             /* Hardware LLI starts with five packed words, not register strides. */
             static const unsigned fields[] = { 0, 8, 0x10, 0x18, 0x1c };
             for (unsigned i = 0; i < 5; i++) { R(off + fields[i]) = bus_read(s, link + 4 * i, 4); }
@@ -130,6 +135,7 @@ static void transfer(ListenAIDMA *s, unsigned ch)
             }
             s->channel[ch] = (ListenAIDMATransfer) {
                 .active = true, .receive = receive, .remaining = count, .width = sw,
+                .descriptor = descriptor,
                 .source_mode = sm, .dest_mode = dm,
                 .request = (R(off + 0x44) >> (receive ? 7 : 11)) & 15,
             };
@@ -153,6 +159,9 @@ static void transfer(ListenAIDMA *s, unsigned ch)
             }
         }
         R(off) = source; R(off + 8) = dest; R(off + 0x1c) = count | 0x100000;
+        if (s->descriptor_writeback && descriptor) {
+            bus_write(s, descriptor + 16, 4, R(off + 0x1c));
+        }
         if (control & 1) { R(0x2c8) |= 1u << ch; }
         if (!(control & 0x18000000) || !(R(off + 0x10) & ~3u)) {
             R(0x3a0) &= ~(1u << ch);
