@@ -14,6 +14,7 @@ config VENUSA
 
 config ARCS
     bool
+    select LISTENAI_AON
     select LISTENAI_I2C
     depends on RISCV32
     select LISTENAI_UART

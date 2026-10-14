@@ -4,6 +4,7 @@
 
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
+#include "hw/timer/listenai_aon.h"
 #include "hw/rtc/listenai_calendar.h"
 #include "hw/timer/listenai_dual_timer.h"
 typedef struct ArcsSoC ArcsSoC;
@@ -12,19 +13,8 @@ typedef struct ArcsConfigIO {
     MemoryRegion io;
     uint32_t base;
 } ArcsConfigIO;
-typedef struct ArcsAONTimer {
-    ArcsConfigIO io;
-    QEMUTimer *event;
-    int64_t epoch;
-    uint32_t control, value, phase;
-    bool loaded, pending, irq_enable, clock;
-} ArcsAONTimer;
-typedef struct ArcsAONWDT {
-    ArcsConfigIO io;
-    QEMUTimer *event;
-    uint32_t control, load, cause;
-    bool stop_locked, start_locked, reset_pmu, enabled;
-} ArcsAONWDT;
+typedef ListenaiAONTimer ArcsAONTimer;
+typedef ListenaiAONWDT ArcsAONWDT;
 typedef struct ArcsDualTimer {
     ListenAIDualTimer device;
     ArcsSoC *soc;
