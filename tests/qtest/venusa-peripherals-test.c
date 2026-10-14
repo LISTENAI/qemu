@@ -8,7 +8,7 @@
 #define PSRAM_CTRL 0x44600000
 #define SD 0x44a00000
 
-static char *flash_path, *sd_path;
+static char *flash_path, *sd_path, *otp_path;
 
 static QTestState *start(bool sd)
 {
@@ -237,6 +237,18 @@ static void dual_timers(void)
     qtest_quit(q);
 }
 
+static void otp_mapping(void)
+{
+    QTestState *q = start(false);
+    for (unsigned word = 0; word < 16; word++) {
+        g_assert_cmphex(qtest_readl(q, 0x45500080 + 4 * word), ==, 0x97530000 + word);
+        g_assert_cmphex(qtest_readl(q, 0x45501000 + 4 * word), ==, 0x97530000 + word);
+    }
+    qtest_system_reset(q);
+    g_assert_cmphex(qtest_readl(q, 0x45500090), ==, 0x97530004);
+    qtest_quit(q);
+}
+
 static void image(const char *pattern, char **path, size_t length)
 {
     int fd = g_file_open_tmp(pattern, path, NULL);
@@ -250,14 +262,24 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     image("venusa-test-flash-XXXXXX", &flash_path, 16 * 1024 * 1024);
     image("venusa-test-sd-XXXXXX", &sd_path, 64 * 1024 * 1024);
+    image("venusa-test-otp-XXXXXX", &otp_path, 64);
+    FILE *otp = fopen(otp_path, "wb");
+    g_assert_nonnull(otp);
+    for (unsigned i = 0; i < 16; i++) {
+        uint32_t value = cpu_to_le32(0x97530000 + i);
+        g_assert_cmpuint(fwrite(&value, 4, 1, otp), ==, 1);
+    }
+    fclose(otp);
+    g_setenv("LISEM_QEMU_OTP_IMAGE", otp_path, true);
     qtest_add_func("venusa/systimer", systimer);
     qtest_add_func("venusa/psram", psram);
     qtest_add_func("venusa/sd-transfers", sd_transfers);
     qtest_add_func("venusa/dma-channels", dma_channels);
     qtest_add_func("venusa/calendar", calendar);
     qtest_add_func("venusa/dual-timers", dual_timers);
+    qtest_add_func("venusa/otp-mapping", otp_mapping);
     int result = g_test_run();
-    unlink(flash_path); unlink(sd_path);
-    g_free(flash_path); g_free(sd_path);
+    unlink(flash_path); unlink(sd_path); unlink(otp_path);
+    g_free(flash_path); g_free(sd_path); g_free(otp_path);
     return result;
 }
