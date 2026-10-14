@@ -1,5 +1,6 @@
 config ARCS
     bool
+    select LISTENAI_DUAL_TIMER
     depends on RISCV32
     select LISTENAI_UART
     select LISTENAI_SPIMEM

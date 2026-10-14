@@ -1,3 +1,4 @@
+system_ss.add(when: 'CONFIG_LISTENAI_DUAL_TIMER', if_true: files('listenai_dual_timer.c'))
 system_ss.add(when: 'CONFIG_NUCLEI_SYSTIMER', if_true: files('nuclei_systimer.c'))
 system_ss.add(when: 'CONFIG_A9_GTIMER', if_true: files('a9gtimer.c'))
 system_ss.add(when: 'CONFIG_ALLWINNER_A10_PIT', if_true: files('allwinner-a10-pit.c'))
