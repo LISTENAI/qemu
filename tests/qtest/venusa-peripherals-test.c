@@ -8,17 +8,16 @@
 #define PSRAM_CTRL 0x44600000
 #define SD 0x44a00000
 
-static char *rom_path, *flash_path, *sd_path;
+static char *flash_path, *sd_path;
 
 static QTestState *start(bool sd)
 {
-    g_autofree char *rom = g_shell_quote(rom_path);
     g_autofree char *flash = g_shell_quote(flash_path);
     g_autofree char *card = g_shell_quote(sd_path);
     g_autofree char *drive = sd ? g_strdup_printf(
         "-drive if=none,id=sdcard,file=%s,format=raw", card) : g_strdup("");
-    return qtest_initf("-machine venusa-rd-evb -bios %s -kernel %s %s",
-                       rom, flash, drive);
+    return qtest_initf("-machine venusa-rd-evb "
+                       "-drive if=pflash,format=raw,file=%s %s", flash, drive);
 }
 
 static void systimer(void)
@@ -145,6 +144,99 @@ static void sd_transfers(void)
     }
 }
 
+static void dma_channels(void)
+{
+    QTestState *q = start(false);
+    const uint32_t base = 0x40000000;
+    for (unsigned n = 0; n < 16; n++) {
+        qtest_writel(q, 0x20010000 + n * 4, 0x78340000 + n);
+    }
+    qtest_writel(q, base + 0x310, 0x3f3f);
+    qtest_writel(q, base + 0x398, 1);
+    for (unsigned channel = 0; channel < 6; channel++) {
+        uint32_t off = base + channel * 0x58;
+        uint32_t destination = 0x20011000 + channel * 0x100;
+        qtest_writel(q, off, 0x20010000);
+        qtest_writel(q, off + 8, destination);
+        qtest_writel(q, off + 0x18, 0x25);
+        qtest_writel(q, off + 0x1c, 16);
+        qtest_writel(q, base + 0x3a0, 0x101u << channel);
+        for (unsigned n = 0; n < 16; n++) {
+            g_assert_cmphex(qtest_readl(q, destination + n * 4), ==, 0x78340000 + n);
+        }
+        g_assert_cmphex(qtest_readl(q, off), ==, 0x20010040);
+        g_assert_cmphex(qtest_readl(q, off + 8), ==, destination + 64);
+        g_assert_cmphex(qtest_readl(q, off + 0x1c), ==, 0x100010);
+        g_assert_cmphex(qtest_readl(q, base + 0x3a0), ==, 0);
+        for (unsigned irq = 0; irq < 6; irq++) {
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(43 + irq)) & 1,
+                           ==, irq == channel);
+        }
+        qtest_writel(q, base + 0x338, 1u << channel);
+        g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(43 + channel)) & 1, ==, 0);
+    }
+    qtest_system_reset(q);
+    g_assert_cmphex(qtest_readl(q, base + 0x398), ==, 0);
+    g_assert_cmphex(qtest_readl(q, base + 0x2c0), ==, 0);
+    qtest_quit(q);
+}
+
+static void calendar(void)
+{
+    QTestState *q = start(false);
+    const uint32_t base = 0x43400000;
+    qtest_writel(q, base + 0x0c, 0x173b3b);
+    qtest_writel(q, base + 0x10, 0x0418021d);
+    qtest_writel(q, base + 4, 1);
+    qtest_writel(q, base, 2);
+    qtest_writel(q, base + 0x1c, 0);
+    qtest_writel(q, base + 0x20, 0x00180301);
+    qtest_writel(q, base + 4, 0x10030);
+    qtest_clock_step(q, 999999999);
+    g_assert_cmphex(qtest_readl(q, base + 8) & 3, ==, 0);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(qtest_readl(q, base + 0x14), ==, 0);
+    g_assert_cmphex(qtest_readl(q, base + 0x18), ==, 0x05180301);
+    g_assert_cmphex(qtest_readl(q, base + 8) & 3, ==, 3);
+    g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(22)) & 1, ==, 1);
+    qtest_writel(q, base + 4, 0x100);
+    g_assert_cmphex(qtest_readl(q, base + 8) & 3, ==, 1);
+    qtest_writel(q, base + 4, 0x20000);
+    g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(22)) & 1, ==, 0);
+    qtest_writel(q, base + 4, 0x10000);
+    g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(22)) & 1, ==, 1);
+    qtest_writel(q, base + 4, 0x200);
+    g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(22)) & 1, ==, 0);
+    qtest_system_reset(q);
+    g_assert_cmphex(qtest_readl(q, base + 0x18), ==, 0x06000101);
+    qtest_quit(q);
+}
+
+static void dual_timers(void)
+{
+    QTestState *q = start(false);
+    for (unsigned block = 0; block < 2; block++) {
+        uint32_t base = 0x43200000 + 0x100000 * block;
+        for (unsigned channel = 0; channel < 2; channel++) {
+            uint32_t reg = base + 0x20 * channel;
+            qtest_writel(q, reg, 2);
+            qtest_writel(q, reg + 8, 0xe2);
+            qtest_clock_step(q, 187499);
+            g_assert_cmphex(qtest_readl(q, reg + 4), ==, 0);
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(20 + block)) & 1, ==, 0);
+            qtest_clock_step(q, 1);
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(20 + block)) & 1, ==, 1);
+            g_assert_cmphex(qtest_readl(q, reg + 4), ==, 2);
+            qtest_writel(q, reg + 12, 1);
+            g_assert_cmphex(qtest_readb(q, ECLIC_PENDING(20 + block)) & 1, ==, 0);
+            qtest_writel(q, reg + 8, 0x62);
+            qtest_clock_step(q, 1000000);
+            g_assert_cmphex(qtest_readl(q, reg + 4), ==, 2);
+        }
+    }
+    qtest_quit(q);
+}
+
 static void image(const char *pattern, char **path, size_t length)
 {
     int fd = g_file_open_tmp(pattern, path, NULL);
@@ -156,14 +248,16 @@ static void image(const char *pattern, char **path, size_t length)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    image("venusa-test-rom-XXXXXX", &rom_path, 32768);
     image("venusa-test-flash-XXXXXX", &flash_path, 16 * 1024 * 1024);
     image("venusa-test-sd-XXXXXX", &sd_path, 64 * 1024 * 1024);
     qtest_add_func("venusa/systimer", systimer);
     qtest_add_func("venusa/psram", psram);
     qtest_add_func("venusa/sd-transfers", sd_transfers);
+    qtest_add_func("venusa/dma-channels", dma_channels);
+    qtest_add_func("venusa/calendar", calendar);
+    qtest_add_func("venusa/dual-timers", dual_timers);
     int result = g_test_run();
-    unlink(rom_path); unlink(flash_path); unlink(sd_path);
-    g_free(rom_path); g_free(flash_path); g_free(sd_path);
+    unlink(flash_path); unlink(sd_path);
+    g_free(flash_path); g_free(sd_path);
     return result;
 }

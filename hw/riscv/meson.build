@@ -1,5 +1,8 @@
 riscv_ss = ss.source_set()
 riscv_ss.add(files('boot.c'))
+if config_all_devices.has_key('CONFIG_VENUSA')
+  subdir('venusa')
+endif
 if config_all_devices.has_key('CONFIG_ARCS')
   subdir('arcs')
 endif

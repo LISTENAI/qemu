@@ -43,6 +43,23 @@ def rom_header(directory):
     return '\n'.join(lines)
 
 
+def venusa_rom_header(directory):
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    expected = '6b799d7e2c4c42f1e39760d4ba413bc3560ee81350754cd395f205e27209ac1b'
+    path = directory / 'ap.bin'
+    if (set(manifest) != {'ap'} or manifest['ap'] != {
+            'file': 'ap.bin', 'size': 32768, 'address': 0, 'sha256': expected}
+            or path.stat().st_size != 32768 or digest(path) != expected):
+        raise ValueError('VenusA mask ROM does not match its fixed identity')
+    data = path.read_bytes()
+    lines = ['/* Generated from the fixed, hash-verified VenusA mask ROM. */',
+             'static const uint8_t venusa_rom_bytes[] = {']
+    lines.extend('    ' + ','.join('0x%02x' % b for b in data[i:i + 16]) + ','
+                 for i in range(0, len(data), 16))
+    lines.append('};\n')
+    return '\n'.join(lines)
+
+
 def luna_header(directory, api, target):
     manifest = json.loads((directory / 'manifest.json').read_text())
     archive = directory / 'liblisem-luna.a'
@@ -58,7 +75,7 @@ def luna_header(directory, api, target):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('kind', choices=('rom', 'luna'))
+    parser.add_argument('kind', choices=('rom', 'venusa-rom', 'luna'))
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--api', type=Path)
@@ -67,6 +84,7 @@ def main():
     if args.kind == 'luna' and (not args.api or not args.target):
         parser.error('luna requires --api and --target')
     content = (rom_header(args.directory) if args.kind == 'rom' else
+               venusa_rom_header(args.directory) if args.kind == 'venusa-rom' else
                luna_header(args.directory, args.api, args.target))
     args.output.write_text(content)
 

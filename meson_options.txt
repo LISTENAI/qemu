@@ -391,3 +391,6 @@ option('rust', type: 'feature', value: 'disabled',
        description: 'Rust support')
 option('strict_rust_lints', type: 'boolean', value: false,
        description: 'Enable stricter set of Rust warnings')
+
+option('lisem_venusa_rom_dir', type: 'string', value: '',
+       description: 'Directory containing fixed VenusA ROM assets')

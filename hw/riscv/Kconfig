@@ -1,12 +1,26 @@
+config VENUSA
+    bool
+    select LISTENAI_I2C
+    depends on RISCV32
+    select LISTENAI_SD
+    select LISTENAI_SPIMEM
+    select LISTENAI_PSRAM
+    select LISTENAI_DUAL_TIMER
+    select LISTENAI_CALENDAR
+    select LISTENAI_DMA
+    select LISTENAI_GPIO
+    select NUCLEI_SYSTIMER
+    select LISTENAI_UART
+
 config ARCS
     bool
-    select LISTENAI_CALENDAR
     select LISTENAI_I2C
-    select LISTENAI_DUAL_TIMER
     depends on RISCV32
     select LISTENAI_UART
     select LISTENAI_SPIMEM
     select LISTENAI_PSRAM
+    select LISTENAI_DUAL_TIMER
+    select LISTENAI_CALENDAR
     select LISTENAI_DMA
     select LISTENAI_GPIO
     select NUCLEI_SYSTIMER

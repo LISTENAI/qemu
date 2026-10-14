@@ -5,15 +5,13 @@
 #define ECLIC_BASE 0xe0020000
 #define IRQ_BASE (ECLIC_BASE + 0x1000)
 
-static char *rom_path;
 static char *flash_path;
 
 static void test_parameters_and_reset(void)
 {
-    g_autofree char *rom_arg = g_shell_quote(rom_path);
     g_autofree char *flash_arg = g_shell_quote(flash_path);
-    QTestState *qts = qtest_initf("-machine venusa-rd-evb -bios %s -kernel %s",
-                                rom_arg, flash_arg);
+    QTestState *qts = qtest_initf("-machine venusa-rd-evb "
+                                "-drive if=pflash,format=raw,file=%s", flash_arg);
 
     g_assert_cmphex(qtest_readl(qts, ECLIC_BASE + 4), ==, 67 | (3 << 21));
     g_assert_cmphex(qtest_readb(qts, ECLIC_BASE), ==, 7);
@@ -47,13 +45,10 @@ int main(int argc, char **argv)
 {
     int result;
     g_test_init(&argc, &argv, NULL);
-    create_image("listenai-eclic-rom-XXXXXX", &rom_path, 32768);
     create_image("listenai-eclic-flash-XXXXXX", &flash_path, 16 * 1024 * 1024);
     qtest_add_func("listenai/eclic/parameters-reset", test_parameters_and_reset);
     result = g_test_run();
-    unlink(rom_path);
     unlink(flash_path);
-    g_free(rom_path);
     g_free(flash_path);
     return result;
 }
