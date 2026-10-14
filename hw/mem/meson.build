@@ -1,3 +1,4 @@
+system_ss.add(when: 'CONFIG_LISTENAI_PSRAM', if_true: files('listenai_psram.c'))
 mem_ss = ss.source_set()
 mem_ss.add(files('memory-device.c'))
 mem_ss.add(when: 'CONFIG_DIMM', if_true: files('pc-dimm.c'))

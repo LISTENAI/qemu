@@ -2,6 +2,7 @@ config ARCS
     bool
     depends on RISCV32
     select LISTENAI_SPIMEM
+    select LISTENAI_PSRAM
     select SSI
     select I2C
     select LISTENAI_SD
