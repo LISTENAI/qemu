@@ -292,87 +292,21 @@ static void rc_irq(ArcsSoC *soc)
     arcs_soc_irq(soc, 58, s->rc_done && !(s->aon_regs[0xa4 / 4] & 1));
 }
 
-static unsigned wdt_index(ArcsConfigIO *io)
+static void wdt_irq(void *opaque, bool level)
 {
-    return io->base == 0x45d00000 ? 0 : 1;
+    ArcsWDT *s = opaque;
+    nuclei_n300_irq(&s->soc->cpu[s->index].env, 68, level);
 }
-
-static void wdt_irq(ArcsConfigIO *io)
+static void wdt_reset_chip(void *opaque)
 {
-    ArcsSysctl *s = &io->soc->sysctl;
-    unsigned i = wdt_index(io);
-    /* AP and CP watchdogs have the same local vector in their own ECLIC. */
-    nuclei_n300_irq(&io->soc->cpu[i].env, 68,
-                   s->wdt_expired[i] && (s->wdt_control[i] & 4));
+    ArcsWDT *s = opaque;
+    request_chip_reset(s->soc, 1u << (s->index ? 16 : 19), false);
 }
-
-static void wdt_arm(ArcsConfigIO *io)
+static void wdt_fault(void *opaque, hwaddr address, unsigned size,
+                      bool write, uint64_t value)
 {
-    static const unsigned powers[] = { 6, 8, 10, 11, 12, 13, 14, 15,
-                                      17, 19, 21, 23, 25, 27, 29, 31 };
-    ArcsSysctl *s = &io->soc->sysctl;
-    unsigned i = wdt_index(io);
-    timer_del(s->wdt_timer[i]);
-    s->wdt_reset_stage[i] = false;
-    if (s->wdt_control[i] & 1) {
-        uint64_t ticks = UINT64_C(1) << powers[(s->wdt_control[i] >> 4) & 15];
-        /* The ARCS external watchdog clock is the ideal 32,000 Hz source. */
-        timer_mod(s->wdt_timer[i], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ticks * 31250);
-    }
-    wdt_irq(io);
-}
-
-static void wdt_expire(void *opaque)
-{
-    ArcsConfigIO *io = opaque;
-    ArcsSysctl *s = &io->soc->sysctl;
-    unsigned i = wdt_index(io);
-    if (s->wdt_reset_stage[i]) {
-        request_chip_reset(io->soc, 1u << (i ? 16 : 19), false);
-        return;
-    }
-    s->wdt_expired[i] = true;
-    wdt_irq(io);
-    if (s->wdt_control[i] & 8) {
-        uint64_t ticks = UINT64_C(1) << (7 + ((s->wdt_control[i] >> 8) & 7));
-        s->wdt_reset_stage[i] = true;
-        timer_mod(s->wdt_timer[i], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ticks * 31250);
-    }
-}
-
-static uint64_t wdt_read(void *opaque, hwaddr off, unsigned size)
-{
-    ArcsConfigIO *io = opaque;
-    unsigned i = wdt_index(io);
-    if (size == 4 && off == 0x10) { return io->soc->sysctl.wdt_control[i]; }
-    if (size == 4 && off == 0x1c) { return io->soc->sysctl.wdt_expired[i]; }
-    if (size == 4 && (off == 0x14 || off == 0x18)) { return 0; }
-    arcs_soc_fail(io->soc, io->base + off, size, false, 0);
-    return 0;
-}
-
-static void wdt_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
-{
-    ArcsConfigIO *io = opaque;
-    ArcsSysctl *s = &io->soc->sysctl;
-    unsigned i = wdt_index(io);
-    if (size != 4) { goto fail; }
-    if (off == 0x18 && value == 0x5aa5) { s->wdt_unlocked[i] = true; return; }
-    if (off == 0x1c && !(value & ~1u)) {
-        if (value & 1) { s->wdt_expired[i] = false; }
-        wdt_irq(io); return;
-    }
-    /* Require a fresh unlock; other key/write-protection sequences fail. */
-    if (!s->wdt_unlocked[i]) { goto fail; }
-    if (off == 0x10 && !(value & ~0x7fdu)) {
-        s->wdt_control[i] = value; s->wdt_unlocked[i] = false;
-        wdt_arm(io); return;
-    }
-    if (off == 0x14 && value == 0xcafe) {
-        s->wdt_unlocked[i] = false; wdt_arm(io); return;
-    }
-fail:
-    arcs_soc_fail(io->soc, io->base + off, size, true, value);
+    ArcsWDT *s = opaque;
+    arcs_soc_fail(s->soc, address, size, write, value);
 }
 
 static void rc_complete(void *opaque)
@@ -520,7 +454,6 @@ static const MemoryRegionOps common_ops = CONFIG_OPS(common_read, common_write);
 static const MemoryRegionOps pll_ops = CONFIG_OPS(pll_read, pll_write);
 static const MemoryRegionOps aon_ops = CONFIG_OPS(aon_read, aon_write);
 static const MemoryRegionOps ap_ops = CONFIG_OPS(ap_read, ap_write);
-static const MemoryRegionOps wdt_ops = CONFIG_OPS(wdt_read, wdt_write);
 
 void arcs_sysctl_init(ArcsSoC *soc)
 {
@@ -546,12 +479,15 @@ void arcs_sysctl_init(ArcsSoC *soc)
         memory_region_add_subregion(get_system_memory(), bases[i], &blocks[i]->io);
     }
     for (unsigned i = 0; i < 2; i++) {
-        ArcsConfigIO *io = &s->wdt[i];
-        io->soc = soc; io->base = i ? 0x47800000 : 0x45d00000;
-        memory_region_init_io(&io->io, OBJECT(soc), &wdt_ops, io,
-                              i ? "arcs-cp-wdt" : "arcs-ap-wdt", 0x1000);
-        memory_region_add_subregion(get_system_memory(), io->base, &io->io);
-        s->wdt_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL, wdt_expire, io);
+        ArcsWDT *wdt = &s->wdt[i];
+        wdt->soc = soc; wdt->index = i;
+        wdt->device.opaque = wdt;
+        wdt->device.irq = wdt_irq;
+        wdt->device.reset = wdt_reset_chip;
+        wdt->device.fail = wdt_fault;
+        listenai_wdt_init(&wdt->device, OBJECT(soc),
+                          i ? "arcs-cp-wdt" : "arcs-ap-wdt",
+                          i ? 0x47800000 : 0x45d00000, 32000);
     }
     listenai_calendar_init(&s->calendar, OBJECT(soc), "arcs-calendar",
                            0x46400000, calendar_irq, calendar_fault, soc);
@@ -575,12 +511,8 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     memset(s->ap_regs, 0, sizeof(s->ap_regs));
     arcs_dvp_clock(soc, false);
     arcs_dma2d_clock(soc, false);
-    memset(s->wdt_control, 0, sizeof(s->wdt_control));
-    memset(s->wdt_unlocked, 0, sizeof(s->wdt_unlocked));
-    memset(s->wdt_expired, 0, sizeof(s->wdt_expired));
-    memset(s->wdt_reset_stage, 0, sizeof(s->wdt_reset_stage));
     for (unsigned i = 0; i < 2; i++) {
-        timer_del(s->wdt_timer[i]); wdt_irq(&s->wdt[i]);
+        listenai_wdt_reset(&s->wdt[i].device);
     }
     s->common_regs[0x10 / 4] = (24 << 9) | 0x10000;
     /* CMN PERI_CLK_CFG1..3 reset: SPI N/M=1/1, UART N/M=1/2;

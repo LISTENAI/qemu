@@ -3,6 +3,7 @@
 #define HW_RISCV_ARCS_SYSCTL_H
 
 #include "hw/sysbus.h"
+#include "hw/watchdog/listenai_wdt.h"
 #include "qemu/timer.h"
 #include "hw/timer/listenai_aon.h"
 #include "hw/rtc/listenai_calendar.h"
@@ -20,6 +21,11 @@ typedef struct ArcsDualTimer {
     ArcsSoC *soc;
     unsigned irq;
 } ArcsDualTimer;
+typedef struct ArcsWDT {
+    ListenaiWDT device;
+    ArcsSoC *soc;
+    unsigned index;
+} ArcsWDT;
 typedef struct ArcsSysctl {
     ArcsAONTimer aon_timer;
     ArcsAONWDT aon_wdt;
@@ -27,11 +33,7 @@ typedef struct ArcsSysctl {
     ArcsConfigIO common, pll, aon, ap;
     MemoryRegion remap[2][4];
     ListenAICalendar calendar;
-    ArcsConfigIO wdt[2];
-    uint32_t wdt_control[2];
-    bool wdt_unlocked[2];
-    bool wdt_expired[2], wdt_reset_stage[2];
-    QEMUTimer *wdt_timer[2];
+    ArcsWDT wdt[2];
     uint32_t common_regs[0xa0 / 4], pll_regs[17], aon_regs[0x194 / 4];
     uint32_t ap_regs[8];
     uint32_t cp_entry, rc_result;
