@@ -1262,10 +1262,37 @@ static void decode_opc(CPURISCVState *env, DisasContext *ctx)
                                                ctx->base.pc_next + 2));
         }
         ctx->opcode = opcode;
+        if (env->arcs_dsp && (opcode & 0xfc00707f) == 0xc400107f) {
+            ctx->cur_insn_len = 4;
+            int rd = extract32(opcode, 7, 5);
+            TCGv a = get_gpr(ctx, extract32(opcode, 15, 5), EXT_NONE);
+            TCGv b = get_gpr(ctx, extract32(opcode, 20, 5), EXT_NONE);
+            TCGv old = get_gpr(ctx, rd, EXT_NONE);
+            TCGv result = tcg_temp_new();
+            tcg_gen_mul_tl(result, a, b);
+            if (opcode & (1u << 25)) { tcg_gen_sub_tl(result, old, result); }
+            else { tcg_gen_add_tl(result, old, result); }
+            gen_set_gpr(ctx, rd, result);
+            return;
+        }
+        if (env->nuclei_state && (opcode & 0xfff0707f) == 0x7ed01073) {
+            TCGv source = get_gpr(ctx, extract32(opcode, 15, 5), EXT_NONE);
+            gen_helper_arcs_jalmnxti(cpu_pc, tcg_env,
+                tcg_constant_tl(extract32(opcode, 7, 5)), source,
+                tcg_constant_tl(ctx->base.pc_next));
+            tcg_gen_exit_tb(NULL, 0);
+            ctx->base.is_jmp = DISAS_NORETURN;
+            return;
+        }
 
         for (guint i = 0; i < ctx->decoders->len; ++i) {
             riscv_cpu_decode_fn func = g_ptr_array_index(ctx->decoders, i);
             if (func(ctx, opcode)) {
+                if (env->nuclei_state && opcode == 0x10500073) {
+                    /* WFI always exits in helper_wfi. Do not precharge
+                     * following, unexecuted instructions in this TB. */
+                    ctx->base.is_jmp = DISAS_NORETURN;
+                }
                 return;
             }
         }

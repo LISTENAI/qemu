@@ -279,6 +279,8 @@ struct CPUArchState {
     target_ulong geilen;
     uint64_t resetvec;
 
+    void *nuclei_state; /* Non-null for machines using the Nuclei ECLIC model. */
+    bool arcs_dsp;
     target_ulong mhartid;
     /*
      * For RV32 this is 32-bit mstatus and 32-bit mstatush.

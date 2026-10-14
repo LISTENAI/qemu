@@ -20,6 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "nuclei_n300.h"
 #include "internals.h"
 #include "exec/cputlb.h"
 #include "accel/tcg/cpu-ldst.h"
@@ -398,6 +399,9 @@ target_ulong helper_mret(CPURISCVState *env)
     uintptr_t ra = GETPC();
 
     check_ret_from_m_mode(env, retpc, prev_priv, ra);
+    if (env->nuclei_state) {
+        nuclei_n300_mret(env);
+    }
 
     target_ulong prev_virt = get_field(env->mstatus, MSTATUS_MPV) &&
                              (prev_priv != PRV_M);

@@ -27,6 +27,7 @@ riscv_ss.add(files(
 
 riscv_system_ss = ss.source_set()
 riscv_system_ss.add(files(
+  'nuclei_n300.c',
   'arch_dump.c',
   'pmp.c',
   'debug.c',

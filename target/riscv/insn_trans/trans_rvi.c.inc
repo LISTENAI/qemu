@@ -984,6 +984,19 @@ static bool do_csrr(DisasContext *ctx, int rd, int rc)
     translator_io_start(&ctx->base);
     gen_helper_csrr(dest, tcg_env, csr);
     gen_set_gpr(ctx, rd, dest);
+    if (RISCV_CPU(ctx->cs)->env.nuclei_state &&
+        (rc == CSR_MCYCLE || rc == CSR_MCYCLEH ||
+         rc == CSR_CYCLE || rc == CSR_CYCLEH ||
+         rc == CSR_MINSTRET || rc == CSR_MINSTRETH ||
+         rc == CSR_INSTRET || rc == CSR_INSTRETH)) {
+        /* Pure counter reads cannot change translation flags. Keep the IO
+         * boundary and full CSR access/exception checks, but let the next
+         * TB use normal chaining and its normal IRQ/icount entry checks. */
+        decode_save_opc(ctx, 0);
+        gen_goto_tb(ctx, 0, ctx->cur_insn_len);
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return true;
+    }
     return do_csr_post(ctx);
 }
 

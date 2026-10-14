@@ -670,6 +670,12 @@ bool riscv_cpu_has_work(CPUState *cs)
 {
     RISCVCPU *cpu = RISCV_CPU(cs);
     CPURISCVState *env = &cpu->env;
+    if (env->nuclei_state && (env->mtvec & 3) == 3) {
+        /* ECLIC has its own per-source enables. Standard mie is unused;
+         * global mstatus.MIE controls delivery, not WFI wakeup.
+         */
+        return (env->mip & MIP_MEIP) != 0;
+    }
     /*
      * Definition of the WFI instruction requires it to ignore the privilege
      * mode and delegation registers, but respect individual enables

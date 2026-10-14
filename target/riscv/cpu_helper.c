@@ -21,6 +21,7 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "cpu.h"
+#include "nuclei_n300.h"
 #include "internals.h"
 #include "pmu.h"
 #include "exec/cputlb.h"
@@ -546,6 +547,9 @@ static int riscv_cpu_local_irq_pending(CPURISCVState *env)
 
 bool riscv_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
+    if (RISCV_CPU(cs)->env.nuclei_state) {
+        return nuclei_n300_interrupt(cs);
+    }
     uint32_t mask = CPU_INTERRUPT_HARD | CPU_INTERRUPT_RNMI;
 
     if (interrupt_request & mask) {
@@ -2154,6 +2158,9 @@ void riscv_cpu_do_interrupt(CPUState *cs)
 {
     RISCVCPU *cpu = RISCV_CPU(cs);
     CPURISCVState *env = &cpu->env;
+    if (env->nuclei_state) {
+        nuclei_n300_trap(env, !!(cs->exception_index & RISCV_EXCP_INT_FLAG));
+    }
     bool virt = env->virt_enabled;
     bool write_gva = false;
     bool always_storeamo = (env->excp_uw2 & RISCV_UW2_ALWAYS_STORE_AMO);
