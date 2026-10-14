@@ -7,6 +7,7 @@
 #include "target/riscv/nuclei_n300.h"
 #include "chardev/char-fe.h"
 #include "qemu/timer.h"
+#include "hw/timer/nuclei_systimer.h"
 #include "hw/riscv/arcs/arcs_gpio.h"
 #include "hw/riscv/arcs/arcs_sysctl.h"
 #include "hw/riscv/arcs/arcs_psram.h"
@@ -30,14 +31,7 @@
 #define TYPE_ARCS_SOC "arcs-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(ArcsSoC, ARCS_SOC)
 
-typedef struct ArcsTimer {
-    QEMUTimer *event;
-    RISCVCPU *cpu;
-    uint64_t value, compare, phase;
-    int64_t epoch;
-    uint32_t frequency, control;
-    bool software, clock_enabled;
-} ArcsTimer;
+typedef NucleiSysTimer ArcsTimer;
 
 typedef struct ArcsUART {
     CharBackend chr;

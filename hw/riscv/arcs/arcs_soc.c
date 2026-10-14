@@ -18,53 +18,14 @@ const char *arcs_soc_rom_sha256(unsigned core)
     return arcs_rom_images[core].sha256;
 }
 
-static uint64_t timer_value(ArcsTimer *t)
+static void systimer_irq(void *opaque, unsigned irq, bool level)
 {
-    uint64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - t->epoch;
-    __uint128_t progress = t->phase;
-    if (!(t->control & 1) && t->clock_enabled) {
-        progress += (__uint128_t)delta * t->frequency;
-    }
-    return t->value + progress / 1000000000;
+    nuclei_n300_irq(&((RISCVCPU *)opaque)->env, irq, level);
 }
-
-static uint64_t timer_csr(void *opaque) { return timer_value(opaque); }
-
-static void timer_sync(ArcsTimer *t)
-{
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    if (!(t->control & 1) && t->clock_enabled) {
-        __uint128_t progress = t->phase + (__uint128_t)(now - t->epoch) * t->frequency;
-        t->value += progress / 1000000000;
-        t->phase = progress % 1000000000;
-    }
-    t->epoch = now;
-}
-
-static void timer_update(ArcsTimer *t)
-{
-    timer_sync(t);
-    uint64_t now = t->value;
-    nuclei_n300_irq(&t->cpu->env, 7, now >= t->compare);
-    timer_del(t->event);
-    if (!(t->control & 1) && t->clock_enabled && t->compare > now) {
-        __uint128_t needed = (__uint128_t)(t->compare - now) * 1000000000 - t->phase;
-        __uint128_t ns = (needed + t->frequency - 1) / t->frequency;
-        if (ns <= INT64_MAX - t->epoch) {
-            timer_mod(t->event, t->epoch + (int64_t)ns);
-        }
-    }
-}
-
-static void timer_fire(void *opaque) { timer_update(opaque); }
 
 void arcs_timer_clock(ArcsTimer *t, uint32_t frequency, bool enabled)
 {
-    assert(frequency != 0);
-    timer_sync(t);
-    t->frequency = frequency;
-    t->clock_enabled = enabled;
-    timer_update(t);
+    nuclei_systimer_clock(t, frequency, enabled);
 }
 
 void arcs_soc_fail_report(ArcsSoC *s, const char *status)
@@ -107,14 +68,9 @@ static uint64_t io_read(void *opaque, hwaddr address, unsigned size)
         return 0;
     }
     if (address >= 0xe0030000 && address < 0xe0031000) {
-        ArcsTimer *t = &s->timer[hart];
-        switch (address & 0xfff) {
-        case 0: return (uint32_t)timer_value(t);
-        case 4: return timer_value(t) >> 32;
-        case 8: return (uint32_t)t->compare;
-        case 12: return t->compare >> 32;
-        case 0xff8: return t->control;
-        case 0xffc: return t->software;
+        uint32_t value;
+        if (nuclei_systimer_read(&s->timer[hart], address & 0xfff, &value)) {
+            return value;
         }
     }
     for (unsigned i = 0; i < 3; i++) {
@@ -148,21 +104,9 @@ static void io_write(void *opaque, hwaddr address, uint64_t value, unsigned size
     }
     if (size != 4 || (address & 3)) { arcs_soc_fail(s, address, size, true, value); }
     if (address >= 0xe0030000 && address < 0xe0031000) {
-        ArcsTimer *t = &s->timer[hart];
-        timer_sync(t);
-        uint64_t now = t->value;
-        switch (address & 0xfff) {
-        case 0: t->value = (now & ~UINT64_C(0xffffffff)) | (uint32_t)value; t->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); break;
-        case 4: t->value = (now & 0xffffffff) | (value << 32); t->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); break;
-        case 8: t->compare = (t->compare & ~UINT64_C(0xffffffff)) | (uint32_t)value; break;
-        case 12: t->compare = (t->compare & 0xffffffff) | (value << 32); break;
-        case 0xff8:
-            if (value & ~1u) { arcs_soc_fail(s, address, size, true, value); }
-            t->value = now; t->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); t->control = value; break;
-        case 0xffc: t->software = value & 1; nuclei_n300_irq(&s->cpu[hart].env, 3, t->software); break;
-        default: arcs_soc_fail(s, address, size, true, value);
+        if (!nuclei_systimer_write(&s->timer[hart], address & 0xfff, value)) {
+            arcs_soc_fail(s, address, size, true, value);
         }
-        timer_update(t);
         return;
     }
     for (unsigned i = 0; i < 3; i++) {
@@ -214,11 +158,7 @@ static void reset(DeviceState *dev)
         nuclei_n300_reset(&s->cpu[i]);
         s->cpu[i].env.pc = s->probe ? s->entry : (i ? 0x00200000 : 0);
         CPU(&s->cpu[i])->halted = i != s->boot_hart;
-        ArcsTimer *t = &s->timer[i];
-        timer_del(t->event); t->value = 0; t->compare = UINT64_MAX;
-        t->control = 0; t->software = false; t->frequency = 1000000;
-        t->phase = 0; t->clock_enabled = true;
-        t->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        nuclei_systimer_reset(&s->timer[i], 1000000);
     }
     arcs_dma_reset(s);
     for (unsigned i = 0; i < 3; i++) {
@@ -295,9 +235,8 @@ static void realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint64(DEVICE(&s->cpu[i]), "resetvec", s->probe ? s->entry : (i ? 0x00200000 : 0));
         qdev_realize(DEVICE(&s->cpu[i]), NULL, &error_fatal);
         nuclei_n300_init(&s->cpu[i], i == 0, 80, 3);
-        s->timer[i].cpu = &s->cpu[i];
-        riscv_cpu_set_rdtime_fn(&s->cpu[i].env, timer_csr, &s->timer[i]);
-        s->timer[i].event = timer_new_ns(QEMU_CLOCK_VIRTUAL, timer_fire, &s->timer[i]);
+        nuclei_systimer_init(&s->timer[i], systimer_irq, &s->cpu[i]);
+        riscv_cpu_set_rdtime_fn(&s->cpu[i].env, nuclei_systimer_value, &s->timer[i]);
     }
     const char *clock = getenv("ARCS_QEMU_CPU_CLOCKS");
     const char *soc_clock = getenv("ARCS_QEMU_SOC_CLOCK");

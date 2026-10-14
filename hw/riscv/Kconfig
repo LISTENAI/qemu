@@ -3,6 +3,7 @@ config ARCS
     depends on RISCV32
     select LISTENAI_SPIMEM
     select LISTENAI_PSRAM
+    select NUCLEI_SYSTIMER
     select SSI
     select I2C
     select LISTENAI_SD
