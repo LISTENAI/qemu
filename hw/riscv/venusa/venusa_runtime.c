@@ -22,10 +22,12 @@ char *venusa_snapshot(VenusASoC *s, const char *status)
         NucleiN300State *n = env->nuclei_state;
         g_string_append_printf(out, "%s{\"hart\":%u,\"pc\":%u,\"mcause\":%u,"
             "\"mepc\":%u,\"mtval\":%u,\"instructions\":%" PRId64
-            ",\"exceptions\":%" PRIu64 ",\"interrupts\":%" PRIu64 "}",
+            ",\"exceptions\":%" PRIu64 ",\"interrupts\":%" PRIu64
+            ",\"clock_hz_numerator\":%" PRIu64 ",\"clock_hz_denominator\":%u}",
             i ? "," : "", i, (uint32_t)env->pc, (uint32_t)env->mcause,
             (uint32_t)env->mepc, (uint32_t)env->mtval,
-            qatomic_read_i64(&CPU(&s->cpu[i])->icount_executed), n->exceptions, n->interrupts);
+            qatomic_read_i64(&CPU(&s->cpu[i])->icount_executed), n->exceptions, n->interrupts,
+            CPU(&s->cpu[i])->icount_hz, CPU(&s->cpu[i])->icount_hz_den);
     }
     g_string_append_printf(out, "],\"uart_tx_bytes\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]}",
         s->uart[0].device.tx_bytes, s->uart[1].device.tx_bytes, s->uart[2].device.tx_bytes);

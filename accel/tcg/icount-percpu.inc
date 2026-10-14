@@ -6,30 +6,16 @@
  * MMIO uses that shared frontier, not a speculative CPU-local timestamp.
  * This is a functional quantum model, not a cycle-accurate pipeline model.
  */
+#include "qemu/icount-clock.h"
+
 static uint64_t icount_clock_quantum;
-
-static __uint128_t icount_clock_unit(CPUState *cpu)
-{
-    return (__uint128_t)NANOSECONDS_PER_SECOND * cpu->icount_clock_scale;
-}
-
-static __uint128_t icount_clock_rate(CPUState *cpu)
-{
-    return (__uint128_t)cpu->icount_hz *
-           (cpu->icount_clock_scale / cpu->icount_hz_den);
-}
 
 static uint64_t icount_clock_accumulate(CPUState *cpu, uint64_t delta,
                                         __uint128_t carry,
                                         __uint128_t *phase)
 {
-    __uint128_t raw = (__uint128_t)delta * cpu->icount_hz;
-    uint64_t divisor = (uint64_t)NANOSECONDS_PER_SECOND * cpu->icount_hz_den;
-    __uint128_t tail = (raw % divisor) *
-                      (cpu->icount_clock_scale / cpu->icount_hz_den) + carry;
-    __uint128_t unit = icount_clock_unit(cpu);
-    *phase = tail % unit;
-    return raw / divisor + tail / unit;
+    return icount_phase_accumulate(cpu->icount_hz, cpu->icount_hz_den,
+                                   cpu->icount_clock_scale, delta, carry, phase);
 }
 
 static uint64_t icount_clock_cycles(CPUState *cpu, int64_t now,
@@ -70,13 +56,8 @@ void icount_clock_configure(CPUState *cpu, uint32_t hz, uint64_t quantum)
 void icount_clock_set_ratio(CPUState *cpu, uint64_t numerator,
                             uint32_t denominator)
 {
-    /* Every ARCS integer PLL post-divider times HCLK divider divides this
-     * bound: lcm(4,5,6,8,9,10,12) * lcm(1..31). Growing the phase scale
-     * by an exact integer preserves fractions across all rate changes. */
-    const uint64_t scale_bound = UINT64_C(25992639520848000);
     assert(cpu->icount_hz && numerator && denominator &&
-           numerator <= UINT64_C(1000000000) * denominator &&
-           scale_bound % denominator == 0);
+           numerator <= UINT64_C(1000000000) * denominator);
     if (cpu->icount_hz == numerator && cpu->icount_hz_den == denominator) {
         return;
     }
@@ -90,13 +71,23 @@ void icount_clock_set_ratio(CPUState *cpu, uint64_t numerator,
     cpu->icount_cycles = icount_clock_cycles(cpu, now,
                                              &cpu->icount_cycle_phase);
     cpu->icount_cycle_epoch = now;
-    uint64_t a = cpu->icount_clock_scale, b = denominator;
+    uint64_t a = denominator;
+    uint64_t b = cpu->icount_clock_scale % denominator;
     while (b) {
         uint64_t remainder = a % b;
         a = b;
         b = remainder;
     }
     uint64_t factor = denominator / a;
+    /* The scale is the LCM of observed rate denominators. Fractional PLLs
+     * need more than 64 bits, while phases remain below one cycle. Reserve
+     * space for adding two phases in accumulate(), without multiplying a
+     * large scale by the number of elapsed cycles. */
+    if (cpu->icount_clock_scale >
+        (~(__uint128_t)0 / (2 * NANOSECONDS_PER_SECOND)) / factor) {
+        error_report("CPU clock denominator combination exceeds precision");
+        exit(1);
+    }
     cpu->icount_clock_scale *= factor;
     cpu->icount_phase *= factor;
     cpu->icount_cycle_phase *= factor;
@@ -134,10 +125,12 @@ static void icount_clock_frontier(void)
 static void icount_clock_advance(CPUState *cpu, uint64_t instructions)
 {
     if (instructions) {
-        __uint128_t unit = icount_clock_unit(cpu), rate = icount_clock_rate(cpu);
-        __uint128_t needed = instructions * unit - cpu->icount_phase;
-        uint64_t ns = (needed + rate - 1) / rate;
-        cpu->icount_phase += ns * rate - instructions * unit;
+        uint64_t ns = icount_phase_ns(cpu->icount_hz, cpu->icount_hz_den,
+                                      cpu->icount_clock_scale, instructions,
+                                      cpu->icount_phase);
+        uint64_t elapsed = icount_clock_accumulate(cpu, ns, cpu->icount_phase,
+                                                   &cpu->icount_phase);
+        assert(elapsed == instructions);
         cpu->icount_time_ns += ns;
     }
     icount_clock_frontier();
@@ -165,11 +158,11 @@ int64_t icount_clock_budget(CPUState *cpu, int64_t deadline)
                                     quantum);
     if (cpu->icount_time_ns < cpu->icount_slice_end) {
         uint64_t delta = cpu->icount_slice_end - cpu->icount_time_ns;
-        budget = (delta * icount_clock_rate(cpu) + cpu->icount_phase) /
-                 icount_clock_unit(cpu);
+        __uint128_t phase;
+        budget = icount_clock_accumulate(cpu, delta, cpu->icount_phase, &phase);
         if (!budget) {
             /* Advance a fractional cycle up to, but never beyond, an event. */
-            cpu->icount_phase += delta * icount_clock_rate(cpu);
+            cpu->icount_phase = phase;
             cpu->icount_time_ns = cpu->icount_slice_end;
             icount_clock_frontier();
         }
@@ -185,10 +178,11 @@ void icount_clock_finish(CPUState *cpu)
                        &timers_state.vm_clock_lock);
     if (cpu->neg.icount_decr.u16.low + cpu->icount_extra == 0 &&
         cpu->icount_time_ns < cpu->icount_slice_end) {
-        __uint128_t phase = cpu->icount_phase +
-                        (cpu->icount_slice_end - cpu->icount_time_ns) *
-                        icount_clock_rate(cpu);
-        assert(phase < icount_clock_unit(cpu));
+        __uint128_t phase;
+        uint64_t elapsed = icount_clock_accumulate(cpu,
+                            cpu->icount_slice_end - cpu->icount_time_ns,
+                            cpu->icount_phase, &phase);
+        assert(elapsed == 0);
         cpu->icount_phase = phase;
         cpu->icount_time_ns = cpu->icount_slice_end;
     }

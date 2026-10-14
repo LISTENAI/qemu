@@ -49,6 +49,7 @@ tests = {
   'test-interval-tree': [],
   'test-fifo': [],
   'test-arcs-clock-notify': [],
+  'test-icount-clock': [],
 }
 
 if have_system or have_tools
