@@ -607,7 +607,7 @@ static void report(void *opaque, const char *status)
                 t->clock_enabled ? "true" : "false");
     }
     fprintf(f, "],\"uart_tx_bytes\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "],\"spi_frames\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]",
-            s->soc.uart[0].tx_bytes, s->soc.uart[1].tx_bytes, s->soc.uart[2].tx_bytes,
+            s->soc.uart[0].device.tx_bytes, s->soc.uart[1].device.tx_bytes, s->soc.uart[2].device.tx_bytes,
             s->soc.spi[0].frames, s->soc.spi[1].frames, s->soc.spi[2].frames);
     if (CPU(&s->soc.cpu[0])->icount_hz) {
         fprintf(f, ",\"cpu_clock_experiment\":[");

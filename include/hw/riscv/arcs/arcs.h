@@ -5,7 +5,7 @@
 #include "hw/sysbus.h"
 #include "target/riscv/cpu.h"
 #include "target/riscv/nuclei_n300.h"
-#include "chardev/char-fe.h"
+#include "hw/char/listenai_uart.h"
 #include "qemu/timer.h"
 #include "hw/timer/nuclei_systimer.h"
 #include "hw/riscv/arcs/arcs_gpio.h"
@@ -34,16 +34,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(ArcsSoC, ARCS_SOC)
 typedef NucleiSysTimer ArcsTimer;
 
 typedef struct ArcsUART {
-    CharBackend chr;
+    ListenAIUART device;
     void (*observe)(void *opaque, unsigned channel, uint8_t value);
     void *observe_opaque;
-    uint32_t control, mask, triggers, commands;
     ArcsSoC *soc;
-    QEMUTimer *idle;
-    uint8_t fifo[64];
-    unsigned index, head, count;
-    bool timeout_pending, dma_received;
-    uint64_t tx_bytes, rx_bytes, discarded_bytes;
+    unsigned index;
 } ArcsUART;
 
 
