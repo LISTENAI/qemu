@@ -53,6 +53,10 @@ void listenai_nor_init_block(ListenAINOR *chip, Object *owner, const char *name,
     if (!block || blk_getlength(block) != NOR_SIZE) {
         error_report("NOR requires an exact 16 MiB block image"); exit(1);
     }
+    if (blk_set_perm(block, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                     BLK_PERM_CONSISTENT_READ, &error_fatal) < 0) {
+        error_report("NOR requires exclusive writable block access"); exit(1);
+    }
     listenai_nor_init(chip, owner, name, address, NULL, false);
     chip->block = block;
     if (blk_pread(block, 0, NOR_SIZE, memory_region_get_ram_ptr(&chip->rom), 0) < 0) {

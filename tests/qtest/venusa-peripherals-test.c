@@ -431,6 +431,36 @@ static void watchdogs(void)
     qtest_quit(q);
 }
 
+static void nor_block_persistence(void)
+{
+    QTestState *q = start(false);
+    const uint64_t base = 0x44200000;
+    qtest_writel(q, base + 0x10, 0x780); /* 8-bit packed FIFO. */
+    qtest_writel(q, base + 0x20, 0x47000000); /* Command only. */
+    qtest_writel(q, base + 0x24, 0x06); /* Write enable. */
+    qtest_writel(q, base + 0x28, 0x10000);
+    qtest_writel(q, base + 0x24, 0x20); /* 4 KiB sector erase. */
+    g_assert_cmphex(qtest_readl(q, 0x30010000), ==, UINT32_MAX);
+    qtest_writel(q, base + 0x24, 0x06);
+    qtest_writel(q, base + 0x2c, 0x12345678);
+    qtest_writel(q, base + 0x20, 0x41003000); /* Four bytes to program. */
+    qtest_writel(q, base + 0x24, 0x02);
+    g_assert_cmphex(qtest_readl(q, 0x30010000), ==, 0x12345678);
+    qtest_system_reset(q);
+    g_assert_cmphex(qtest_readl(q, 0x30010000), ==, 0x12345678);
+    qtest_quit(q);
+    FILE *file = fopen(flash_path, "rb");
+    g_assert_nonnull(file);
+    g_assert_cmpint(fseek(file, 0x10000, SEEK_SET), ==, 0);
+    uint32_t stored;
+    g_assert_cmpuint(fread(&stored, sizeof(stored), 1, file), ==, 1);
+    fclose(file);
+    g_assert_cmphex(le32_to_cpu(stored), ==, 0x12345678);
+    q = start(false);
+    g_assert_cmphex(qtest_readl(q, 0x30010000), ==, 0x12345678);
+    qtest_quit(q);
+}
+
 static void image(const char *pattern, char **path, size_t length)
 {
     int fd = g_file_open_tmp(pattern, path, NULL);
@@ -453,6 +483,7 @@ int main(int argc, char **argv)
     }
     fclose(otp);
     g_setenv("LISEM_QEMU_OTP_IMAGE", otp_path, true);
+    qtest_add_func("venusa/nor-block-persistence", nor_block_persistence);
     qtest_add_func("venusa/systimer", systimer);
     qtest_add_func("venusa/psram", psram);
     qtest_add_func("venusa/sd-transfers", sd_transfers);
