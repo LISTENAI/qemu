@@ -10,5 +10,5 @@ rom_header = custom_target('venusa-rom-image',
 venusa_assets = declare_dependency(sources: rom_header,
   include_directories: include_directories('.'))
 riscv_ss.add(when: 'CONFIG_VENUSA', if_true: [venusa_assets, files(
-  'venusa.c', 'venusa_soc.c', 'venusa_uart.c', 'venusa_storage.c', 'venusa_psram.c', 'venusa_sysctl.c', 'venusa_gpio.c', 'venusa_runtime.c', 'venusa_peripherals.c', 'venusa_gpt.c',
+  'venusa.c', 'venusa_soc.c', 'venusa_uart.c', 'venusa_storage.c', 'venusa_psram.c', 'venusa_sysctl.c', 'venusa_gpio.c', 'venusa_runtime.c', 'venusa_peripherals.c', 'venusa_gpt.c', 'venusa_aon.c',
 )])

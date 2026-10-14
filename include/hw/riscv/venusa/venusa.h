@@ -16,6 +16,8 @@
 #include "hw/i2c/listenai_i2c.h"
 #include "hw/rtc/listenai_calendar.h"
 #include "hw/riscv/venusa/venusa_gpt.h"
+#include "hw/timer/listenai_aon.h"
+#include "hw/watchdog/listenai_wdt.h"
 
 #define TYPE_VENUSA_SOC "venusa-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(VenusASoC, VENUSA_SOC)
@@ -52,12 +54,19 @@ struct VenusASoC {
     ListenaiI2C i2c[2];
     ListenAICalendar calendar;
     VenusAGPT gpt;
+    ListenaiAONTimer aon_timer;
+    ListenaiAONWDT aon_wdt;
+    ListenaiWDT wdt[2];
+    VenusAPeripheral wdt_context[2];
     VenusAPeripheral dual_context[2], i2c_context[2];
     uint32_t board_inputs[2];
     uint8_t otp[64];
     BlockBackend *flash;
     QEMUTimer *deadline;
     bool reported, follow_hclk;
+    bool reset_preserve_aon;
+    uint32_t reset_cause;
+    uint64_t irq_levels[2];
     uint32_t hclk_n, hclk_m, pclk_n, pclk_m, pll_core_div, gpt_t0_div;
 };
 
@@ -79,6 +88,9 @@ void venusa_clock_update(VenusASoC *s);
 void venusa_hclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *d);
 void venusa_peripherals_init(VenusASoC *s);
 void venusa_peripherals_reset(VenusASoC *s);
+void venusa_aon_init(VenusASoC *s);
+void venusa_aon_reset(VenusASoC *s);
+void venusa_reset_cpu(VenusASoC *s, unsigned index);
 void venusa_gpio_init(VenusASoC *s);
 void venusa_dma_init(VenusASoC *s);
 void venusa_uart_reset(VenusASoC *s, unsigned index);

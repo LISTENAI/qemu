@@ -9,6 +9,8 @@ config VENUSA
     select LISTENAI_CALENDAR
     select LISTENAI_DMA
     select LISTENAI_GPIO
+    select LISTENAI_AON
+    select LISTENAI_WDT
     select NUCLEI_SYSTIMER
     select LISTENAI_UART
 

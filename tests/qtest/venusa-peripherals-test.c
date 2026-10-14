@@ -346,6 +346,91 @@ static void otp_mapping(void)
     qtest_quit(q);
 }
 
+static void aon_timer(void)
+{
+    QTestState *q = start(false);
+    const uint32_t base = 0x45300000, gate = 0x45000054;
+    qtest_writel(q, gate, 4);
+    qtest_writel(q, base + 8, 1);
+    qtest_writel(q, base, 0x41000002);
+    qtest_clock_step(q, 40000);
+    g_assert_cmpuint(qtest_readl(q, base + 4), ==, 1);
+    qtest_writel(q, gate, 0);
+    qtest_clock_step(q, 1000000);
+    g_assert_cmpuint(qtest_readl(q, base + 4), ==, 1);
+    qtest_writel(q, gate, 4);
+    qtest_clock_step(q, 53749);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(64)) & 1, ==, 0);
+    qtest_clock_step(q, 1);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(64)) & 1, ==, 1);
+    g_assert_cmphex(qtest_readl(q, 0x45000014) & 1, ==, 1);
+    qtest_writel(q, base + 12, 1);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(64)) & 1, ==, 0);
+    qtest_writel(q, 0x45000020, 1);
+    g_assert_cmphex(qtest_readl(q, 0x45000014) & 1, ==, 0);
+    qtest_writel(q, base, 0x51000002);
+    qtest_clock_step(q, 93750);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(64)) & 1, ==, 1);
+    qtest_writel(q, 0x45000058, 2);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(64)) & 1, ==, 0);
+    qtest_clock_step(q, 1000000);
+    g_assert_cmpuint(qtest_readl(q, base + 4), ==, 0);
+    qtest_quit(q);
+}
+
+static void watchdogs(void)
+{
+    QTestState *q = start(false);
+    const uint32_t base = 0x44400000, gate = 0x45000054;
+    qtest_writel(q, base + 0x10, 1);
+    g_assert_cmpuint(qtest_readl(q, base + 0x10), ==, 0);
+    qtest_writel(q, base + 0x18, 0x5aa5);
+    qtest_writel(q, base + 0x10, 0x100);
+    qtest_writel(q, base + 0x10, 0x200);
+    g_assert_cmphex(qtest_readl(q, base + 0x10), ==, 0x100);
+    qtest_writel(q, gate, 0x100);
+    qtest_writel(q, base + 0x18, 0x5aa5);
+    qtest_writel(q, base + 0x10, 5);
+    qtest_clock_step(q, 1000000);
+    qtest_writel(q, gate, 0);
+    /* This is the PCLK gate; the independent RC32k counter keeps running. */
+    qtest_clock_step(q, 999999);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(36)) & 1, ==, 0);
+    qtest_clock_step(q, 1);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(36)) & 1, ==, 1);
+    qtest_writel(q, gate, 0x100);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(36)) & 1, ==, 1);
+    qtest_writel(q, base + 0x1c, 1);
+    qtest_clock_step(q, 10000000);
+    g_assert_cmpuint(qtest_readb(q, ECLIC_PENDING(36)) & 1, ==, 0);
+    qtest_writel(q, base + 0x18, 0x5aa5);
+    qtest_writel(q, base + 0x10, 13);
+    qtest_clock_step(q, 3000000);
+    qtest_writel(q, gate, 0);
+    qtest_clock_step(q, 2999999);
+    g_assert_cmphex(qtest_readl(q, 0x4500004c) & 0x200000, ==, 0);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(qtest_readl(q, 0x4500004c) & 0x200000, ==, 0x200000);
+    g_assert_cmpuint(qtest_readl(q, base + 0x10), ==, 0);
+    qtest_writel(q, 0x20010000, 0x12345678);
+    qtest_writel(q, 0x4310000c, 1);
+    qtest_writel(q, 0x45000054, 0x104);
+    qtest_writel(q, 0x45300000, 0x4100ffff);
+    qtest_writel(q, base + 0x18, 0x5aa5);
+    qtest_writel(q, base + 0x10, 13);
+    qtest_clock_step(q, 6000000);
+    qtest_qmp_eventwait(q, "RESET");
+    g_assert_cmphex(qtest_readl(q, 0x4500004c), ==, 0x200000);
+    g_assert_cmphex(qtest_readl(q, 0x4310000c), ==, 1);
+    g_assert_cmphex(qtest_readl(q, 0x20010000), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(q, 0x45000054), ==, 0x104);
+    uint32_t remaining = qtest_readl(q, 0x45300004);
+    g_assert_cmpuint(remaining, <, 0xffff);
+    qtest_clock_step(q, 31250);
+    g_assert_cmpuint(qtest_readl(q, 0x45300004), ==, remaining - 1);
+    qtest_quit(q);
+}
+
 static void image(const char *pattern, char **path, size_t length)
 {
     int fd = g_file_open_tmp(pattern, path, NULL);
@@ -376,6 +461,8 @@ int main(int argc, char **argv)
     qtest_add_func("venusa/dual-timers", dual_timers);
     qtest_add_func("venusa/gpt-timers", gpt_timers);
     qtest_add_func("venusa/otp-mapping", otp_mapping);
+    qtest_add_func("venusa/aon-timer", aon_timer);
+    qtest_add_func("venusa/watchdogs", watchdogs);
     int result = g_test_run();
     unlink(flash_path); unlink(sd_path); unlink(otp_path);
     g_free(flash_path); g_free(sd_path); g_free(otp_path);

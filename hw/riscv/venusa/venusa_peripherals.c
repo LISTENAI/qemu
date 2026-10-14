@@ -61,7 +61,7 @@ void venusa_peripherals_reset(VenusASoC *s)
 {
     venusa_gpt_reset(s);
     venusa_gpt_clock(s, (s->syscfg[0x28 / 4] & 0x40) != 0);
-    listenai_calendar_reset(&s->calendar);
+    if (!s->reset_preserve_aon) { listenai_calendar_reset(&s->calendar); }
     for (unsigned i = 0; i < 2; i++) {
         listenai_dual_timer_reset(&s->dual_timer[i]);
         listenai_i2c_reset(&s->i2c[i]);

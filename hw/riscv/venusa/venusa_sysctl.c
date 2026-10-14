@@ -44,6 +44,7 @@ static uint32_t *configuration(VenusASoC *s, hwaddr address)
     if (address >= 0x450000d8 && address <= 0x450000f0) {
         return &s->aon[(address - 0x45000000) / 4];
     }
+    if (address == 0x4310000c) { return &s->syscfg[0x0c / 4]; }
     if (address == 0x431000a0) { return &s->syscfg[0xa0 / 4]; }
     if (address >= 0x43100018 && address <= 0x43100034) {
         return &s->syscfg[(address - 0x43100000) / 4];
@@ -108,6 +109,16 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         }
         if (address == 0x43000010 && (value & (1u << 23)) && !(previous & (1u << 23))) {
             s->pll_core_div = ((s->buscfg[3] >> 1) & 15) + 3;
+        }
+        if (address == 0x45000054) {
+            listenai_aon_timer_clock(&s->aon_timer, (value & 4) != 0);
+            /* WDT PCLK gating does not stop its independent RC32k counter. */
+        }
+        if (address == 0x45000058) {
+            if (value & ~0xau) { return false; }
+            if (value & 2) { listenai_aon_timer_reset(&s->aon_timer); }
+            if (value & 8) { listenai_calendar_reset(&s->calendar); }
+            *reg = 0;
         }
         if (address == 0x43100028) {
             if ((value & 0x20) && !(previous & 0x20)) {
@@ -184,6 +195,7 @@ void venusa_sysctl_reset(VenusASoC *s)
     s->pll_core_div = 3;
     s->gpt_t0_div = 1;
     venusa_clock_update(s);
+    s->aon[0x54 / 4] = 0x000bb9dc;
     s->aon[0x4c / 4] = 1;
     s->aon[0xa0 / 4] = 0x18100;
 }

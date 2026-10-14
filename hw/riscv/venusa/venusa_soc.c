@@ -30,6 +30,10 @@ G_NORETURN void venusa_fail(VenusASoC *s, hwaddr address, unsigned size,
 
 void venusa_irq(VenusASoC *s, unsigned irq, bool value)
 {
+    assert(irq < 83);
+    uint64_t mask = UINT64_C(1) << (irq & 63);
+    if (value) { s->irq_levels[irq / 64] |= mask; }
+    else { s->irq_levels[irq / 64] &= ~mask; }
     /* Until CIDU routing is configured, external interrupts target boot core. */
     nuclei_n300_irq(&s->cpu[0].env, irq, value);
 }
@@ -109,9 +113,29 @@ static const MemoryRegionOps io_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4 },
 };
 
+void venusa_reset_cpu(VenusASoC *s, unsigned index)
+{
+    cpu_reset(CPU(&s->cpu[index]));
+    nuclei_n300_reset(&s->cpu[index]);
+    nuclei_systimer_reset(&s->timer[index], 1000000);
+    s->cpu[index].env.pc = 0;
+    CPU(&s->cpu[index])->halted = false;
+    if (!index) {
+        for (unsigned irq = 16; irq < 83; irq++) {
+            nuclei_n300_irq(&s->cpu[index].env, irq,
+                (s->irq_levels[irq / 64] >> (irq & 63)) & 1);
+        }
+    }
+}
+
 static void reset(DeviceState *dev)
 {
     VenusASoC *s = VENUSA_SOC(dev);
+    uint32_t saved_aon[G_N_ELEMENTS(s->aon)], saved_syscfg[G_N_ELEMENTS(s->syscfg)];
+    uint8_t saved_modes[10];
+    memcpy(saved_aon, s->aon, sizeof(saved_aon));
+    memcpy(saved_syscfg, s->syscfg, sizeof(saved_syscfg));
+    memcpy(saved_modes, s->psram_chip.modes, sizeof(saved_modes));
     for (unsigned i = 0; i < 2; i++) {
         cpu_reset(CPU(&s->cpu[i]));
         nuclei_n300_reset(&s->cpu[i]);
@@ -120,10 +144,25 @@ static void reset(DeviceState *dev)
         nuclei_systimer_reset(&s->timer[i], 1000000);
     }
     venusa_sysctl_reset(s);
+    if (s->reset_preserve_aon) {
+        memcpy(s->aon, saved_aon, sizeof(saved_aon));
+        memcpy(s->syscfg, saved_syscfg, sizeof(saved_syscfg));
+    }
+    if (s->reset_cause) { s->aon[0x4c / 4] = s->reset_cause; }
     venusa_storage_reset(s);
     listenai_dma_reset(&s->dma);
     venusa_peripherals_reset(s);
+    venusa_aon_reset(s);
     listenai_psram_reset(&s->psram_ctrl);
+    if (s->reset_preserve_aon) {
+        memcpy(s->psram_chip.modes, saved_modes, sizeof(saved_modes));
+    }
+    for (unsigned irq = 16; irq < 83; irq++) {
+        nuclei_n300_irq(&s->cpu[0].env, irq,
+            (s->irq_levels[irq / 64] >> (irq & 63)) & 1);
+    }
+    s->reset_preserve_aon = false;
+    s->reset_cause = 0;
     for (unsigned i = 0; i < 3; i++) {
         venusa_uart_reset(s, i);
     }
@@ -185,6 +224,7 @@ static void realize(DeviceState *dev, Error **errp)
     venusa_dma_init(s);
     venusa_uart_init(s);
     venusa_peripherals_init(s);
+    venusa_aon_init(s);
     venusa_runtime_init(s);
 }
 
