@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "hw/riscv/venusa/venusa.h"
 #include "exec/icount.h"
+#include "qemu/error-report.h"
 
 void venusa_hclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *d)
 {
@@ -58,6 +59,7 @@ static uint32_t *configuration(VenusASoC *s, hwaddr address)
     case 0x45000030: case 0x45000034: case 0x45000038:
     case 0x45000040: case 0x45000044: case 0x45000048:
     case 0x45000054: case 0x45000058: case 0x45000080:
+    case 0x45000090: case 0x45000094:
     case 0x45000088: case 0x450000a4: case 0x450000a8:
     case 0x450000ac: case 0x450000b0: case 0x450000c0:
     case 0x450000c4: case 0x450000c8:
@@ -75,6 +77,7 @@ bool venusa_sysctl_read(VenusASoC *s, hwaddr address, uint32_t *value)
     }
     switch (address) {
     case 0x43100014: *value = 0; return true;
+    case 0x43100080: *value = s->calendar.wakeup; return true;
     case 0x45000014: *value = s->aon[0x14 / 4]; return true;
     case 0x45000024: *value = s->aon[0x14 / 4] & s->aon[0x18 / 4]; return true;
     case 0x45000000: *value = 0x63020000; return true;
@@ -105,6 +108,9 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         if (address == 0x43000010 && (value & (1u << 23)) && !(previous & (1u << 23))) {
             s->pll_core_div = ((s->buscfg[3] >> 1) & 15) + 3;
         }
+        if (address == 0x45000090 && (value & 0x2000) && !(previous & 0x2000)) {
+            warn_report("VenusA RTC calibration has no analog effect; result registers unsupported");
+        }
         if (address == 0x431000a0) { venusa_uart_update_dma(s); }
         if (address == 0x43000008) {
             /* Functional PLL lock follows enable; analog settling is not modeled. */
@@ -131,6 +137,11 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             listenai_spimem_reset(&s->flash_ctrl);
             s->flash_ctrl.regs[0x7c / 4] = 0x1311;
         }
+        return true;
+    }
+    if (address == 0x43100080) {
+        if (value & ~1u) { return false; }
+        s->calendar.wakeup = value;
         return true;
     }
     if (address == 0x450000a0) {
