@@ -236,3 +236,6 @@ config XLNX_VERSAL_TRNG
     bool
 
 source macio/Kconfig
+
+config LISTENAI_LUNA
+    bool

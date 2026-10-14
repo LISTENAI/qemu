@@ -159,6 +159,7 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         }
         if (address == 0x4310001c || address == 0x43100020 ||
             (address >= 0x43000000 && address <= 0x43000018)) { venusa_spi_clock(s); }
+        if (address == 0x43100034) { listenai_luna_clock(&s->luna, (value & 0x80) != 0); }
         if (address == 0x43100030 || address == 0x43100034) { venusa_audio_clock(s); }
         if (address == 0x43000008) {
             /* Functional PLL lock follows enable; analog settling is not modeled. */
@@ -176,12 +177,13 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         return true;
     }
     if (address == 0x43100014) {
-        const uint32_t supported = 7u | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (15u << 17) | (1u << 14) | (3u << 7);
+        const uint32_t supported = 7u | (1u << 27) | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (15u << 17) | (1u << 14) | (3u << 7);
         if (value & ~supported) { return false; }
         for (unsigned i = 0; i < 2; i++) {
             if (value & (1u << (7 + i))) { listenai_spi_reset(&s->spi[i].device); }
         }
         if (value & (1u << 14)) { venusa_gpadc_reset(&s->gpadc); }
+        if (value & (1u << 27)) { venusa_luna_reset(s); }
         if (value & (1u << 17)) { venusa_audio_reset(s); }
         if (value & (1u << 18)) { venusa_codec_reset(s); }
         if (value & (1u << 19)) { venusa_i2s_reset(s, 1); }

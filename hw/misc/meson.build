@@ -161,3 +161,23 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
 
 # HPPA devices
 system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
+
+if config_all_devices.has_key('CONFIG_LISTENAI_LUNA')
+  luna_dir = get_option('lisem_luna_dir')
+  if luna_dir == '' or not fs.is_absolute(luna_dir)
+    error('LISTENAI LUNA requires an absolute -Dlisem_luna_dir')
+  endif
+  luna_api = files('../../include/lisem/luna.h')
+  luna_archive = luna_dir / 'liblisem-luna.a'
+  luna_check = custom_target('lisem-luna-validation',
+    input: [luna_archive, luna_dir / 'manifest.json', luna_api],
+    output: 'lisem_luna_validated.h',
+    command: [python, files('../../scripts/lisem-assets.py'), 'luna',
+              '--directory', luna_dir, '--api', luna_api, '--target',
+              host_machine.system() + '-' + host_machine.cpu_family(),
+              '--output', '@OUTPUT@'])
+  luna_assets = declare_dependency(sources: luna_check,
+    include_directories: include_directories('.'), link_args: [luna_archive])
+  system_ss.add(when: 'CONFIG_LISTENAI_LUNA',
+                if_true: [files('listenai_luna.c'), luna_assets])
+endif

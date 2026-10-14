@@ -2,6 +2,7 @@
 #ifndef HW_RISCV_VENUSA_H
 #define HW_RISCV_VENUSA_H
 #include "hw/sysbus.h"
+#include "hw/misc/listenai_luna.h"
 #include "qemu/units.h"
 #include "hw/riscv/venusa/venusa_audio.h"
 #include "target/riscv/cpu.h"
@@ -40,6 +41,8 @@ typedef struct VenusAPeripheral {
 struct VenusASoC {
     SysBusDevice parent_obj;
     VenusAAudio audio;
+    ListenAILUNA luna;
+    uint32_t luna_mtq_control, luna_mtq_mask, luna_busrd;
     VenusGPADC gpadc;
     NucleiCIDU cidu;
     VenusASPI spi[2];
@@ -110,4 +113,6 @@ void venusa_dma_init(VenusASoC *s);
 void venusa_uart_reset(VenusASoC *s, unsigned index);
 uint32_t venusa_uart_read(VenusASoC *s, unsigned index, unsigned offset);
 void venusa_uart_write(VenusASoC *s, unsigned index, unsigned offset, uint32_t value);
+void venusa_luna_init(VenusASoC *s);
+void venusa_luna_reset(VenusASoC *s);
 #endif

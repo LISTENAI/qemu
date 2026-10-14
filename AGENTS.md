@@ -14,6 +14,8 @@
 - `hw/block/listenai_nor.c` 与 `hw/sd/listenai_sd.c`：共享 NOR 命令引擎与
   SDHCI/vendor 挂接；板型传入地址、IRQ、介质和 CD 接线，控制器复位不
   清除 NOR 内容，SD 的介质状态与机械检测信号保持分离。
+- `hw/misc/listenai_luna.c` 通过固定 LUNA ABI 提供共享 MMIO 与完成定时，
+  芯片只接入地址、复位、时钟与诊断；不解析组件参数或实现算子。
 - ROM 和 LUNA 二进制由构建方提供，不提交 SDK、业务固件或私有组件源码。
   `scripts/lisem-assets.py` 校验目标、ABI、大小及哈希，在构建目录生成头文件。
 
