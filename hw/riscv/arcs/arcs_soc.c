@@ -167,10 +167,12 @@ static void reset(DeviceState *dev)
     s->legacy_random_probe_reads = 0;
     arcs_gpdma_reset(s);
     arcs_i2s_reset(s);
+    for (unsigned i = 0; i < 3; i++) {
+        arcs_spi_reset(s, i);
+    }
     arcs_gpio_reset(s);
     arcs_psram_reset(s);
     arcs_storage_reset(s);
-    for (unsigned i = 0; i < 3; i++) { arcs_spi_reset(s, i); }
     arcs_gpt_reset(s);
     arcs_mailbox_reset(s);
     arcs_luna_reset(s);

@@ -16,56 +16,103 @@ struct ListenaiGPIOWire {
     bool valid, level, registered;
     QLIST_ENTRY(ListenaiGPIOWire) node;
 };
+
 static QLIST_HEAD(, ListenaiGPIOWire) wires = QLIST_HEAD_INITIALIZER(wires);
 bool listenai_gpio_wire_connected(DeviceState *gpio, unsigned source)
 {
     ListenaiGPIOWire *s;
     QLIST_FOREACH(s, &wires, node) {
-        if (s->gpio == gpio && s->source == source) { return true; }
+        if (s->gpio == gpio && s->source == source) {
+            return true;
+        }
     }
     return false;
 }
+
+bool listenai_gpio_wire_connects(DeviceState *gpio, unsigned source,
+                                 unsigned destination)
+{
+    ListenaiGPIOWire *s;
+    QLIST_FOREACH(s, &wires, node) {
+        if (s->gpio == gpio && s->source == source &&
+            s->destination == destination) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void input(void *opaque, int n, int level)
 {
     ListenaiGPIOWire *s = opaque;
-    if (s->valid && s->level == !!level) { return; }
-    s->valid = true; s->level = !!level;
+    if (s->valid && s->level == !!level) {
+        return;
+    }
+    s->valid = true;
+    s->level = !!level;
     qemu_set_irq(s->target, level);
 }
+
 static void realize(DeviceState *dev, Error **errp)
 {
     ListenaiGPIOWire *s = LISTENAI_GPIO_WIRE(dev);
     unsigned ins = 0, outs = 0;
     NamedGPIOList *list;
-    if (!s->gpio) { error_setg(errp, "Digital wire requires a GPIO device"); return; }
-    QLIST_FOREACH(list, &s->gpio->gpios, node) {
-        if (list->name && !strcmp(list->name, "pad-in")) { ins = list->num_in; }
-        if (list->name && !strcmp(list->name, "pad-out")) { outs = list->num_out; }
-    }
-    if (s->source >= outs || s->destination >= ins || s->source == s->destination ||
-        qdev_get_gpio_out_connector(s->gpio, "pad-out", s->source)) {
-        error_setg(errp, "Digital wire requires valid distinct pads and an unused output");
+    if (!s->gpio) {
+        error_setg(errp, "Digital wire requires a GPIO device");
         return;
     }
+    QLIST_FOREACH(list, &s->gpio->gpios, node) {
+        if (list->name && !strcmp(list->name, "pad-in")) {
+            ins = list->num_in;
+        }
+        if (list->name && !strcmp(list->name, "pad-out")) {
+            outs = list->num_out;
+        }
+    }
+    if (s->source >= outs || s->destination >= ins ||
+        s->source == s->destination ||
+        qdev_get_gpio_out_connector(s->gpio, "pad-out", s->source)) {
+        error_setg(
+            errp,
+            "Digital wire requires valid distinct pads and an unused output");
+        return;
+    }
+    ListenaiGPIOWire *other;
+    QLIST_FOREACH(other, &wires, node) {
+        if (other->gpio == s->gpio && other->destination == s->destination) {
+            error_setg(errp, "Digital wire destination already has a driver");
+            return;
+        }
+    }
     s->target = qdev_get_gpio_in_named(s->gpio, "pad-in", s->destination);
-    qdev_connect_gpio_out_named(s->gpio, "pad-out", s->source, qdev_get_gpio_in(dev, 0));
+    qdev_connect_gpio_out_named(s->gpio, "pad-out", s->source,
+                                qdev_get_gpio_in(dev, 0));
     QLIST_INSERT_HEAD(&wires, s, node);
     s->registered = true;
 }
+
 static void unrealize(DeviceState *dev)
 {
     ListenaiGPIOWire *s = LISTENAI_GPIO_WIRE(dev);
-    if (s->registered) { QLIST_REMOVE(s, node); s->registered = false; }
+    if (s->registered) {
+        QLIST_REMOVE(s, node);
+        s->registered = false;
+    }
 }
+
 static const Property properties[] = {
-    DEFINE_PROP_LINK("gpio", ListenaiGPIOWire, gpio, TYPE_DEVICE, DeviceState *),
+    DEFINE_PROP_LINK("gpio", ListenaiGPIOWire, gpio, TYPE_DEVICE,
+                     DeviceState *),
     DEFINE_PROP_UINT32("source", ListenaiGPIOWire, source, 0),
     DEFINE_PROP_UINT32("destination", ListenaiGPIOWire, destination, 1),
 };
+
 static void instance_init(Object *obj)
 {
     qdev_init_gpio_in(DEVICE(obj), input, 1);
 }
+
 static void class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -74,10 +121,17 @@ static void class_init(ObjectClass *klass, const void *data)
     dc->hotpluggable = false;
     device_class_set_props(dc, properties);
 }
+
 static const TypeInfo wire_info = {
-    .name = TYPE_LISTENAI_GPIO_WIRE, .parent = TYPE_DEVICE,
-    .instance_size = sizeof(ListenaiGPIOWire), .instance_init = instance_init,
+    .name = TYPE_LISTENAI_GPIO_WIRE,
+    .parent = TYPE_DEVICE,
+    .instance_size = sizeof(ListenaiGPIOWire),
+    .instance_init = instance_init,
     .class_init = class_init,
 };
-static void register_types(void) { type_register_static(&wire_info); }
+
+static void register_types(void)
+{
+    type_register_static(&wire_info);
+}
 type_init(register_types)

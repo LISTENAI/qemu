@@ -159,7 +159,10 @@ static void common_write(void *opaque, hwaddr off, uint64_t value, unsigned size
     }
     s->common_regs[off / 4] = off == 0x6c ? value & 1 : value;
     if (off >= 0x14 && off <= 0x1c) { arcs_spi_clock_changed(soc, (off - 0x14) / 4); }
-    if (off == 0x94) { arcs_uart_update_dma(soc); }
+    if (off == 0x94) {
+        arcs_uart_update_dma(soc);
+        arcs_spi_update_dma(soc);
+    }
     return;
 fail:
     arcs_soc_fail(soc, io->base + off, size, true, value);

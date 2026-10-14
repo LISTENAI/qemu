@@ -19,6 +19,7 @@ static void gpio_output(void *opaque, unsigned pad, bool level)
     if (pad >= 12 && pad <= 15) {
         arcs_i2s_pins_changed(soc);
     }
+    arcs_spi_pins_changed(soc);
     qemu_set_irq(soc->pad_out[pad], level);
 }
 static void input(void *opaque, int pin, int value)
@@ -26,6 +27,7 @@ static void input(void *opaque, int pin, int value)
     ArcsSoC *soc = opaque;
     listenai_gpio_input(&soc->gpio[pin / 32], pin % 32, value);
     arcs_i2s_pad_input(soc, pin, value);
+    arcs_spi_pad_input(soc, pin, value);
 }
 void arcs_gpio_outputs_snapshot(ArcsGPIO *s, uint32_t *driven, uint32_t *levels)
 {

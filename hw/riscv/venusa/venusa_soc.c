@@ -146,6 +146,7 @@ static void reset(DeviceState *dev)
     }
     venusa_i2s_reset(s, 0);
     venusa_i2s_reset(s, 1);
+    venusa_spi_reset(s);
     venusa_sysctl_reset(s);
     if (s->reset_preserve_aon) {
         memcpy(s->aon, saved_aon, sizeof(saved_aon));
@@ -157,7 +158,6 @@ static void reset(DeviceState *dev)
     venusa_codec_reset(s);
     venusa_audio_reset(s);
     venusa_luna_reset(s);
-    venusa_spi_reset(s);
     venusa_dvp_reset(s);
     venusa_image_reset(s);
     venusa_dvp_clock(s);

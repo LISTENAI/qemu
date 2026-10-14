@@ -78,7 +78,7 @@ struct ArcsSoC {
     ArcsJPEG jpeg;
     MemoryRegion mailbox_io;
     uint32_t mailbox_regs[0xc0 / 4];
-    qemu_irq spi_cs[3], spi_dma[3], uart_dma[6];
+    qemu_irq spi_cs[3], uart_dma[6];
     qemu_irq pad_out[64];
     uint64_t entry;
     uint64_t legacy_random_probe_reads;

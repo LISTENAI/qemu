@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "listenai-test-utils.h"
 #define SPI 0x43e00000
 #define CFG 0x4310001c
 #define PENDING (0xe0021000 + 32 * 4)
 static char *flash;
 static QTestState *start(void)
 {
-    g_autofree char *path = g_shell_quote(flash);
+    g_autofree char *path = listenai_test_quote_arg(flash);
     QTestState *q = qtest_initf("-machine venusa-rd-evb -drive "
                                "if=pflash,format=raw,file=%s", path);
     qtest_writel(q, CFG, 0x13800000);
@@ -131,17 +132,101 @@ static void transmit_clock_and_reset(void)
     g_assert_cmphex(qtest_readl(q, SPI + 0x3c), ==, 0);
     qtest_quit(q);
 }
+/* The two VenusA controllers share the measured IRQ-latch contract. */
+static void hardware_contract(const void *opaque)
+{
+    unsigned index = GPOINTER_TO_UINT(opaque);
+    uint32_t spi = SPI + index * 0x100000;
+    uint32_t pending = 0xe0021000 + (32 + index) * 4;
+    QTestState *q = start();
+    g_assert_cmphex(qtest_readl(q, spi), ==, 0x02002044);
+    g_assert_cmphex(qtest_readl(q, spi + 0x7c), ==, 0x4322);
+    qtest_writel(q, CFG + index * 4, 0x13800000);
+    qtest_writel(q, CFG + index * 4, 0x93800000);
+    qtest_writel(q, spi + 0x10, 0x1f00);
+    qtest_writel(q, spi + 0x40, 255); /* 32 bits at 8 MHz = 4 us. */
+    for (unsigned count = 3; count <= 5; count++) {
+        qtest_writel(q, spi + 0x38, 0);
+        qtest_writel(q, spi + 0x30, 0x40407);
+        for (unsigned n = 0; n < count; n++) {
+            qtest_writel(q, spi + 0x2c, n);
+        }
+        qtest_writel(q, spi + 0x38, 8);
+        g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, count <= 4 ? 8 : 0);
+        g_assert_cmphex(qtest_readb(q, pending), ==, count <= 4);
+    }
+    qtest_writel(q, spi + 0x30, 0x40407);
+    for (unsigned n = 0; n < 5; n++) {
+        qtest_writel(q, spi + 0x2c, n);
+    }
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 8);
+    qtest_writel(q, spi + 0x38, 0);
+    qtest_writel(q, spi + 0x38, 8);
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 0);
+    for (unsigned n = 5; n < 8; n++) {
+        qtest_writel(q, spi + 0x2c, n);
+    }
+    g_assert_cmphex(qtest_readl(q, spi + 0x34), ==, 0x884000);
+    for (unsigned count = 3; count <= 5; count++) {
+        qtest_writel(q, spi + 0x38, 0);
+        qtest_writel(q, spi + 0x30, 0x40407);
+        qtest_writel(q, spi + 0x1c, count - 1);
+        qtest_writel(q, spi + 0x20, 0x02000000);
+        qtest_writel(q, spi + 0x24, 0);
+        qtest_clock_step(q, count * 4000);
+        qtest_writel(q, spi + 0x38, 4);
+        g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, count >= 4 ? 4 : 0);
+        g_assert_cmphex(qtest_readb(q, pending), ==, count >= 4);
+        for (unsigned n = 0; n < count; n++) {
+            qtest_readl(q, spi + 0x2c);
+        }
+        g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, count >= 4 ? 4 : 0);
+        qtest_writel(q, spi + 0x38, 0);
+        qtest_writel(q, spi + 0x38, 4);
+        g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 0);
+    }
+    qtest_writel(q, spi + 0x38, 0x18);
+    qtest_writel(q, spi + 0x1c, 0);
+    qtest_writel(q, spi + 0x24, 0);
+    qtest_clock_step(q, 4000);
+    for (unsigned n = 0; n < 5; n++) {
+        qtest_writel(q, spi + 0x2c, n);
+    }
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 0x18);
+    qtest_writel(q, spi + 0x3c, 8);
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 16);
+    qtest_writel(q, spi + 0x3c, 0);
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 16);
+    qtest_writel(q, spi + 0x38, 0);
+    qtest_writel(q, spi + 0x38, 16);
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 0);
+    qtest_writel(q, spi + 0x38, 0);
+    qtest_writel(q, spi + 0x24, 0);
+    qtest_clock_step(q, 4000);
+    qtest_writel(q, spi + 0x38, 16);
+    g_assert_cmphex(qtest_readl(q, spi + 0x3c), ==, 0);
+    qtest_quit(q);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     int fd = g_file_open_tmp("venusa-spi-flash-XXXXXX", &flash, NULL);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
-    close(fd);
+    g_assert_cmpint(close(fd), ==, 0);
+    {
+        gsize size = 16 * 1024 * 1024;
+        g_autofree char *image = g_malloc0(size);
+        g_assert_true(g_file_set_contents(flash, image, size, NULL));
+    }
     qtest_add_func("venusa/spi/fifo-pause", fifo_and_pause);
     qtest_add_func("venusa/spi/clock-reset", transmit_clock_and_reset);
     qtest_add_func("venusa/spi/receive-irq", receive_interrupt);
     qtest_add_func("venusa/spi/dma-mux", dma_receive_mux);
+    for (unsigned i = 0; i < 2; i++) {
+        g_autofree char *name = g_strdup_printf("venusa/spi/hardware/%u", i);
+        qtest_add_data_func(name, GUINT_TO_POINTER(i), hardware_contract);
+    }
     int result = g_test_run();
     unlink(flash); g_free(flash);
     return result;
