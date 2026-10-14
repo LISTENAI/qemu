@@ -47,6 +47,19 @@ void listenai_nor_init(ListenAINOR *chip, Object *owner, const char *name,
     }
 }
 
+void listenai_nor_init_block(ListenAINOR *chip, Object *owner, const char *name,
+                            hwaddr address, BlockBackend *block)
+{
+    if (!block || blk_getlength(block) != NOR_SIZE) {
+        error_report("NOR requires an exact 16 MiB block image"); exit(1);
+    }
+    listenai_nor_init(chip, owner, name, address, NULL, false);
+    chip->block = block;
+    if (blk_pread(block, 0, NOR_SIZE, memory_region_get_ram_ptr(&chip->rom), 0) < 0) {
+        error_report("NOR block read failed"); exit(1);
+    }
+}
+
 static void nor_write(ListenAINOR *chip, uint32_t off, const uint8_t *data, unsigned count)
 {
     assert(off <= NOR_SIZE && count <= NOR_SIZE - off);
@@ -55,6 +68,10 @@ static void nor_write(ListenAINOR *chip, uint32_t off, const uint8_t *data, unsi
     if (address_space_write_rom(&address_space_memory, chip->address + off,
                                MEMTXATTRS_UNSPECIFIED, data, count) != MEMTX_OK) {
         error_report("NOR writeback failed"); exit(1);
+    }
+    if (chip->block && (blk_pwrite(chip->block, off, count, data, 0) < 0 ||
+                        blk_flush(chip->block) < 0)) {
+        error_report("NOR block persistence failed"); exit(1);
     }
     if (chip->backing && (fseek(chip->backing, off, SEEK_SET) ||
         fwrite(data, 1, count, chip->backing) != count || fflush(chip->backing) ||
