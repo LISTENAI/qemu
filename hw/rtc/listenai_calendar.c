@@ -51,6 +51,7 @@ void listenai_calendar_reset(ListenAICalendar *s)
     s->wakeup = false;
     s->alarm_enabled = s->interval_enabled = false;
     s->pending = 0;
+    s->zero_date = false;
     s->weekday = 6;
     s->alarm = 0;
     timer_del(s->event);
@@ -75,12 +76,21 @@ static uint64_t calendar_read(void *opaque, hwaddr off, unsigned size)
         int64_t seconds = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->started) / 1000000000;
         GDateTime *date = g_date_time_new_from_unix_utc(s->epoch + seconds);
         assert(date);
-        uint32_t value = off == 0x14 ?
-            (g_date_time_get_hour(date) << 16) | (g_date_time_get_minute(date) << 8) |
-            g_date_time_get_second(date) :
-            (((s->weekday + (s->epoch % 86400 + seconds) / 86400) % 7) << 24) |
-            ((g_date_time_get_year(date) - 2000) << 16) |
-            (g_date_time_get_month(date) << 8) | g_date_time_get_day_of_month(date);
+        uint32_t value;
+        if (off == 0x14) {
+            value = (g_date_time_get_hour(date) << 16) |
+                (g_date_time_get_minute(date) << 8) | g_date_time_get_second(date);
+        } else if (s->zero_date && s->epoch + seconds < 946684800) {
+            /* Month zero has 32 raw day values (0..31); midnight after day31
+             * carries to January 1, year zero. Weekday counts independently. */
+            int64_t days = (s->epoch + seconds - (946684800 - 32 * 86400)) / 86400;
+            value = (((s->weekday + (s->epoch % 86400 + seconds) / 86400) % 7) << 24) |
+                    days;
+        } else {
+            value = (((s->weekday + (s->epoch % 86400 + seconds) / 86400) % 7) << 24) |
+                ((g_date_time_get_year(date) - 2000) << 16) |
+                (g_date_time_get_month(date) << 8) | g_date_time_get_day_of_month(date);
+        }
         g_date_time_unref(date);
         return value;
     }
@@ -98,10 +108,14 @@ static void calendar_write(void *opaque, hwaddr off, uint64_t value, unsigned si
         if (value & 1) {
             uint32_t lo = s->regs[3], hi = s->regs[4];
             if ((lo & 63) > 59) { goto fail; }
+            bool zero = s->allow_zero_date && !(hi & 0xffff00);
             GDateTime *date = g_date_time_new_utc(2000 + ((hi >> 16) & 127),
-                (hi >> 8) & 15, hi & 31, (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
+                zero ? 1 : (hi >> 8) & 15, zero ? 1 : hi & 31,
+                (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
             if (!date) { goto fail; }
+            s->zero_date = zero;
             s->epoch = g_date_time_to_unix(date);
+            if (zero) { s->epoch -= (32 - (hi & 31)) * INT64_C(86400); }
             s->weekday = (hi >> 24) & 7;
             if (s->weekday > 6) { g_date_time_unref(date); goto fail; }
             g_date_time_unref(date);
@@ -109,10 +123,13 @@ static void calendar_write(void *opaque, hwaddr off, uint64_t value, unsigned si
         }
         if (value & 0x10) {
             uint32_t lo = s->regs[7], hi = s->regs[8];
+            bool zero = s->allow_zero_date && !(hi & 0xffff00);
             GDateTime *date = g_date_time_new_utc(2000 + ((hi >> 16) & 127),
-                (hi >> 8) & 15, hi & 31, (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
+                zero ? 1 : (hi >> 8) & 15, zero ? 1 : hi & 31,
+                (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
             if (!date) { goto fail; }
             s->alarm = g_date_time_to_unix(date);
+            if (zero) { s->alarm -= (32 - (hi & 31)) * INT64_C(86400); }
             g_date_time_unref(date);
         }
         if (value & 0x20) { s->alarm_enabled = true; }

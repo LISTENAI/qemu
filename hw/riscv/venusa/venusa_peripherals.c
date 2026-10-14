@@ -70,6 +70,7 @@ void venusa_peripherals_init(VenusASoC *s)
     venusa_gpt_init(s);
     listenai_calendar_init(&s->calendar, OBJECT(s), "venusa-calendar", 0x43400000,
                           calendar_irq, calendar_fault, s);
+    s->calendar.allow_zero_date = true;
     for (unsigned i = 0; i < 2; i++) {
         s->dual_context[i] = (VenusAPeripheral){ s, i };
         s->i2c_context[i] = (VenusAPeripheral){ s, i };

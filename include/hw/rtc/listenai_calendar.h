@@ -16,6 +16,7 @@ typedef struct ListenAICalendar {
     uint32_t pending;
     uint8_t weekday;
     bool alarm_enabled, interval_enabled, wakeup;
+    bool allow_zero_date, zero_date;
     ListenAICalendarIRQ irq;
     ListenAICalendarFault fault;
     void *opaque;
