@@ -41,6 +41,7 @@ static void sd_irq(void *opaque, int unused, int level)
 
 void venusa_storage_init(VenusASoC *s)
 {
+    venusa_flashdl_init(s);
     listenai_sd_init(&s->sd, OBJECT(s), "venusa-sd", 0x44a00000,
                     UINT64_C(0x00002f7727200080), true, blk_by_name("sdcard"),
                     qemu_allocate_irq(sd_irq, s, 0), flash_fault, s);
@@ -52,6 +53,7 @@ void venusa_storage_init(VenusASoC *s)
 
 void venusa_storage_reset(VenusASoC *s)
 {
+    venusa_flashdl_reset(s);
     listenai_sd_reset(&s->sd);
     listenai_spimem_reset(&s->flash_ctrl);
     /* SPIB CONFIG: observed on CSK7004J8U, FIFO depth and memory mode. */

@@ -42,6 +42,8 @@ struct VenusASoC {
     ListenAISD sd;
     ListenAINOR nor;
     ListenAISpiMem flash_ctrl;
+    MemoryRegion flash_delay_io;
+    uint32_t flash_delay_regs[2];
     NucleiSysTimer timer[2];
     VenusAUART uart[3];
     uint32_t syscfg[0xf0 / 4], buscfg[0x30 / 4];
@@ -77,6 +79,8 @@ bool venusa_sysctl_read(VenusASoC *s, hwaddr address, uint32_t *value);
 bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value);
 void venusa_sysctl_reset(VenusASoC *s);
 void venusa_psram_init(VenusASoC *s);
+void venusa_flashdl_init(VenusASoC *s);
+void venusa_flashdl_reset(VenusASoC *s);
 void venusa_storage_init(VenusASoC *s);
 void venusa_storage_reset(VenusASoC *s);
 void venusa_uart_init(VenusASoC *s);
