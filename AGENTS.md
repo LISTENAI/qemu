@@ -7,10 +7,18 @@
 
 - `target/riscv/nuclei_n300.*`：N300 指令、CSR、ECLIC 与异常入口。
 - `accel/tcg/`：指令计数、每核时钟、双核轮转与实时节拍。
-- `hw/riscv/arcs/` 与 `include/hw/riscv/arcs/`：ARCS 芯片控制器、板级组合与宿主控制接口；
-  `hw/riscv/arcs/meson.build` 汇总这些模型的构建依赖。
+- `hw/riscv/arcs/`、`hw/riscv/venusa/` 及对应头文件目录：芯片地址图、
+  中断与时钟接线、板级组合和宿主控制接口。每个芯片目录的 `meson.build`
+  汇总其构建依赖；不同寄存器代际保持独立模型。
+- `hw/char/`、`hw/dma/`、`hw/gpio/`、`hw/i2c/`、`hw/mem/`、`hw/rtc/`、
+  `hw/ssi/`、`hw/timer/`、`hw/watchdog/` 中的 ListenAI 模型承载共用 IP。
+  芯片适配层传入地址空间、IRQ、DMA 请求、时钟与差异参数，不反向依赖板型。
 - `hw/display/`、`hw/i2c/`、`hw/audio/`：显示、传感器、触控及音频通道。
   芯片寄存器、独立器件和宿主传输保持分层，不将固件业务放入模型。
+- 共用控制器和器件的接口放在对应的 `include/hw/` 目录，公共头不依赖
+  ARCS 或 VenusA 的 SoC 类型。独立 MMIO 控制器按 qdev/SysBusDevice
+  管理子总线、IRQ、GPIO、realize 和 reset；SoC 负责实例化、地址映射与接线。
+  共用串行算法可以作为内部组件，不为辅助状态机虚构独立硬件设备。
 - `hw/block/listenai_nor.c` 与 `hw/sd/listenai_sd.c`：共享 NOR 命令引擎与
   SDHCI/vendor 挂接；板型传入地址、IRQ、介质和 CD 接线，控制器复位不
   清除 NOR 内容，SD 的介质状态与机械检测信号保持分离。
@@ -21,12 +29,15 @@
 
 ## 构建与验证
 
-ARCS 使用 `--target-list=riscv32-softmmu`、`--without-default-devices`、
-`--with-devices-riscv32=arcs`，并指定两个绝对路径选项：
+共同构建使用 `--target-list=riscv32-softmmu`、`--without-default-devices`、
+`--with-devices-riscv32=listenai`，并指定三个绝对路径选项：
 `-Dlisem_rom_dir=...` 指向含 AP/CP ROM 与清单的目录；
+`-Dlisem_venusa_rom_dir=...` 指向含 VenusA AP ROM 与清单的目录；
 `-Dlisem_luna_dir=...` 指向当前宿主目标的静态库及清单目录。
+仅构建一个芯片时可选择 `--with-devices-riscv32=arcs` 或 `venusa`，
+并仅提供相应的 ROM 目录及 LUNA 组件。
 Lisem 负责产品打包和完整固件回归，本仓库保留 QEMU 原生构建入口。
-不需要为 ARCS 构建初始化 `roms/` 的上游固件子模块。
+不需要初始化 `roms/` 的上游固件子模块。
 
 变更先运行相关模型测试，再执行 Lisem 的芯片和原始固件回归。
 时钟/JIT 优化须保持指令预算、异常、IRQ 和 GDB 行为，性能比较使用同一输入
