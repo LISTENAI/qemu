@@ -279,6 +279,7 @@ qtests_s390x = \
    'migration-test']
 
 qtests_riscv32 = \
+  (config_all_devices.has_key('CONFIG_VENUSA') ? ['listenai-eclic-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : [])
 
 qtests_riscv64 = ['riscv-csr-test'] + \

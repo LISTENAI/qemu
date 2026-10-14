@@ -294,7 +294,7 @@ static void realize(DeviceState *dev, Error **errp)
         s->cpu[i].env.mhartid = i;
         qdev_prop_set_uint64(DEVICE(&s->cpu[i]), "resetvec", s->probe ? s->entry : (i ? 0x00200000 : 0));
         qdev_realize(DEVICE(&s->cpu[i]), NULL, &error_fatal);
-        nuclei_n300_init(&s->cpu[i], i == 0);
+        nuclei_n300_init(&s->cpu[i], i == 0, 80, 3);
         s->timer[i].cpu = &s->cpu[i];
         riscv_cpu_set_rdtime_fn(&s->cpu[i].env, timer_csr, &s->timer[i]);
         s->timer[i].event = timer_new_ns(QEMU_CLOCK_VIRTUAL, timer_fire, &s->timer[i]);

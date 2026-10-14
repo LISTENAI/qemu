@@ -2,10 +2,11 @@
 #ifndef QEMU_NUCLEI_N300_H
 #define QEMU_NUCLEI_N300_H
 
-/* Functional N300/ECLIC contract, shared by both ARCS harts. */
+/* Functional N300/ECLIC contract, parameterized by the containing SoC. */
 typedef struct NucleiN300State {
     uint32_t csrs[64];
     uint32_t mtvt;
+    uint8_t irq_count, intctl_bits;
     uint8_t threshold, level, config;
     int best, acknowledged;
     uint8_t irq[80][4];
@@ -13,7 +14,8 @@ typedef struct NucleiN300State {
     uint64_t exceptions, interrupts;
 } NucleiN300State;
 
-void nuclei_n300_init(RISCVCPU *cpu, bool dsp);
+void nuclei_n300_init(RISCVCPU *cpu, bool dsp, unsigned irq_count,
+                      unsigned intctl_bits);
 void nuclei_n300_reset(RISCVCPU *cpu);
 bool nuclei_n300_interrupt(CPUState *cs);
 void nuclei_n300_trap(CPURISCVState *env, bool interrupt);

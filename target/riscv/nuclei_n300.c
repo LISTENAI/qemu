@@ -29,7 +29,7 @@ static int pending(CPURISCVState *env, unsigned threshold)
     NucleiN300State *s = state(env);
     int best = s->best;
     if (best >= 0 && !(s->irq[best][0] && s->irq[best][1])) { best = -1; }
-    for (int i = 0; i < 80; i++) {
+    for (int i = 0; i < s->irq_count; i++) {
         if (!s->irq[i][0] || !s->irq[i][1]) { continue; }
         if (best < 0 || level(s, i) > level(s, best) ||
             (level(s, i) == level(s, best) && s->irq[i][3] > s->irq[best][3] &&
@@ -70,7 +70,7 @@ static void update(CPURISCVState *env)
 void nuclei_n300_irq(CPURISCVState *env, unsigned irq, bool value)
 {
     NucleiN300State *s = state(env);
-    assert(irq < 80);
+    assert(irq < s->irq_count);
     unsigned previous = s->irq[irq][0];
     unsigned trigger = (s->irq[irq][2] >> 1) & 3;
     if (!(trigger & 1)) {
@@ -286,17 +286,26 @@ static RISCVException write_mcause(CPURISCVState *env, int csr, target_ulong val
 void nuclei_n300_reset(RISCVCPU *cpu)
 {
     NucleiN300State *s = cpu->env.nuclei_state;
+    unsigned irq_count = s->irq_count, intctl_bits = s->intctl_bits;
     memset(s, 0, sizeof(*s));
-    s->config = 6;
+    s->irq_count = irq_count;
+    s->intctl_bits = intctl_bits;
+    s->config = intctl_bits << 1;
     s->best = s->acknowledged = -1;
-    for (unsigned i = 0; i < 80; i++) { s->irq[i][3] = 31; }
+    for (unsigned i = 0; i < s->irq_count; i++) { s->irq[i][3] = 0xff >> intctl_bits; }
     update(&cpu->env);
 }
 
-void nuclei_n300_init(RISCVCPU *cpu, bool dsp)
+void nuclei_n300_init(RISCVCPU *cpu, bool dsp, unsigned irq_count,
+                      unsigned intctl_bits)
 {
     static bool installed;
-    cpu->env.nuclei_state = g_new0(NucleiN300State, 1);
+    NucleiN300State *s = g_new0(NucleiN300State, 1);
+    assert(irq_count > 0 && irq_count <= G_N_ELEMENTS(s->irq));
+    assert(intctl_bits > 0 && intctl_bits <= 8);
+    s->irq_count = irq_count;
+    s->intctl_bits = intctl_bits;
+    cpu->env.nuclei_state = s;
     cpu->env.arcs_dsp = dsp;
     if (!installed) {
         static const int csrs[] = {
@@ -332,9 +341,9 @@ uint64_t nuclei_n300_eclic_read(CPURISCVState *env, hwaddr offset, unsigned size
     for (unsigned n = 0; n < size; n++) {
         unsigned off = offset + n, b;
         if (off == 0) { b = s->config | 1; }
-        else if (off >= 4 && off < 8) { b = (80 | (3 << 21)) >> (8 * (off - 4)); }
+        else if (off >= 4 && off < 8) { b = (s->irq_count | (s->intctl_bits << 21)) >> (8 * (off - 4)); }
         else if (off == 11) { b = s->threshold; }
-        else if (off >= 0x1000 && off < 0x1140) { b = s->irq[(off - 0x1000) / 4][off & 3]; }
+        else if (off >= 0x1000 && off < 0x1000 + s->irq_count * 4) { b = s->irq[(off - 0x1000) / 4][off & 3]; }
         else if (off < 12) { b = 0; }
         else { error_report("Unsupported ARCS ECLIC read 0x%x", off); exit(1); }
         value |= (uint64_t)(uint8_t)b << (8 * n);
@@ -351,9 +360,9 @@ void nuclei_n300_eclic_write(CPURISCVState *env, hwaddr offset, uint64_t value,
         uint8_t b = value >> (8 * n);
         if (off == 0) { s->config = b & 0x1e; }
         else if (off == 11) { s->threshold = b; }
-        else if (off >= 0x1000 && off < 0x1140) {
+        else if (off >= 0x1000 && off < 0x1000 + s->irq_count * 4) {
             unsigned col = off & 3;
-            s->irq[(off - 0x1000) / 4][col] = col < 2 ? b & 1 : col == 2 ? b & 7 : b | 31;
+            s->irq[(off - 0x1000) / 4][col] = col < 2 ? b & 1 : col == 2 ? b & 7 : b | (0xff >> s->intctl_bits);
         } else if (off >= 12) { error_report("Unsupported ARCS ECLIC write 0x%x", off); exit(1); }
     }
     update(env);
