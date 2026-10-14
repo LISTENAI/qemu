@@ -55,27 +55,39 @@ static uint32_t skip(ListenAIDMA *s, uint32_t address, unsigned items,
     return items % count ? address : advance(address, interval * width, mode);
 }
 
+static void transfer(ListenAIDMA *s, unsigned ch);
+
 static void service(ListenAIDMA *s)
 {
     if (s->servicing || !(R(0x398) & 1)) { return; }
     s->servicing = true;
     for (unsigned ch = 0; ch < s->channel_count; ch++) {
         ListenAIDMATransfer *t = &s->channel[ch];
-        if (!t->active) { continue; }
         unsigned off = ch * 0x58;
-        while (t->remaining && s->requests[t->request] && !(R(off + 0x40) & 0x100)) {
-            uint32_t value = bus_read(s, R(off), t->width);
-            R(off) = advance(R(off), t->width, t->source_mode);
-            t->remaining--;
-            bus_write(s, R(off + 8), t->width, value);
-            R(off + 8) = advance(R(off + 8), t->width, t->dest_mode);
-            R(off + 0x1c)++;
-        }
-        if (t->remaining) { continue; }
-        t->active = false; R(off + 0x1c) |= 0x100000;
-        R(0x3a0) &= ~(1u << ch);
-        if (R(off + 0x18) & 1) {
-            R(0x2c0) |= 1u << ch; R(0x2c8) |= 1u << ch;
+        unsigned blocks = 0;
+        while (t->active) {
+            while (t->remaining && s->requests[t->request] &&
+                   !(R(off + 0x40) & 0x100)) {
+                uint32_t value = bus_read(s, R(off), t->width);
+                R(off) = advance(R(off), t->width, t->source_mode);
+                t->remaining--;
+                bus_write(s, R(off + 8), t->width, value);
+                R(off + 8) = advance(R(off + 8), t->width, t->dest_mode);
+                R(off + 0x1c)++;
+            }
+            if (t->remaining) { break; }
+            t->active = false;
+            R(off + 0x1c) |= 0x100000;
+            if (R(off + 0x18) & 1) { R(0x2c8) |= 1u << ch; }
+            if ((R(off + 0x18) & 0x18000000) && (R(off + 0x10) & ~3u)) {
+                /* The next packed descriptor is fetched only after this
+                 * block's real peripheral handshakes have completed. */
+                if (++blocks == 4096) { fail(s, off + 0x10, R(off + 0x10)); }
+                transfer(s, ch);
+            } else {
+                R(0x3a0) &= ~(1u << ch);
+                if (R(off + 0x18) & 1) { R(0x2c0) |= 1u << ch; }
+            }
         }
     }
     s->servicing = false;
@@ -110,7 +122,9 @@ static void transfer(ListenAIDMA *s, unsigned ch)
         if (type == 1 || type == 2) {
             bool receive = type == 2;
             if (sw != dw || (receive ? sm : dm) != 2 ||
-                (control & 0x18060000) || (config & (receive ? 0x800 : 0x400))) {
+                !count || (control & 0x60000) ||
+                ((control & 0x18000000) && (control & 0x18000000) != 0x18000000) ||
+                (config & (receive ? 0x800 : 0x400))) {
                 fail(s, off + 0x18, control);
             }
             s->channel[ch] = (ListenAIDMATransfer) {
