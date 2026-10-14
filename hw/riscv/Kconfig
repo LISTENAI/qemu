@@ -4,7 +4,7 @@ config ARCS
     select LISTENAI_NOR
     select SSI
     select I2C
-    select SDHCI
+    select LISTENAI_SD
 
 config RISCV_IOMMU
     bool

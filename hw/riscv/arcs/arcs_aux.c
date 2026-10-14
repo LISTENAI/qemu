@@ -123,51 +123,11 @@ static const MemoryRegionOps adc_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
 };
 
-/* Standard SDHCI registers plus the ARCS vendor register bank. */
-static bool sd_byte_valid(hwaddr off)
+static void sd_fault(void *opaque, hwaddr address, unsigned size,
+                     bool write, uint64_t value)
 {
-    return off < 0x180 && !(off >= 0x70 && off < 0xfc) && !(off >= 0x12c && off < 0x178);
+    arcs_soc_fail(opaque, address, size, write, value);
 }
-
-static uint64_t sd_read(void *opaque, hwaddr off, unsigned size)
-{
-    ArcsSD *s = opaque;
-    uint64_t value = 0;
-    for (unsigned i = 0; i < size; i++) {
-        if (!sd_byte_valid(off + i)) { arcs_soc_fail(s->soc, 0x45a00000 + off, size, false, 0); }
-    }
-    if (off < 0x100) {
-        if (memory_region_dispatch_read(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->host), 0),
-                off, &value, ctz32(size) | MO_LE, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-            arcs_soc_fail(s->soc, 0x45a00000 + off, size, false, 0);
-        }
-    } else {
-        for (unsigned i = 0; i < size; i++) { value |= (uint64_t)s->regs[off + i] << (8 * i); }
-    }
-    return value;
-}
-
-static void sd_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
-{
-    ArcsSD *s = opaque;
-    for (unsigned i = 0; i < size; i++) {
-        if (!sd_byte_valid(off + i)) { arcs_soc_fail(s->soc, 0x45a00000 + off, size, true, value); }
-    }
-    if (off < 0x100) {
-        if (memory_region_dispatch_write(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->host), 0),
-                off, value, ctz32(size) | MO_LE, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-            arcs_soc_fail(s->soc, 0x45a00000 + off, size, true, value);
-        }
-    } else {
-        for (unsigned i = 0; i < size; i++) { s->regs[off + i] = value >> (8 * i); }
-    }
-}
-
-static const MemoryRegionOps sd_ops = {
-    .read = sd_read, .write = sd_write, .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
-    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
-};
 
 static void sd_irq(void *opaque, int n, int level)
 {
@@ -176,31 +136,15 @@ static void sd_irq(void *opaque, int n, int level)
 
 void arcs_sd_reset(ArcsSoC *soc)
 {
-    memset(soc->sd.regs, 0, sizeof(soc->sd.regs));
-    if (soc->sd.host) { device_cold_reset(soc->sd.host); }
+    listenai_sd_reset(&soc->sd);
 }
 
 void arcs_aux_init(ArcsSoC *soc)
 {
     arcs_usb_init(soc);
-    ArcsSD *sd = &soc->sd; sd->soc = soc;
-    sd->host = qdev_new(TYPE_SYSBUS_SDHCI);
-    object_property_add_child(OBJECT(soc), "sd-host", OBJECT(sd->host));
-    qdev_prop_set_uint8(sd->host, "sd-spec-version", 3);
-    qdev_prop_set_uint64(sd->host, "capareg", 0x01686432);
-    qdev_prop_set_bit(sd->host, "no-card-detect", soc->sd_no_card_detect);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(sd->host), &error_fatal);
-    sysbus_connect_irq(SYS_BUS_DEVICE(sd->host), 0, qemu_allocate_irq(sd_irq, soc, 0));
-    DeviceState *card = qdev_new(TYPE_SD_CARD);
-    qdev_prop_set_drive_err(card, "drive", blk_by_name("sdcard"), &error_fatal);
-    qdev_realize_and_unref(card, qdev_get_child_bus(sd->host, "sd-bus"), &error_fatal);
-    BlockBackend *backend = blk_by_name("sdcard");
-    if (backend) {
-        blk_set_perm(backend, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
-                     BLK_PERM_CONSISTENT_READ, &error_fatal);
-    }
-    memory_region_init_io(&sd->io, OBJECT(soc), &sd_ops, sd, "arcs-sd", 0x1000);
-    memory_region_add_subregion(get_system_memory(), 0x45a00000, &sd->io);
+    listenai_sd_init(&soc->sd, OBJECT(soc), "arcs-sd", 0x45a00000,
+                     0x01686432, soc->sd_no_card_detect, blk_by_name("sdcard"),
+                     qemu_allocate_irq(sd_irq, soc, 0), sd_fault, soc);
     ArcsADC *s = &soc->adc; s->soc = soc;
     memory_region_init_io(&s->io, OBJECT(soc), &adc_ops, s, "arcs-gpadc", 0x1000);
     memory_region_add_subregion(get_system_memory(), 0x46600000, &s->io);

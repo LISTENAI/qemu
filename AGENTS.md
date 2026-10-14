@@ -11,6 +11,9 @@
   `hw/riscv/arcs/meson.build` 汇总这些模型的构建依赖。
 - `hw/display/`、`hw/i2c/`、`hw/audio/`：显示、传感器、触控及音频通道。
   芯片寄存器、独立器件和宿主传输保持分层，不将固件业务放入模型。
+- `hw/block/listenai_nor.c` 与 `hw/sd/listenai_sd.c`：共享 NOR 命令引擎与
+  SDHCI/vendor 挂接；板型传入地址、IRQ、介质和 CD 接线，控制器复位不
+  清除 NOR 内容，SD 的介质状态与机械检测信号保持分离。
 - ROM 和 LUNA 二进制由构建方提供，不提交 SDK、业务固件或私有组件源码。
   `scripts/lisem-assets.py` 校验目标、ABI、大小及哈希，在构建目录生成头文件。
 

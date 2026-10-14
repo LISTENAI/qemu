@@ -2,6 +2,7 @@
 #ifndef HW_RISCV_ARCS_AUX_H
 #define HW_RISCV_ARCS_AUX_H
 #include "hw/sysbus.h"
+#include "hw/sd/listenai_sd.h"
 #include "hw/i2c/i2c.h"
 #include "qemu/timer.h"
 typedef struct ArcsSoC ArcsSoC;
@@ -26,12 +27,7 @@ typedef struct ArcsI2C {
     bool (*route_valid)(void *opaque);
     void *route_opaque;
 } ArcsI2C;
-typedef struct ArcsSD {
-    ArcsSoC *soc;
-    DeviceState *host;
-    MemoryRegion io;
-    uint8_t regs[0x180];
-} ArcsSD;
+typedef ListenAISD ArcsSD;
 typedef struct ArcsUSBHost ArcsUSBHost;
 typedef struct ArcsUSB {
     ArcsSoC *soc;
