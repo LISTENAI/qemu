@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* VenusA APC FIFO, serial audio clocks and codec digital sample paths. */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "hw/riscv/venusa/venusa.h"
 #include "system/address-spaces.h"
 
@@ -59,8 +60,10 @@ void venusa_audio_dma_update(VenusASoC *s)
     VenusAAudio *a = &s->audio;
     for (unsigned i = 0; i < ARRAY_SIZE(channels); i++) {
         bool selected = s->syscfg[0xa0 / 4] & (1u << requests[i]);
-        listenai_dma_request(&s->dma, requests[i], selected &&
-            (s->syscfg[0x34 / 4] & (1u << 10)) && dma_ready(a, channels[i]));
+        if (selected) {
+            listenai_dma_request(&s->dma, requests[i],
+                (s->syscfg[0x34 / 4] & (1u << 10)) && dma_ready(a, channels[i]));
+        }
     }
 }
 static void signals(VenusAAudio *a)
@@ -186,6 +189,48 @@ static int32_t serial_sample(uint32_t cfg, int32_t sample)
     bits = shift < 0 ? bits >> -shift : (bits << shift) & mask;
     return (int32_t)(bits << (32 - width)) >> (32 - width);
 }
+static unsigned sample_bits(VenusAAudio *a, unsigned ch)
+{
+    unsigned format = mode(a, ch);
+    return !format ? 16 : format == 2 ? 32 : 24;
+}
+
+static int32_t saturate24(double value)
+{
+    return value >= 8388607 ? 8388607 : value <= -8388608 ? -8388608 :
+           (int32_t)llround(value);
+}
+
+static int32_t adc_convert(VenusAAudio *a, unsigned channel, int16_t sample)
+{
+    unsigned bit = channel ? 0 : 1;
+    uint32_t analog = a->codec[0x1c / 4], control = a->codec[2];
+    unsigned digital = (control >> (channel ? 0 : 7)) & 127;
+    unsigned pga = (control >> (channel ? 16 : 21)) & 31;
+    if ((analog & ((1u << bit) | (1u << (bit + 2)) | 16)) != (1u << bit) ||
+        digital < 2) { return 0; }
+    double value = sample * 256.0 * pow(10.0, ((int)pga * 2 - 12 +
+                                              (int)digital - 85) / 20.0);
+    /* Functional first-order high-pass response at the documented cutoffs.
+     * Analog modulator noise and implementation-specific filter rounding
+     * are outside the normalized PCM scene-input model. */
+    static const unsigned cutoff[] = { 122, 153, 156, 245, 306, 392, 490, 612 };
+    for (unsigned stage = 0; stage < 2; stage++) {
+        if (control & (1u << (15 - stage))) {
+            double ratio = stage ? cutoff[(control >> 26) & 7] / 48000.0 :
+                                   3.7 / 48000.0;
+            double pole = exp(-2.0 * M_PI * ratio);
+            double next = pole * (a->highpass_y[channel][stage] + value -
+                                  a->highpass_x[channel][stage]);
+            a->highpass_x[channel][stage] = value;
+            a->highpass_y[channel][stage] = next;
+            value = next;
+        }
+        if (!stage && (control & (1u << 30))) { break; }
+    }
+    return saturate24(value);
+}
+
 static void tick(void *opaque)
 {
     VenusAAudioClock *c = opaque;
@@ -194,12 +239,42 @@ static void tick(void *opaque)
     c->phase += (now - c->epoch) * AUDIO_HZ;
     c->phase -= c->period;
     c->epoch = now;
+    if (c->index == 4) {
+        /* The ideal analog comparator settles at capacitor code 21. Each
+         * search step consumes 128 codec clocks; the final step latches
+         * completion. Clock gating preserves the partially elapsed step. */
+        a->calibration_step++;
+        if (a->calibration_step == 22) {
+            a->codec[0x48 / 4] = (21u << 3) | 2;
+            a->calibrating = false;
+            configure(c, c->period, false);
+        } else {
+            a->codec[0x48 / 4] = (a->calibration_step << 3) |
+                                      (a->calibration_step == 21);
+            arm(c);
+        }
+        return;
+    }
     a->frames[c->index]++;
     if (c->index == 0) {
         int32_t sample;
         bool valid = tx_sample(a, 0, &sample);
-        a->dac_last = sample;
-        if (valid && (a->apc[7] >> 28) == 1) { rx_sample(a, 8, sample); }
+        unsigned bits = sample_bits(a, 0);
+        int64_t normalized = (int64_t)sample * (INT64_C(1) << (32 - bits));
+        a->dac_last = normalized >> 8;
+        if ((a->apc[7] >> 28) == 1) {
+            rx_sample(a, 8, normalized >> (32 - sample_bits(a, 8)));
+        }
+        if (a->output && enabled(a, 0)) {
+            bool mute = (a->codec[0x34 / 4] & 0x40) ||
+                        !(a->codec[0x44 / 4] & 1);
+            double gain = pow(10.0, ((int)(a->codec[0x30 / 4] & 255) - 225) / 20.0);
+            double pcm = mute ? 0 : (normalized / 65536.0) * gain;
+            int16_t value = pcm >= 32767 ? 32767 : pcm <= -32768 ? -32768 : llround(pcm);
+            a->output(a->pcm_opaque, AUDIO_HZ * UINT64_C(1000000000) / c->period,
+                      value);
+        }
+        (void)valid;
     } else if (c->index < 3) {
         unsigned port = c->index - 1, tx = 2 + 2 * port, rx = 8 + 2 * port;
         uint32_t cfg = a->apc[(0x24 + port * 8) / 4];
@@ -213,6 +288,18 @@ static void tick(void *opaque)
             if (l) { rx_sample(a, 8, left); }
             if (r) { rx_sample(a, 9, right); }
         }
+    } else {
+        unsigned rate = AUDIO_HZ * UINT64_C(1000000000) / c->period;
+        int16_t input[2] = { 0, 0 };
+        if (a->input) { a->input(a->pcm_opaque, rate, input); }
+        for (unsigned ch = 0; ch < 2; ch++) {
+            int32_t value = ch && (a->codec[2] & (1u << 29)) ?
+                (int32_t)(a->codec[0x50 / 4] << 8) >> 8 :
+                adc_convert(a, ch, input[ch]);
+            a->codec[0x50 / 4 + ch] = value & 0xffffff;
+            int64_t normalized = (int64_t)value * 256;
+            rx_sample(a, 6 + ch, normalized >> (32 - sample_bits(a, 6 + ch)));
+        }
     }
     signals(a);
     arm(c);
@@ -222,6 +309,11 @@ void venusa_audio_clock(VenusASoC *s)
     VenusAAudio *a = &s->audio;
     uint32_t clocks = s->syscfg[0x34 / 4];
     bool common = (clocks & (1u << 10)) && (a->apc[0] & 1);
+    if ((clocks & (1u << 9)) && (clocks & 0x3000)) {
+        venusa_fail(s, 0x43100034, 4, true, clocks);
+    }
+    configure(&a->clock[4], UINT64_C(128000000000),
+              a->calibrating && (clocks & (1u << 9)));
     static const unsigned rates[] = { 8000, 0, 0, 16000, 0, 24000, 32000,
                                       0, 48000, 96000 };
     unsigned sr = a->codec[0x2c / 4] & 15;
@@ -232,6 +324,14 @@ void venusa_audio_clock(VenusASoC *s)
     }
     configure(&a->clock[0], sr < ARRAY_SIZE(rates) && rates[sr] ?
               UINT64_C(1000000000) * (AUDIO_HZ / rates[sr]) : 0, dac);
+    unsigned ar = a->codec[1] & 15;
+    bool adc = common && (clocks & (1u << 9)) && (a->codec[0] & 3) == 3 &&
+               (a->codec[1] & 0x180) == 0x180 && !(a->codec[7] & 16);
+    if (adc && ar != 0 && ar != 3 && ar != 8) {
+        venusa_fail(s, CODEC_BASE + 4, 4, true, a->codec[1]);
+    }
+    configure(&a->clock[3], ar < ARRAY_SIZE(rates) && rates[ar] ?
+              UINT64_C(1000000000) * (AUDIO_HZ / rates[ar]) : 0, adc);
     for (unsigned p = 0; p < 2; p++) {
         uint32_t cfg = a->apc[(0x24 + 8 * p) / 4];
         unsigned tx = 2 + 2 * p;
@@ -244,6 +344,9 @@ void venusa_audio_clock(VenusASoC *s)
         }
         bool enable = common && (clocks & (1u << (15 - p))) && requested &&
                       a->serial_started[p] && (cfg & (1u << 21));
+        if (enable && (s->syscfg[0x30 / 4] & (1u << (29 - p)))) {
+            venusa_fail(s, 0x43100030, 4, true, s->syscfg[0x30 / 4]);
+        }
         static const unsigned widths[] = { 16, 20, 24, 32 };
         unsigned framebits = 2 * (widths[(cfg >> 10) & 3] + ((cfg >> 5) & 31));
         configure(&a->clock[1 + p], UINT64_C(1000000000) *
@@ -254,7 +357,9 @@ void venusa_audio_clock(VenusASoC *s)
 static uint64_t apc_read(void *opaque, hwaddr off, unsigned size)
 {
     VenusAAudio *a = opaque;
-    if (size != 4 || (off & 3) || off >= sizeof(a->apc)) { goto fail; }
+    unsigned shift = (off & 2) * 8;
+    if (size == 2 && off >= 0x48 && off <= 0x5e && !(off & 1)) { off &= ~3u; }
+    else if (size != 4 || (off & 3) || off >= sizeof(a->apc)) { goto fail; }
     if (off >= 0x0c && off <= 0x20) {
         unsigned ch = (off - 0x0c) / 2;
         return a->apc[off / 4] | (a->count[ch] << 4) |
@@ -272,7 +377,7 @@ static uint64_t apc_read(void *opaque, hwaddr off, unsigned size)
             }
         } else { word = pop(a, ch); }
         signals(a);
-        return word;
+        return word >> shift;
     }
     if (off >= 0x34 && off <= 0x44) { goto fail; }
     if (off >= 0x60 && off < 0x120) {
@@ -293,7 +398,10 @@ fail:
 static void apc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     VenusAAudio *a = opaque;
-    if (size != 4 || (off & 3) || off >= sizeof(a->apc)) { goto fail; }
+    if (size == 2 && off >= 0x34 && off <= 0x46 && !(off & 1)) {
+        value <<= (off & 2) * 8;
+        off &= ~3u;
+    } else if (size != 4 || (off & 3) || off >= sizeof(a->apc)) { goto fail; }
     if (off >= 0x34 && off <= 0x44) {
         unsigned ch = off == 0x34 ? 0 : 2 + (off - 0x38) / 4;
         if (enabled(a, ch)) {
@@ -358,17 +466,37 @@ static uint64_t codec_read(void *opaque, hwaddr off, unsigned size)
     if (size != 4 || (off & 3) || off >= sizeof(a->codec)) {
         venusa_fail(a->soc, CODEC_BASE + off, size, false, 0);
     }
-    if (off == 0x58 || off == 0x5c) { return (uint32_t)a->dac_last; }
     return a->codec[off / 4];
 }
 static void codec_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     VenusAAudio *a = opaque;
     if (size != 4 || (off & 3) || off >= sizeof(a->codec)) { goto fail; }
-    /* ADC calibration/DMIC require the analog input frontend. */
-    if (off == 4 && (value & 0x1180)) { goto fail; }
-    if (off == 0x48 || off == 0x50 || off == 0x54 || off == 0x5c) { return; }
-    a->codec[off / 4] = value;
+    /* Digital microphone serial capture, ALC and noise-shaping filters
+     * require separate signal processing models. */
+    if ((off == 0x14 && (value & 0x400000)) ||
+        (off == 0x10 && (value & 0x30000)) ||
+        (off == 0x0c && (value & 0x4000)) ||
+        (off == 0x60 && (value & 0x7f))) { goto fail; }
+    if (off == 0x48 || off == 0x50 || off == 0x54) { return; }
+    if (off == 4 && (value & 0x1000) && !(a->codec[1] & 0x1000) &&
+        (a->codec[0] & 3) != 3) {
+        goto fail;
+    }
+    uint32_t old = a->codec[off / 4];
+    a->codec[off / 4] = off == 0x5c ? value & 0x3fff :
+                        off == 0x58 ? value & 0xffffff : value;
+    if (off == 4 && (value & 0x1000) && !(old & 0x1000)) {
+        a->calibrating = true;
+        a->calibration_step = 0;
+        a->codec[0x48 / 4] = 0;
+        a->clock[4].phase = 0;
+        a->clock[4].epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    }
+    if (off == 4 && !(value & 0x100)) {
+        memset(a->highpass_x, 0, sizeof(a->highpass_x));
+        memset(a->highpass_y, 0, sizeof(a->highpass_y));
+    }
     venusa_audio_clock(a->soc);
     return;
 fail:
@@ -376,7 +504,8 @@ fail:
 }
 static const MemoryRegionOps apc_ops = {
     .read = apc_read, .write = apc_write, .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .valid = { .min_access_size = 2, .max_access_size = 4 },
+    .impl = { .min_access_size = 2, .max_access_size = 4 },
 };
 static const MemoryRegionOps codec_ops = {
     .read = codec_read, .write = codec_write, .endianness = DEVICE_LITTLE_ENDIAN,
@@ -402,7 +531,12 @@ void venusa_codec_reset(VenusASoC *s)
     memcpy(a->codec, reset, sizeof(reset));
     configure(&a->clock[0], 0, false);
     configure(&a->clock[3], 0, false);
+    configure(&a->clock[4], 0, false);
+    a->calibrating = false;
+    a->calibration_step = 0;
     a->dac_last = 0;
+    memset(a->highpass_x, 0, sizeof(a->highpass_x));
+    memset(a->highpass_y, 0, sizeof(a->highpass_y));
 }
 void venusa_audio_reset(VenusASoC *s)
 {

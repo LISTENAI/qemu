@@ -29,8 +29,14 @@ char *venusa_snapshot(VenusASoC *s, const char *status)
             qatomic_read_i64(&CPU(&s->cpu[i])->icount_executed), n->exceptions, n->interrupts,
             CPU(&s->cpu[i])->icount_hz, CPU(&s->cpu[i])->icount_hz_den);
     }
-    g_string_append_printf(out, "],\"uart_tx_bytes\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]}",
+    g_string_append_printf(out, "],\"uart_tx_bytes\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]",
         s->uart[0].device.tx_bytes, s->uart[1].device.tx_bytes, s->uart[2].device.tx_bytes);
+    g_string_append_printf(out, ",\"audio\":{\"adc_frames\":%" PRIu64
+        ",\"dac_frames\":%" PRIu64 ",\"input_frames\":%" PRIu64
+        ",\"input_missing\":%" PRIu64 ",\"output_samples\":%" PRIu64
+        ",\"output_nonzero\":%" PRIu64 "}}",
+        s->audio.frames[3], s->audio.frames[0], s->audio.input_frames,
+        s->audio.input_missing, s->audio.output_samples, s->audio.output_nonzero);
     return g_string_free(out, false);
 }
 

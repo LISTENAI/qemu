@@ -159,7 +159,7 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         }
         if (address == 0x4310001c || address == 0x43100020 ||
             (address >= 0x43000000 && address <= 0x43000018)) { venusa_spi_clock(s); }
-        if (address == 0x43100034) { venusa_audio_clock(s); }
+        if (address == 0x43100030 || address == 0x43100034) { venusa_audio_clock(s); }
         if (address == 0x43000008) {
             /* Functional PLL lock follows enable; analog settling is not modeled. */
             *reg = (value & ~(1u << 22)) | ((value & 1) ? 1u << 22 : 0);

@@ -26,6 +26,7 @@ static void venusa_board_init(MachineState *machine)
     if (!flash) { error_report("VenusA requires a pflash image"); exit(1); }
     qdev_prop_set_drive_err(soc, "flash", blk_by_legacy_dinfo(flash), &error_fatal);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(soc), &error_fatal);
+    venusa_board_audio_connect(VENUSA_SOC(soc));
     object_property_add_str(OBJECT(machine), "x-lisa-snapshot", snapshot, NULL);
 }
 
