@@ -2,19 +2,15 @@
 #ifndef HW_RISCV_ARCS_STORAGE_H
 #define HW_RISCV_ARCS_STORAGE_H
 
-#include "hw/block/listenai_nor.h"
+#include "hw/ssi/listenai_spimem.h"
 typedef struct ArcsSoC ArcsSoC;
 
 typedef ListenAINOR ArcsNOR;
 
 typedef struct ArcsFlash {
     ArcsSoC *soc;
-    MemoryRegion io;
+    ListenAISpiMem core;
     ArcsNOR *chips[2];
-    uint32_t regs[0x84 / 4];
-    uint8_t tx[512], rx[1024];
-    unsigned tx_count, rx_count, rx_head;
-    bool pending;
 } ArcsFlash;
 
 typedef struct ArcsOTP {

@@ -8,7 +8,6 @@
 #include "qemu/bswap.h"
 #include "qapi/error.h"
 
-#define NOR_SIZE 0x1000000
 #define FLASH_BASE 0x47600000
 #define OTP_BASE 0x48600000
 
@@ -17,15 +16,24 @@ void arcs_nor_init(ArcsNOR *chip, hwaddr address, const char *image, bool persis
     listenai_nor_init(chip, NULL, "arcs-nor-128m", address, image, persist);
 }
 
-static void flash_irq(ArcsFlash *s)
+static void flash_irq(void *opaque, bool level)
 {
-    arcs_soc_irq(s->soc, 28, !!(s->regs[0x38 / 4] & s->regs[0x3c / 4]));
+    ArcsFlash *s = opaque;
+    arcs_soc_irq(s->soc, 28, level);
 }
 
-static ArcsNOR *selected_chip(ArcsFlash *s)
+static void flash_fault(void *opaque, hwaddr address, unsigned size,
+                        bool write, uint64_t value)
 {
-    uint32_t config = s->regs[0x58 / 4], range = s->regs[0x54 / 4];
-    uint32_t mask = config >> 16, page = (s->regs[0x28 / 4] >> 12) & mask;
+    ArcsFlash *s = opaque;
+    arcs_soc_fail(s->soc, address, size, write, value);
+}
+
+static ListenAINOR *selected_chip(void *opaque, uint32_t address)
+{
+    ArcsFlash *s = opaque;
+    uint32_t config = s->core.regs[0x58 / 4], range = s->core.regs[0x54 / 4];
+    uint32_t mask = config >> 16, page = (address >> 12) & mask;
     bool in_range = page >= (range & mask) && page <= ((range >> 16) & mask);
     ArcsNOR *selected = NULL;
     for (unsigned i = 0; i < 2; i++) {
@@ -39,39 +47,7 @@ static ArcsNOR *selected_chip(ArcsFlash *s)
     return selected;
 }
 
-static void execute(ArcsFlash *s)
-{
-    uint32_t control = s->regs[0x20 / 4];
-    unsigned mode = (control >> 24) & 15;
-    if (mode != 1 && mode != 2 && mode != 3 && mode != 5 && mode != 7 && mode != 9) {
-        arcs_soc_fail(s->soc, FLASH_BASE + 0x20, 4, true, control);
-    }
-    bool writes = mode == 1 || mode == 3 || mode == 5;
-    bool reads = mode == 2 || mode == 3 || mode == 5 || mode == 9;
-    unsigned count = writes ? ((control >> 12) & 511) + 1 : 0;
-    unsigned length = reads ? (control & 511) + 1 : 0;
-    if (s->tx_count < count) { return; }
-    uint8_t opcode = s->regs[0x24 / 4], *data = s->tx;
-    if (!(control & (1u << 30))) {
-        if (!count) { arcs_soc_fail(s->soc, FLASH_BASE + 0x20, 4, true, control); }
-        opcode = *data++; count--;
-    }
-    uint8_t result[512] = { 0 };
-    unsigned received;
-    if (length > sizeof(s->rx) - s->rx_count ||
-        !listenai_nor_command(selected_chip(s), opcode, s->regs[0x28 / 4] & (NOR_SIZE - 1),
-                     data, count, result, length, &received)) {
-        arcs_soc_fail(s->soc, FLASH_BASE + 0x24, 4, true, opcode);
-    }
-    for (unsigned i = 0; i < received; i++) {
-        s->rx[(s->rx_head + s->rx_count++) % sizeof(s->rx)] = result[i];
-    }
-    s->tx_count = 0; s->pending = false;
-    s->regs[0x3c / 4] |= 16;
-    flash_irq(s);
-}
-
-static bool flash_register(hwaddr off)
+static bool flash_register(void *opaque, hwaddr off, bool write)
 {
     switch (off) {
     case 0: case 0x10: case 0x14: case 0x20: case 0x24: case 0x28:
@@ -79,73 +55,6 @@ static bool flash_register(hwaddr off)
     case 0x50: case 0x54: case 0x58: case 0x80: return true;
     default: return false;
     }
-}
-
-static unsigned flash_fifo_bytes(ArcsFlash *s)
-{
-    unsigned bits = ((s->regs[0x10 / 4] >> 8) & 31) + 1;
-    if (bits % 8) {
-        arcs_soc_fail(s->soc, FLASH_BASE + 0x10, 4, true, s->regs[0x10 / 4]);
-    }
-    return s->regs[0x10 / 4] & 0x80 ? 4 : bits / 8;
-}
-
-static uint64_t flash_read(void *opaque, hwaddr off, unsigned size)
-{
-    ArcsFlash *s = opaque;
-    if (size != 4 || !flash_register(off)) {
-        arcs_soc_fail(s->soc, FLASH_BASE + off, size, false, 0);
-    }
-    if (off == 0x2c) {
-        uint32_t value = 0;
-        unsigned lanes = flash_fifo_bytes(s);
-        for (unsigned i = 0; i < lanes && s->rx_count; i++) {
-            value |= (uint32_t)s->rx[s->rx_head] << (8 * i);
-            s->rx_head = (s->rx_head + 1) % sizeof(s->rx); s->rx_count--;
-        }
-        return value;
-    }
-    if (off == 0x34) {
-        unsigned lanes = flash_fifo_bytes(s);
-        return (s->tx_count ? 0 : 1u << 22) |
-               MIN(31, (s->tx_count + lanes - 1) / lanes) << 16 |
-               (s->rx_count ? 0 : 1u << 14) |
-               MIN(31, (s->rx_count + lanes - 1) / lanes) << 8 |
-               (s->pending || s->rx_count > 31 * lanes);
-    }
-    return s->regs[off / 4];
-}
-
-static void flash_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
-{
-    ArcsFlash *s = opaque;
-    if (size != 4 || !flash_register(off)) { goto fail; }
-    if (off == 0x2c) {
-        unsigned lanes = flash_fifo_bytes(s);
-        if (s->tx_count > sizeof(s->tx) - lanes) { goto fail; }
-        for (unsigned i = 0; i < lanes; i++) {
-            s->tx[s->tx_count++] = value >> (8 * i);
-        }
-        if (s->pending) { execute(s); }
-        return;
-    }
-    if (off == 0x30) {
-        if (value & 24) { goto fail; } /* DMA not connected. */
-        if (value & 1) { s->pending = false; }
-        if (value & 3) { s->rx_count = s->rx_head = 0; }
-        if (value & 5) { s->tx_count = 0; }
-        value &= ~7u;
-    }
-    if (off == 0x3c) { s->regs[off / 4] &= ~value; }
-    else if (off != 0 && off != 0x34) { s->regs[off / 4] = value; }
-    if (off == 0x24) {
-        if (s->pending) { goto fail; }
-        s->pending = true; execute(s);
-    }
-    flash_irq(s);
-    return;
-fail:
-    arcs_soc_fail(s->soc, FLASH_BASE + off, size, true, value);
 }
 
 static uint32_t otp_word(ArcsOTP *s, hwaddr off)
@@ -190,7 +99,6 @@ fail:
     .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true }, \
     .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true }, \
 }
-static const MemoryRegionOps flash_ops = STORAGE_OPS(flash_read, flash_write);
 static const MemoryRegionOps otp_ops = STORAGE_OPS(otp_read, otp_write);
 
 void arcs_storage_init(ArcsSoC *soc)
@@ -199,8 +107,8 @@ void arcs_storage_init(ArcsSoC *soc)
     ArcsOTP *o = &soc->otp;
     assert(s->chips[0] != NULL || s->chips[1] != NULL);
     s->soc = o->soc = soc;
-    memory_region_init_io(&s->io, OBJECT(soc), &flash_ops, s, "arcs-spib", 0x1000);
-    memory_region_add_subregion(get_system_memory(), FLASH_BASE, &s->io);
+    listenai_spimem_init(&s->core, OBJECT(soc), "arcs-spib", FLASH_BASE,
+                         selected_chip, flash_register, flash_irq, flash_fault, s);
     memory_region_init_io(&o->io, OBJECT(soc), &otp_ops, o, "arcs-otp", 0x1000);
     memory_region_add_subregion(get_system_memory(), OTP_BASE, &o->io);
     /* Stable simulated identity; no factory keys or cloud credentials. */
@@ -215,11 +123,9 @@ void arcs_storage_init(ArcsSoC *soc)
 void arcs_flash_reset(ArcsSoC *soc)
 {
     ArcsFlash *s = &soc->flash;
-    memset(s->regs, 0, sizeof(s->regs)); s->regs[0x10 / 4] = 0x20780;
-    s->regs[0x54 / 4] = s->regs[0x58 / 4] = 0xffff0000;
-    s->tx_count = s->rx_count = s->rx_head = 0; s->pending = false;
+    listenai_spimem_reset(&s->core);
+    s->core.regs[0x54 / 4] = s->core.regs[0x58 / 4] = 0xffff0000;
     /* Controller reset does not erase or reset the external NOR chip. */
-    flash_irq(s);
 }
 
 void arcs_storage_reset(ArcsSoC *soc)
