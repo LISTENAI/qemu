@@ -7,6 +7,7 @@
 typedef struct ListenAIXccela {
     MemoryRegion ram;
     uint8_t modes[10], reset_modes[10];
+    bool mode_read_pairs;
 } ListenAIXccela;
 
 typedef bool (*ListenAIPSRAMExtraValid)(void *opaque, hwaddr offset);
@@ -17,6 +18,7 @@ typedef struct ListenAIPSRAM {
     ListenAIXccela *chip;
     uint32_t regs[0xc04 / 4];
     hwaddr address;
+    unsigned sequence_count;
     ListenAIPSRAMExtraValid extra_valid;
     ListenAIPSRAMFault fault;
     void *opaque;
@@ -26,7 +28,7 @@ void listenai_xccela_init(ListenAIXccela *chip, Object *owner,
                           const char *name, uint64_t size,
                           const uint8_t reset_modes[10]);
 void listenai_psram_init(ListenAIPSRAM *s, Object *owner, const char *name,
-                         hwaddr address, ListenAIXccela *chip,
+                         hwaddr address, ListenAIXccela *chip, unsigned sequence_count,
                          ListenAIPSRAMExtraValid extra_valid,
                          ListenAIPSRAMFault fault, void *opaque);
 void listenai_psram_reset(ListenAIPSRAM *s);

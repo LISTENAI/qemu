@@ -29,7 +29,7 @@ void listenai_xccela_init(ListenAIXccela *chip, Object *owner,
 static bool valid(ListenAIPSRAM *s, hwaddr off)
 {
     if ((off & 3) || off >= sizeof(s->regs)) { return false; }
-    if (off <= 0x30 || (off >= 0x100 && off <= 0x19c) ||
+    if (off <= 0x30 || (off >= 0x100 && off < 0x100 + s->sequence_count * 16) ||
         (off >= 0x800 && off <= 0x824)) { return true; }
     switch (off) {
     case 0x38: case 0x3c: case 0x40: case 0x44: case 0x50:
@@ -47,7 +47,17 @@ static uint32_t read_word(ListenAIPSRAM *s, hwaddr off)
     if (off == 0x20) { return locked; }
     if (off == 0x18) { return locked ? 0x4001 : 0; }
     if (off == 0x1c) { return s->regs[0x14 / 4]; }
-    if (off >= 0x800 && off <= 0x824) { return s->chip->modes[(off - 0x800) / 4]; }
+    if (off >= 0x800 && off <= 0x824) {
+        unsigned index = (off - 0x800) / 4;
+        uint32_t value = s->chip->modes[index];
+        if (s->chip->mode_read_pairs) {
+            /* Xccela bursts skip reserved MR5..7 and wrap MR8 to MR0. */
+            static const uint8_t next_mode[10] = {1, 2, 3, 4, 8, 5, 6, 7, 0, 9};
+            unsigned next = next_mode[index];
+            value |= (uint32_t)s->chip->modes[next] << 8;
+        }
+        return value;
+    }
     return s->regs[off / 4];
 }
 
@@ -75,7 +85,7 @@ static void psram_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         return;
     }
     if (off == 0xc00) {
-        if (value > 9) { goto fail; }
+        if (value >= s->sequence_count) { goto fail; }
         uint32_t command = s->regs[(0x100 + value * 16) / 4] & 0xffff;
         if (command == 0x1ff) { xccela_reset_modes(s->chip); }
         else if (command == 0x30c) { s->chip->modes[6] = 0; }
@@ -99,11 +109,13 @@ static const MemoryRegionOps ops = {
 };
 
 void listenai_psram_init(ListenAIPSRAM *s, Object *owner, const char *name,
-                         hwaddr address, ListenAIXccela *chip,
+                         hwaddr address, ListenAIXccela *chip, unsigned sequence_count,
                          ListenAIPSRAMExtraValid extra_valid,
                          ListenAIPSRAMFault fault, void *opaque)
 {
     assert(chip != NULL);
+    assert(sequence_count > 0 && sequence_count <= 10);
+    s->sequence_count = sequence_count;
     s->chip = chip;
     s->address = address;
     s->extra_valid = extra_valid;

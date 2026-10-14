@@ -18,7 +18,7 @@ static void psram_fault(void *opaque, hwaddr address, unsigned size,
 void arcs_psram_init(ArcsSoC *soc)
 {
     listenai_psram_init(&soc->psram, OBJECT(soc), "arcs-psram-ctrl",
-                        0x47b00000, soc->psram.chip, NULL, psram_fault, soc);
+                        0x47b00000, soc->psram.chip, 10, NULL, psram_fault, soc);
 }
 
 void arcs_psram_reset(ArcsSoC *soc)
