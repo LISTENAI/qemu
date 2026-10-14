@@ -1,4 +1,6 @@
 config VENUSA
+    select VENUSA_RGB
+    select VENUSA_DMA2D
     select GC0328
     select LISTENAI_LUNA
     select AT24C

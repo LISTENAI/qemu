@@ -24,6 +24,8 @@
 #include "hw/intc/nuclei_cidu.h"
 #include "hw/riscv/venusa/venusa_spi.h"
 #include "hw/riscv/venusa/venusa_dvp.h"
+#include "hw/dma/venusa_dma2d.h"
+#include "hw/display/venusa_rgb.h"
 
 #define TYPE_VENUSA_SOC "venusa-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(VenusASoC, VENUSA_SOC)
@@ -48,6 +50,9 @@ struct VenusASoC {
     NucleiCIDU cidu;
     VenusASPI spi[2];
     VenusADVP dvp;
+    VenusDMA2D dma2d;
+    VenusRGB rgb;
+    uint32_t rgb_clock_config, rgb_div;
     bool core1_held;
     RISCVCPU cpu[2];
     MemoryRegion io, ram[6], rom, psram_alias;
@@ -117,4 +122,7 @@ uint32_t venusa_uart_read(VenusASoC *s, unsigned index, unsigned offset);
 void venusa_uart_write(VenusASoC *s, unsigned index, unsigned offset, uint32_t value);
 void venusa_luna_init(VenusASoC *s);
 void venusa_luna_reset(VenusASoC *s);
+void venusa_image_init(VenusASoC *s);
+void venusa_image_reset(VenusASoC *s);
+void venusa_image_clock(VenusASoC *s);
 #endif

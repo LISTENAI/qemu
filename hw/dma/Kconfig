@@ -33,3 +33,6 @@ config SIFIVE_PDMA
 config XLNX_CSU_DMA
     bool
     select REGISTER
+
+config VENUSA_DMA2D
+    bool
