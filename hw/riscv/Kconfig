@@ -1,4 +1,5 @@
 config VENUSA
+    select AT24C
     select LISTENAI_SPI
     select LISTENAI_HOST_AUDIO
     bool
