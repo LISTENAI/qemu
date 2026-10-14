@@ -27,7 +27,7 @@ rom_header = custom_target('arcs-rom-images',
 arcs_sources = files(
   'arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c',
   'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c',
-  'arcs_spi.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c',
+  'arcs_spi.c', 'arcs_gpt.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c',
   'arcs_usb.c', 'arcs_usb_adb.c', 'arcs_i2c.c', 'arcs_dvp.c',
   'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c',
   'arcs_aon_wdt.c', 'arcs_dual_timer.c', 'arcs_bluetooth.c',

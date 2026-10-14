@@ -273,6 +273,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_psram_init(s);
     arcs_storage_init(s);
     arcs_spi_init(s);
+    arcs_gpt_init(s);
     arcs_mailbox_init(s);
     arcs_luna_init(s);
     arcs_aux_init(s);

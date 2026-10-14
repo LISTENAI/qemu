@@ -14,6 +14,7 @@
 #include "hw/riscv/arcs/arcs_storage.h"
 #include "hw/riscv/arcs/arcs_dma.h"
 #include "hw/riscv/arcs/arcs_spi.h"
+#include "hw/riscv/arcs/arcs_gpt.h"
 #include "hw/riscv/arcs/arcs_luna.h"
 #include "hw/riscv/arcs/arcs_aux.h"
 #include "hw/riscv/arcs/arcs_dvp.h"

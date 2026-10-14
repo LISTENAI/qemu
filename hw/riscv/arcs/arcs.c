@@ -608,7 +608,7 @@ static void report(void *opaque, const char *status)
     }
     fprintf(f, "],\"uart_tx_bytes\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "],\"spi_frames\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]",
             s->soc.uart[0].device.tx_bytes, s->soc.uart[1].device.tx_bytes, s->soc.uart[2].device.tx_bytes,
-            s->soc.spi[0].frames, s->soc.spi[1].frames, s->soc.spi[2].frames);
+            s->soc.spi[0].device.frames, s->soc.spi[1].device.frames, s->soc.spi[2].device.frames);
     if (CPU(&s->soc.cpu[0])->icount_hz) {
         fprintf(f, ",\"cpu_clock_experiment\":[");
         for (unsigned i = 0; i < 2; i++) {
@@ -764,8 +764,8 @@ static void connect_panel(ArcsMachine *s)
     qdev_prop_set_bit(s->screen, "panel-inverted", true);
     arcs_st7789_failure_callback(s->screen, report, s);
     unsigned spi = s->evb ? 1 : 0;
-    ssi_realize_and_unref(s->screen, s->soc.spi[spi].bus, &error_fatal);
-    s->soc.spi[spi].route_valid = lcd_route_valid; s->soc.spi[spi].route_opaque = s;
+    ssi_realize_and_unref(s->screen, s->soc.spi[spi].device.bus, &error_fatal);
+    s->soc.spi[spi].device.route_valid = lcd_route_valid; s->soc.spi[spi].device.route_opaque = s;
     /* Mini routes CS through the SPI peripheral function. EVB uses a GPIO
      * software CS on B5, so leaving the SPI CS output disconnected preserves
      * the firmware's GPIO writes. */

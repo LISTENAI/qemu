@@ -16,6 +16,7 @@ config VENUSA
 
 config ARCS
     bool
+    select LISTENAI_SPI
     select LISTENAI_WDT
     select LISTENAI_AON
     select LISTENAI_I2C
