@@ -1,10 +1,44 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qapi/error.h"
+#include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #define I2C 0x43c00000
 #define DVP 0x42000800
 #define FIFO 0x42001000
 static char *flash, *scene;
+static uint64_t clock_denominator(QTestState *q)
+{
+    g_autoptr(QDict) result = qtest_qmp(q, "{'execute':'qom-get',"
+        "'arguments':{'path':'/machine/peripheral/camera',"
+        "'property':'x-lisem-camera-timing'}}");
+    QObject *data = qobject_from_json(qdict_get_str(result, "return"), &error_abort);
+    uint64_t value = qdict_get_int(qobject_to(QDict, data), "clock_denominator");
+    qobject_unref(data);
+    return value;
+}
+static void load_pulses(void)
+{
+    g_autofree char *f = g_shell_quote(flash), *p = g_shell_quote(scene);
+    QTestState *q = qtest_initf("-machine venusa-rd-evb -drive "
+        "if=pflash,format=raw,file=%s -device venusa-gc0328-camera,id=camera,"
+        "soc=/machine/soc,file=%s", f, p);
+    for (unsigned i = 21; i <= 31; i++) { qtest_writel(q, 0x44100000 + i * 4, 13); }
+    qtest_writel(q, 0x44100000 + 35 * 4, 13);
+    qtest_writel(q, 0x43100028, 0x30000 | (24 << 7));
+    g_assert_cmphex(qtest_readl(q, 0x43100028), ==, 0x20000 | (24 << 7));
+    g_assert_cmpuint(clock_denominator(q), ==, 24);
+    /* Consecutive W1P writes each latch, without a software zero write. */
+    qtest_writel(q, 0x43100028, 0x30000 | (12 << 7));
+    g_assert_cmpuint(clock_denominator(q), ==, 12);
+    qtest_writel(q, 0x43100028, 0x20000 | (6 << 7));
+    g_assert_cmpuint(clock_denominator(q), ==, 12);
+    qtest_writel(q, 0x43100028, 0x30000 | (6 << 7) | 0x23);
+    g_assert_cmphex(qtest_readl(q, 0x43100028), ==, 0x20000 | (6 << 7) | 3);
+    g_assert_cmpuint(clock_denominator(q), ==, 6);
+    qtest_quit(q);
+}
 static void reg(QTestState *q, uint8_t address, uint8_t value)
 {
     qtest_writel(q,I2C+0x28,5); qtest_writel(q,I2C+0x1c,0x21);
@@ -59,5 +93,6 @@ int main(int argc,char**argv){
     }
     g_assert_cmpint(write(fd,data,640*480*3),==,640*480*3);close(fd);g_free(data);
     qtest_add_func("venusa/camera/sccb-pixels-clock",pixels);
+    qtest_add_func("venusa/camera/repeated-clock-load",load_pulses);
     int r=g_test_run();unlink(flash);unlink(scene);g_free(flash);g_free(scene);return r;
 }

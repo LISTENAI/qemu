@@ -193,9 +193,11 @@ void venusa_dvp_xclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *denominator)
 void venusa_dvp_clock(VenusASoC *s)
 {
     uint32_t cfg = s->syscfg[0x28 / 4];
-    if ((cfg & (1u << 16)) && !(s->dvp.xclk_config & (1u << 16))) {
+    if (cfg & (1u << 16)) {
         s->dvp.xclk_div = (cfg >> 7) & 511;
         if (!s->dvp.xclk_div) { s->dvp.xclk_div = 512; }
+        /* W1P generates a fresh load pulse on every write and reads zero. */
+        s->syscfg[0x28 / 4] &= ~(1u << 16);
     }
     s->dvp.xclk_config = cfg;
     s->dvp.clock = !!(s->syscfg[0x34 / 4] & 0x800);

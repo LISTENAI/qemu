@@ -142,10 +142,11 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             venusa_gpadc_clock(&s->gpadc, (value & 1) != 0);
         }
         if (address == 0x43100028) {
-            if ((value & 0x20) && !(previous & 0x20)) {
+            if (value & 0x20) {
                 s->gpt_t0_div = value & 31;
                 if (!s->gpt_t0_div) { return false; }
             }
+            *reg &= ~0x20u;
             venusa_gpt_clock(s, (value & 0x40) != 0);
         }
         if (address == 0x45000090 && (value & 0x2000) && !(previous & 0x2000)) {

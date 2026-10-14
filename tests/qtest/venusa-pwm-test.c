@@ -59,6 +59,25 @@ static void waveform(void)
     qtest_quit(q);
 }
 
+static void repeated_clock_load(void)
+{
+    QTestState *q = start();
+    qtest_writel(q, 0x43100028, 0x22); /* Gate off, load divide-by-two. */
+    g_assert_cmphex(qtest_readl(q, 0x43100028), ==, 2);
+    qtest_writel(q, 0x43100028, 0x23); /* Consecutive W1P loads divide-by-three. */
+    g_assert_cmphex(qtest_readl(q, 0x43100028), ==, 3);
+    qtest_writel(q, 0x43100028, 0x44); /* No load: raw divide-by-four is inactive. */
+    qtest_clock_step(q, 2099999);
+    level(q, false);
+    qtest_clock_step(q, 1);
+    level(q, true);
+    qtest_clock_step(q, 899999);
+    level(q, true);
+    qtest_clock_step(q, 1);
+    level(q, false);
+    qtest_quit(q);
+}
+
 static void shadow_and_gate(void)
 {
     QTestState *q = start();
@@ -204,6 +223,7 @@ int main(int argc, char **argv)
         g_setenv("LISEM_QEMU_OTP_IMAGE", otp_path, true);
     }
     qtest_add_func("venusa/pwm/waveform", waveform);
+    qtest_add_func("venusa/pwm/repeated-clock-load", repeated_clock_load);
     qtest_add_func("venusa/pwm/shadow-gate-reset", shadow_and_gate);
     qtest_add_func("venusa/pwm/pinmux", pinmux);
     qtest_add_func("venusa/pwm/gated-shadow", gated_shadow);

@@ -19,7 +19,7 @@ struct VenusACamera {
     DeviceState *sensor;
     QEMUTimer *timer;
     qemu_irq pins[4];
-    uint64_t hz_n, hz_d, start, pixel, line, total, phase;
+    uint64_t hz_n, hz_d, start, pixel, line, total, phase, frames, samples;
     unsigned width, height, bpp, sync, row, byte, stage;
     bool active;
 };
@@ -56,6 +56,7 @@ static void begin(VenusACamera *s)
     s->sync = gc0328_sync_mode(s->sensor);
     qemu_set_irq(s->pins[2], !!(s->sync & 4));
     s->stage = s->row = s->byte = s->phase = 0;
+    s->frames++;
     s->active = true;
     timer_mod(s->timer, s->start);
 }
@@ -87,6 +88,7 @@ static void step(void *opaque)
         qemu_set_irq(s->pins[0], vinactive);
         qemu_set_irq(s->pins[1], !hinactive);
         qemu_set_irq(s->pins[3], gc0328_sample(s->sensor, s->byte, s->row));
+        s->samples++;
         qemu_set_irq(s->pins[2], !invert);
         s->stage = 3;
         timer_mod(s->timer, deadline(s, line_start + s->byte * s->pixel + s->pixel / 2));
@@ -138,6 +140,25 @@ static void reset(DeviceState *dev)
     VenusACamera *s = VENUSA_CAMERA(dev);
     timer_del(s->timer); s->active = false;
     clock_changed(s);
+}
+static char *timing(Object *object, Error **errp)
+{
+    VenusACamera *s = VENUSA_CAMERA(object);
+    return g_strdup_printf("{\"active\":%s,\"now_ns\":%" PRId64
+        ",\"start_ns\":%" PRIu64 ",\"clock_numerator\":%" PRIu64
+        ",\"clock_denominator\":%" PRIu64 ",\"byte_clocks\":%" PRIu64
+        ",\"line_clocks\":%" PRIu64 ",\"frame_clocks\":%" PRIu64
+        ",\"width\":%u,\"height\":%u,\"stage\":%u,\"row\":%u,\"byte\":%u"
+        ",\"source_frame_starts\":%" PRIu64 ",\"source_bytes\":%" PRIu64
+        ",\"receiver_frames\":%" PRIu64 ",\"receiver_bytes\":%" PRIu64 "}",
+        s->active ? "true" : "false", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+        s->start, s->hz_n, s->hz_d, s->pixel, s->line, s->total,
+        s->width, s->height, s->stage, s->row, s->byte, s->frames, s->samples,
+        s->soc ? s->soc->dvp.frames : 0, s->soc ? s->soc->dvp.samples : 0);
+}
+static void instance_init(Object *object)
+{
+    object_property_add_str(object, "x-lisem-camera-timing", timing, NULL);
 }
 static void realize(DeviceState *dev, Error **errp)
 {
@@ -195,7 +216,8 @@ static void class_init(ObjectClass *klass, const void *data)
 }
 static const TypeInfo info = {
     .name = TYPE_VENUSA_CAMERA, .parent = TYPE_DEVICE,
-    .instance_size = sizeof(VenusACamera), .class_init = class_init,
+    .instance_size = sizeof(VenusACamera), .instance_init = instance_init,
+    .class_init = class_init,
 };
 static void register_types(void) { type_register_static(&info); }
 type_init(register_types)
