@@ -31,6 +31,7 @@ static void sensor_reset(DeviceState *dev)
         {0x15, 8}, {0x18, 0x0a}, {0x19, 5}, {0x44, 0x22},
         {0x46, 0x3f}, {0x49, 3}, {0x55, 1}, {0x56, 0xe0},
         {0x57, 2}, {0x58, 0x80}, {0x59, 0x11}, {0x5a, 0x0e},
+        {0x5b, 0x02}, {0x5c, 0x04}, {0x5f, 0x02}, {0x60, 0x04},
         {0xf0, 0x9d}, {0xf1, 7}, {0xf2, 1}, {0xfb, 0x42}, {0xfc, 0x16},
     };
     for (unsigned i = 0; i < G_N_ELEMENTS(defaults); i++) {
@@ -91,7 +92,8 @@ static unsigned pair(GC0328State *s, unsigned reg)
 }
 
 bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
-                       unsigned *bpp, uint64_t *pixel_clocks, uint64_t *line_clocks, uint64_t *frame_clocks,
+                       unsigned *bpp, uint64_t *pixel_clocks, uint64_t *line_clocks,
+                       uint64_t *lead_clocks, uint64_t *frame_clocks,
                        Error **errp)
 {
     GC0328State *s = GC0328(dev);
@@ -100,24 +102,39 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
         (r[0xf1] & 0x77) != 7 || !(r[0xf2] & 1)) { return false; }
     if (!s->has_frame) { return false; }
     unsigned format = r[0x44] & 31;
+    bool half = r[0x59] == 0x22 && r[0x5a] == 0x33 &&
+        r[0x5b] == 0x02 && r[0x5c] == 0x04 && !r[0x5d] && !r[0x5e] &&
+        r[0x5f] == 0x02 && r[0x60] == 0x04 && !r[0x61] && !r[0x62];
     if ((format > 3 && format != 6) || (r[0x18] & 0xe0) ||
-        r[0x59] != 0x11 || (r[0x4c] & 7)) {
-        error_setg(errp, "Unsupported GC0328 format, binning, subsampling or test pattern");
+        (r[0x59] != 0x11 && !half) || (r[0x4c] & 7)) {
+        error_setg(errp, "Unsupported GC0328 format, binning, subsampling or test pattern "
+                   "(format=0x%02x analog=0x%02x subsample=0x%02x mode=0x%02x debug=0x%02x)",
+                   r[0x44], r[0x18], r[0x59], r[0x5a], r[0x4c]);
         return false;
     }
     *width = r[0x50] & 1 ? pair(s, 0x57) : 640;
     *height = r[0x50] & 1 ? pair(s, 0x55) : 480;
     unsigned x = r[0x50] & 1 ? pair(s, 0x53) : 0;
     unsigned y = r[0x50] & 1 ? pair(s, 0x51) : 0;
-    if (!*width || !*height || (*width & 1) || x + *width > 640 || y + *height > 480) {
+    if (!*width || !*height || (*width & (half ? 3 : 1)) ||
+        (half && (*height & 1)) || x + *width > 640 || y + *height > 480) {
         error_setg(errp, "Unsupported GC0328 crop window"); return false;
     }
     *bpp = 2;
     *pixel_clocks = 2 * ((r[0xfa] >> 4) + 1);
     unsigned line = pair(s, 0x05) + r[0x11] + pair(s, 0x0f) + 4;
     unsigned rows = MAX(pair(s, 0x0d) + pair(s, 0x07), pair(s, 0x03));
-    *line_clocks = (uint64_t)line * *pixel_clocks;
-    *frame_clocks = *line_clocks * rows;
+    uint64_t row_clocks = (uint64_t)line * *pixel_clocks;
+    *lead_clocks = (r[0x12] + 8) * row_clocks;
+    *frame_clocks = row_clocks * rows;
+    *line_clocks = row_clocks * (half ? 2 : 1);
+    /* 0x5a extends output PCLK over the skipped column; row selection
+     * keeps the sensor readout/exposure frame period and vertical blank. */
+    if (half) {
+        *width /= 2;
+        *height /= 2;
+        *pixel_clocks *= 2;
+    }
     memcpy(s->frame_regs, r, sizeof(s->frame_regs));
     memcpy(s->frame_rgb, s->rgb, sizeof(s->frame_rgb));
     s->sample_cached = false;
@@ -126,12 +143,27 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
 
 static void rgb(GC0328State *s, unsigned x, unsigned y, int *r, int *g, int *b)
 {
+    unsigned step = s->frame_regs[0x59] == 0x22 ? 2 : 1;
+    x *= step;
+    y *= step;
     x += (s->frame_regs[0x50] & 1) ? ((s->frame_regs[0x53] << 8) | s->frame_regs[0x54]) : 0;
     y += (s->frame_regs[0x50] & 1) ? ((s->frame_regs[0x51] << 8) | s->frame_regs[0x52]) : 0;
-    if (s->frame_regs[0x17] & 1) { x = 639 - x; }
-    if (s->frame_regs[0x17] & 2) { y = 479 - y; }
-    const uint8_t *p = s->frame_rgb + (y * 640 + x) * 3;
-    *r = p[0]; *g = p[1]; *b = p[2];
+    /* The optical input is calibrated RGB after the ideal ISP. Neighbor
+     * averaging is applied before RGB565/YUV packing, not to packed bytes. */
+    unsigned sum[3] = {0};
+    for (unsigned dy = 0; dy < step; dy++) {
+        for (unsigned dx = 0; dx < step; dx++) {
+            unsigned sx = x + dx, sy = y + dy;
+            if (s->frame_regs[0x17] & 1) { sx = 639 - sx; }
+            if (s->frame_regs[0x17] & 2) { sy = 479 - sy; }
+            const uint8_t *p = s->frame_rgb + (sy * 640 + sx) * 3;
+            for (unsigned c = 0; c < 3; c++) { sum[c] += p[c]; }
+        }
+    }
+    unsigned count = step * step;
+    *r = (sum[0] + count / 2) / count;
+    *g = (sum[1] + count / 2) / count;
+    *b = (sum[2] + count / 2) / count;
 }
 
 static uint32_t pixels(DeviceState *dev, unsigned x, unsigned y)
@@ -175,7 +207,9 @@ uint8_t gc0328_sample(DeviceState *dev, unsigned byte, unsigned line)
     unsigned y = (s->frame_regs[0x50] & 1) ?
         (s->frame_regs[0x51] << 8) | s->frame_regs[0x52] : 0;
     /* Geometry was latched and validated before any FIFO event. */
-    assert(x + (byte / 4) * 2 + 1 < 640 && y + line < 480);
+    unsigned step = s->frame_regs[0x59] == 0x22 ? 2 : 1;
+    assert(x + ((byte / 4) * 2 + 2) * step <= 640 &&
+           y + (line + 1) * step <= 480);
     /* Four byte samples share one converted pixel pair. Cache only the
      * immutable current frame; FIFO/DMA events still sample at their original
      * virtual timestamps, including unaligned receiver windows. */

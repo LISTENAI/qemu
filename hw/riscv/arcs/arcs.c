@@ -880,9 +880,9 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
     if ((polarity & 6) != expected) {
         error_setg(errp, "Unsupported GC0328/DVP sync polarity mismatch"); return false;
     }
-    uint64_t pixel, line, total;
+    uint64_t pixel, line, lead, total;
     if (!gc0328_frame_info(s->camera, &frame->width, &frame->height,
-            &frame->bpp, &pixel, &line, &total, errp)) { return false; }
+            &frame->bpp, &pixel, &line, &lead, &total, errp)) { return false; }
     uint64_t hz = arcs_hclk_hz(&s->soc) /
         (2 * ((s->soc.dvp.regs[0x18 / 4] & 63) + 1));
     if (!hz) { error_setg(errp, "Invalid camera MCLK"); return false; }
@@ -891,7 +891,7 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
      * half a PCLK later, and sensor PCLK inversion exchanges these phases. */
     frame->hz = hz * 2; frame->byte_clocks = pixel;
     frame->sample_clocks = ((polarity ^ (sync >> 2)) & 1) * (pixel / 2);
-    frame->line_clocks = line * 2; frame->lead_clocks = 24 * line;
+    frame->line_clocks = line * 2; frame->lead_clocks = lead * 2;
     frame->frame_clocks = total * 2;
     if (frame->line_clocks < frame->width * frame->bpp * frame->byte_clocks ||
         frame->frame_clocks < frame->lead_clocks + frame->height * frame->line_clocks) {

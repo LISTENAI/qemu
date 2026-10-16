@@ -22,7 +22,7 @@ struct VenusACamera {
     ListenaiCameraScene scene;
     QEMUTimer *timer;
     qemu_irq pins[4];
-    uint64_t hz_n, hz_d, start, pixel, line, total, phase, frames, samples;
+    uint64_t hz_n, hz_d, start, pixel, line, lead, total, phase, frames, samples;
     unsigned width, height, bpp, sync, row, byte, stage;
     bool active;
 };
@@ -48,16 +48,16 @@ static void begin(VenusACamera *s)
     }
     gc0328_set_clock(s->sensor, !!n);
     if (!n || !routed(s) || !gc0328_frame_info(s->sensor, &s->width,
-            &s->height, &s->bpp, &s->pixel, &s->line, &s->total, &error)) {
+            &s->height, &s->bpp, &s->pixel, &s->line, &s->lead, &s->total, &error)) {
         if (error) { error_report_err(error); exit(EXIT_FAILURE); }
         s->active = false; return;
     }
     if (s->scene.camera) { listenai_camera_scene_latch(&s->scene); }
     /* Half-MCLK units preserve the two PCLK edges without rounding drift. */
     s->hz_n = n * 2; s->hz_d = d;
-    s->line *= 2; s->total *= 2;
+    s->line *= 2; s->lead *= 2; s->total *= 2;
     if (s->line < s->width * s->bpp * s->pixel ||
-        s->total < (12 + s->height) * s->line) {
+        s->total < s->lead + s->height * s->line) {
         error_report("unsupported GC0328 digital line/frame timing"); exit(EXIT_FAILURE);
     }
     s->sync = gc0328_sync_mode(s->sensor);
@@ -84,13 +84,13 @@ static void step(void *opaque)
     if (s->stage == 1) {
         qemu_set_irq(s->pins[2], invert);
         s->stage = 2;
-        timer_mod(s->timer, deadline(s, 12 * s->line)); return;
+        timer_mod(s->timer, deadline(s, s->lead)); return;
     }
     if (s->stage == 4) {
         s->start = deadline(s, s->total);
         begin(s); return;
     }
-    uint64_t line_start = (12 + s->row) * s->line;
+    uint64_t line_start = s->lead + s->row * s->line;
     if (s->stage == 2) {
         qemu_set_irq(s->pins[0], vinactive);
         qemu_set_irq(s->pins[1], !hinactive);
@@ -121,7 +121,7 @@ static void step(void *opaque)
         return;
     }
     s->stage = 2;
-    timer_mod(s->timer, deadline(s, (12 + s->row) * s->line + s->byte * s->pixel));
+    timer_mod(s->timer, deadline(s, s->lead + s->row * s->line + s->byte * s->pixel));
 }
 static void clock_changed(void *opaque)
 {
