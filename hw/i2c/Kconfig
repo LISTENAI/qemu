@@ -65,3 +65,7 @@ config FT6236
 config LISTENAI_EXTIO
     bool
     depends on I2C
+
+config HUSB320
+    bool
+    depends on I2C
