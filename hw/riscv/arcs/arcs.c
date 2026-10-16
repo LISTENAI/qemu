@@ -110,7 +110,8 @@ struct ArcsMachine {
     ArcsNetwork network;
     const char *wifi_rx_status;
     GString *ble_capture;
-    unsigned ble_frames;
+    uint64_t ble_dropped;
+    uint64_t ble_frames;
     QEMUTimer *ble_input;
     uint8_t ble_pdu[257];
     unsigned ble_length, ble_channel;
@@ -281,8 +282,14 @@ static void ble_transmit(void *opaque, const uint8_t *pdu, unsigned length,
                          unsigned channel, uint32_t address, uint64_t half_us)
 {
     ArcsMachine *s = opaque;
-    if (s->ble_frames == 4096) {
-        error_report("ARCS BLE capture capacity reached"); report(s, "radio-error"); exit(1);
+    if (s->ble_frames >= 4096) {
+        if (getenv("ARCS_QEMU_BLE_CAPTURE")) {
+            error_report("ARCS BLE capture capacity reached"); report(s, "radio-error"); exit(1);
+        }
+        char *end = strchr(s->ble_capture->str, '\n');
+        assert(end);
+        g_string_erase(s->ble_capture, 0, end + 1 - s->ble_capture->str);
+        s->ble_dropped++;
     }
     g_string_append_printf(s->ble_capture, "{\"half_microseconds\":%" PRIu64
                            ",\"channel\":%u,\"pdu\":\"", half_us, channel);
@@ -697,7 +704,7 @@ static void report(void *opaque, const char *status)
             ap->association_status, ap->association_rejections, ap->last_association_rejection,
             ap->handshake_state, ap->eapol_received,
             ap->station_rsn_size, ap->station_rsn_caps);
-    fprintf(f, ",\"bluetooth\":{\"captured\":%u,\"submitted\":%" PRIu64
+    fprintf(f, ",\"bluetooth\":{\"captured\":%" PRIu64 ",\"submitted\":%" PRIu64
             ",\"completed\":%" PRIu64 ",\"fifo_count\":%u}", s->ble_frames,
             s->soc.bluetooth.submitted, s->soc.bluetooth.completed, s->soc.bluetooth.fifo_count);
     fprintf(f, ",\"bluetooth_rx\":{\"accepted\":%" PRIu64 ",\"no_space\":%" PRIu64
@@ -1044,7 +1051,9 @@ static void machine_reset(MachineState *machine, ResetType type)
         s->wifi_rx_status = "idle";
     }
     if (s->network.library) { arcs_network_reset(&s->network); }
-    if (s->ble_capture) { g_string_truncate(s->ble_capture, 0); s->ble_frames = 0; }
+    if (s->ble_capture) {
+        g_string_truncate(s->ble_capture, 0); s->ble_frames = 0; s->ble_dropped = 0;
+    }
     if (s->ble_input) { timer_del(s->ble_input); s->ble_input_status = "idle"; }
     /* Board inputs are applied after every chip has finished resetting. */
     listenai_board_pulls_apply(&s->board, DEVICE(&s->soc));
@@ -1253,7 +1262,8 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     GString *device_text = qobject_to_json(QOBJECT(devices));
     g_autofree char *device_json = g_string_free(device_text, false);
     qobject_unref(devices);
-    return g_strdup_printf("{\"devices\":%s,\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
+    return g_strdup_printf("{\"bluetooth_capture\":{\"frames\":%" PRIu64 ",\"retained\":%" PRIu64 ",\"dropped\":%" PRIu64 "},"
+        "\"devices\":%s,\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":%s},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
@@ -1261,6 +1271,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
+        s->ble_frames, MIN(s->ble_frames, UINT64_C(4096)), s->ble_dropped,
         device_json, audio_output, events, wifi, s->access_points_present ? "true" : "false",
         camera, sequence, controls,
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
