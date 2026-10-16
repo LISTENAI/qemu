@@ -26,6 +26,7 @@ system_ss.add(when: 'CONFIG_GC0328', if_true: files('gc0328.c'))
 
 system_ss.add(when: 'CONFIG_FT6236', if_true: files('ft6236.c'))
 
-system_ss.add(when: 'CONFIG_LISTENAI_EXTIO', if_true: files('listenai_extio.c'))
+system_ss.add(when: 'CONFIG_CST328', if_true: files('cst328.c'))
 
+system_ss.add(when: 'CONFIG_LISTENAI_EXTIO', if_true: files('listenai_extio.c'))
 system_ss.add(when: 'CONFIG_HUSB320', if_true: files('husb320.c'))

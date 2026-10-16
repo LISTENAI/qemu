@@ -32,4 +32,5 @@ struct VenusAGPT {
 void venusa_gpt_init(VenusASoC *soc);
 void venusa_gpt_reset(VenusASoC *soc);
 void venusa_gpt_clock(VenusASoC *soc, bool enabled);
+double venusa_gpt_duty(VenusAGPT *gpt, unsigned output);
 #endif

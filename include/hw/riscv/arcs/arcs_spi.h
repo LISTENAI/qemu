@@ -17,4 +17,5 @@ void arcs_spi_update_dma(ArcsSoC *soc);
 void arcs_spi_pins_changed(ArcsSoC *soc);
 void arcs_spi_pad_input(ArcsSoC *soc, unsigned pad, bool level);
 void arcs_spi_reset(ArcsSoC *soc, unsigned index);
+bool arcs_spi_pad_selected(ArcsSPI *s, unsigned pin, unsigned pad);
 #endif

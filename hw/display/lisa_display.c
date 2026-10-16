@@ -68,7 +68,7 @@ static const DisplayChangeListenerOps listener_ops = {
     .dpy_refresh = refresh, .dpy_gfx_update = publish, .dpy_gfx_switch = switch_surface,
 };
 
-void lisa_display_init(QemuConsole *console, const char *directory)
+void lisa_display_init(QemuConsole *console, const char *directory, const char *shared)
 {
     DisplaySurface *surface = qemu_console_surface(console);
     unsigned width = surface_width(surface), height = surface_height(surface);
@@ -76,7 +76,6 @@ void lisa_display_init(QemuConsole *console, const char *directory)
         error_report("Unsupported host display size"); exit(1);
     }
     size_t bytes = width * height * 4, length = sizeof(DisplayMap) + 3 * (16 + bytes);
-    const char *shared = getenv("ARCS_QEMU_DISPLAY_SHM");
     DisplayMap *p;
     LisaDisplay *s = g_new0(LisaDisplay, 1);
     if (shared) {

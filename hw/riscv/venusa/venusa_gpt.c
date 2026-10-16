@@ -100,6 +100,17 @@ static void pwm_outputs(VenusAGPTChannel *c)
     }
 }
 
+double venusa_gpt_duty(VenusAGPT *gpt, unsigned output)
+{
+    assert(output < 8);
+    VenusAGPTChannel *c = &gpt->channel[output / 4];
+    unsigned port = output % 4;
+    if (pwm_running(c) && (c->control & (1u << (24 + port)))) {
+        return ((double)c->duty_shadow[port] + 1) / ((unsigned)c->shadow + 2);
+    }
+    return !!(c->control & (1u << (16 + port)));
+}
+
 static uint64_t pwm_next_ticks(VenusAGPTChannel *c)
 {
     unsigned period = (unsigned)c->shadow + 2;

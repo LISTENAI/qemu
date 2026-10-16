@@ -10,4 +10,5 @@ OBJECT_DECLARE_SIMPLE_TYPE(CST328State, CST328)
 bool cst328_get_contact(DeviceState *dev, uint16_t *x, uint16_t *y);
 void cst328_set_contact(DeviceState *dev, bool pressed, uint16_t x, uint16_t y);
 
+void cst328_add_input(Object *owner, DeviceState *dev, const char *name);
 #endif

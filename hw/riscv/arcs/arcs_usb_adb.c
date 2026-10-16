@@ -6,6 +6,7 @@
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
 #include "qemu/bswap.h"
+#include "hw/irq.h"
 
 /* ADB is only a transport adapter. Commands and replies belong to the guest.
  * ADB USB sends the 24-byte header separately from the payload; TCP may split
@@ -135,6 +136,7 @@ static void adb_event(void *opaque, QEMUChrEvent event)
     h->adb_header = true; h->adb_remaining = 24;
     h->adb_in = h->adb_out = 0;
     h->connected = h->adb_connected;
+    qemu_set_irq(s->host_connected, h->connected);
     h->enumerating = false; h->phase = HOST_IDLE;
     h->status = h->connected ? "connected" : "disconnected";
     timer_del(h->timer); timer_del(h->bulk);

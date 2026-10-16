@@ -65,6 +65,11 @@ static bool pin_selected(ArcsSPI *s, unsigned pin, unsigned pad)
            arcs_pinmux_function(&s->soc->pinmux[0], pad, 5 + s->index);
 }
 
+bool arcs_spi_pad_selected(ArcsSPI *s, unsigned pin, unsigned pad)
+{
+    return pad < 64 && pin < 4 && pin_selected(s, pin, pad);
+}
+
 static void pin_output(void *opaque, int pin, int level)
 {
     ArcsSPI *s = opaque;

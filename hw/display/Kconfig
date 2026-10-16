@@ -152,3 +152,7 @@ config MAC_PVG_PCI
 
 config VENUSA_RGB
     bool
+
+config ST7789
+    bool
+    select SSI

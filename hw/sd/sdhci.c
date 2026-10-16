@@ -248,6 +248,8 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
     SDHCIState *s = (SDHCIState *)dev;
 
     trace_sdhci_set_inserted(level ? "insert" : "eject");
+    /* The slot switch can be wired independently of the controller CD input. */
+    qemu_set_irq(s->media_present, level);
     if (s->no_card_detect) {
         /* Media removal does not drive an unwired mechanical detect input. */
         if (!level && (s->prnsts & SDHC_DATA_INHIBIT)) {
@@ -1452,6 +1454,7 @@ static void sdhci_init_readonly_registers(SDHCIState *s, Error **errp)
 
 void sdhci_initfn(SDHCIState *s)
 {
+    qdev_init_gpio_out_named(DEVICE(s), &s->media_present, "media-present", 1);
     qbus_init(&s->sdbus, sizeof(s->sdbus), TYPE_SDHCI_BUS, DEVICE(s), "sd-bus");
 
     s->insert_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,

@@ -41,7 +41,7 @@ struct VenusAAudio {
     void (*output)(void *opaque, unsigned rate, int16_t sample);
     double highpass_x[2][2], highpass_y[2][2];
 };
-void venusa_board_audio_connect(VenusASoC *s);
+void venusa_board_audio_connect(VenusASoC *s, unsigned pad, bool active, DeviceState *extio);
 void venusa_audio_init(VenusASoC *s);
 void venusa_audio_reset(VenusASoC *s);
 void venusa_audio_clock(VenusASoC *s);

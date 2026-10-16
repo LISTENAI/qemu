@@ -445,7 +445,7 @@ static void ssi_route(const void *opaque)
     if (g_test_subprocess()) {
         QTestState *q =
             qtest_initf("-machine arcs-evb "
-                        "-device arcs-st7789,id=panel,bus=arcs-spi0 %s",
+                        "-device st7789,id=panel,bus=arcs-spi0 %s",
                         mode == 2 ? "-device "
                                     "listenai-gpio-wire,gpio=/machine/"
                                     "soc,source=15,destination=25"
@@ -496,7 +496,7 @@ static void panel_byte(QTestState *q, bool data, uint8_t value)
 static void controller_reset_keeps_panel(void)
 {
     QTestState *q = qtest_init("-machine arcs-evb "
-                              "-device arcs-st7789,id=panel,bus=arcs-spi0");
+                              "-device st7789,id=panel,bus=arcs-spi0");
     for (unsigned pad = 12; pad <= 15; pad++) {
         qtest_writel(q, MUX + pad * 4, 5);
     }

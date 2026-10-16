@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* CST328 single-contact reports and report-ready interrupt edges. */
 #include "qemu/osdep.h"
+#include "qapi/visitor.h"
+#include "qapi/error.h"
 #include "hw/i2c/cst328.h"
 #include "hw/irq.h"
 #include "hw/resettable.h"
@@ -91,6 +93,33 @@ void cst328_set_contact(DeviceState *dev, bool pressed, uint16_t x, uint16_t y)
         qemu_set_irq(s->int_irq, 0);
         qemu_set_irq(s->int_irq, 1);
     }
+}
+
+static void contact_get(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    uint16_t x, y;
+    char *value = cst328_get_contact(opaque, &x, &y)
+        ? g_strdup_printf("%u,%u,press", x, y) : g_strdup("release");
+    visit_type_str(v, name, &value, errp);
+    g_free(value);
+}
+
+static void contact_set(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    char *value = NULL;
+    if (!visit_type_str(v, name, &value, errp)) { return; }
+    unsigned x, y; char extra, state[8];
+    if (!strcmp(value, "release")) { cst328_set_contact(opaque, false, 0, 0); }
+    else if (sscanf(value, "%u,%u,%7s%c", &x, &y, state, &extra) == 3 &&
+             !strcmp(state, "press") && x < 240 && y < 320) {
+        cst328_set_contact(opaque, true, x, y);
+    } else { error_setg(errp, "Touch input must be x,y,press or release"); }
+    g_free(value);
+}
+
+void cst328_add_input(Object *owner, DeviceState *dev, const char *name)
+{
+    object_property_add(owner, name, "str", contact_get, contact_set, NULL, dev);
 }
 
 static void class_init(ObjectClass *klass, const void *data)

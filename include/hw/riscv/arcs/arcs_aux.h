@@ -37,6 +37,7 @@ typedef struct ArcsUSB {
     unsigned bulk_count[8], bulk_position[8], bulk_tx_count[8];
     uint32_t dma[6][3], dma_pending;
     ArcsUSBHost *host;
+    qemu_irq host_connected;
 } ArcsUSB;
 void arcs_aux_init(ArcsSoC *s);
 void arcs_adc_reset(ArcsSoC *s);

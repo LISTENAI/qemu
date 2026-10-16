@@ -38,3 +38,12 @@ config SPLIT_IRQ
 config EIF
     bool
     depends on LIBCBOR && GNUTLS
+
+config LISTENAI_BOARD
+    bool
+    select HUSB320
+    select LISTENAI_EXTIO
+    select ST7789
+    select GC0328
+    select CST328
+    select SPLIT_IRQ

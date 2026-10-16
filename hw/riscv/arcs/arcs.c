@@ -5,9 +5,12 @@
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
 #include "hw/riscv/arcs/arcs.h"
+#include "hw/riscv/arcs/arcs_board.h"
+#include "hw/core/listenai-board-inputs.h"
+#include "hw/i2c/listenai_extio.h"
 #include "hw/riscv/arcs/arcs_wifi_ap.h"
 #include "hw/riscv/arcs/arcs_network.h"
-#include "hw/display/arcs_st7789.h"
+#include "hw/display/st7789.h"
 #include "hw/i2c/gc0328.h"
 #include "hw/i2c/cst328.h"
 #include "ui/lisa_display.h"
@@ -23,34 +26,30 @@
 #include "system/qtest.h"
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
-#include "qemu/lisa-camera-input.h"
+#include "hw/core/listenai-camera-scene.h"
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
 #include "qobject/qlist.h"
 #include "qobject/qbool.h"
+#include "qapi/visitor.h"
 
 #define TYPE_ARCS_MACHINE MACHINE_TYPE_NAME("arcs-mini")
 #define TYPE_ARCS_EVB_MACHINE MACHINE_TYPE_NAME("arcs-evb")
+#define TYPE_ARCS_BOARD_MACHINE MACHINE_TYPE_NAME("arcs-board")
 OBJECT_DECLARE_SIMPLE_TYPE(ArcsMachine, ARCS_MACHINE)
 struct ArcsMachine {
     MachineState parent;
     ArcsSoC soc;
-    ArcsXccela128 psram;
+    ListenaiBoard board;
+    ListenAIXccela psram;
     ArcsNOR flash;
     DeviceState *screen;
     DeviceState *camera;
     DeviceState *touch;
     bool evb;
-    uint64_t signal_pad_mask, signal_pad_levels;
-    uint16_t signal_adc_mask;
-    uint32_t signal_adc_uv[16];
-    LisaMapping camera_mapping;
-    QEMUTimer *camera_poll;
-    uint64_t camera_generation, camera_sequence, camera_repeated;
-    uint64_t camera_frame_index, camera_latched_frame;
-    uint64_t camera_host_ns, camera_received_ns, camera_skipped;
-    unsigned camera_source_state;
+    ListenaiBoardInputs inputs;
+    ListenaiCameraScene camera_scene;
     QEMUTimer *deadline;
     QEMUTimer *power_button;
     QEMUTimer *boot_pin;
@@ -126,9 +125,9 @@ static void desktop_init(ArcsMachine *s);
 static void desktop_capture(ArcsMachine *s);
 static void button_cancel(ArcsMachine *s, const char *reason, bool release);
 static void button_drive(ArcsMachine *s, bool pressed);
+static void keypad_drive(ArcsMachine *s);
 static bool evb_button_get(ArcsMachine *s, unsigned id);
 static char *button_sequence_get(Object *obj, Error **errp);
-static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp);
 
 #include "arcs_events.inc"
 
@@ -392,10 +391,16 @@ static void ble_peer_stop_set(Object *obj, bool value, Error **errp)
 
 static bool pa_enabled(ArcsMachine *s)
 {
+    if (!s->board.amplifier) { return false; }
     uint32_t driven, levels;
-    arcs_gpio_outputs_snapshot(&s->soc.gpio[0], &driven, &levels);
-    unsigned pin = s->evb ? 27 : 1;
-    return driven & levels & (1u << pin);
+    unsigned pin = s->board.amplifier_pad;
+    if (pin >= 64) {
+        unsigned port = pin - 64;
+        listenai_extio_outputs(s->board.extio, port / 8, &driven, &levels);
+        pin = port % 8;
+    } else { arcs_gpio_outputs_snapshot(&s->soc.gpio[pin / 32], &driven, &levels); pin %= 32; }
+    return (driven & (1u << (pin % 32))) &&
+           !!(levels & (1u << (pin % 32))) == s->board.amplifier_active;
 }
 
 static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
@@ -634,9 +639,9 @@ static void report(void *opaque, const char *status)
                 c->pll_regs[2], c->pll_regs[3], c->pll_regs[6]);
     }
     if (s->screen) {
-        fprintf(f, ",\"screen\":"); arcs_st7789_report(s->screen, f);
+        fprintf(f, ",\"screen\":"); st7789_report(s->screen, f);
         const char *path = getenv("ARCS_QEMU_SCREEN");
-        if (path) { arcs_st7789_save(s->screen, path); }
+        if (path) { st7789_save(s->screen, path); }
     }
     LisemLunaStatus luna = lisem_luna_status(s->soc.luna.backend);
     fprintf(f, ",\"luna\":{\"completed\":%" PRIu64 ",\"busy\":%s,\"api\":%u,\"param\":%u}",
@@ -740,15 +745,7 @@ static void backlight(void *opaque)
 {
     ArcsMachine *s = opaque;
     if (s->screen) {
-        uint32_t driven, levels;
-        arcs_gpio_outputs_snapshot(&s->soc.gpio[0], &driven, &levels);
-        unsigned pin = s->evb ? 0 : 21;
-        unsigned channel = s->evb ? 0 : 1;
-        bool pwm = arcs_pinmux_function(&s->soc.pinmux[0], pin, 12);
-        double duty = pwm ? arcs_gpt_duty(&s->soc.gpt, channel) :
-                           !!(levels & (1u << pin));
-        if (s->evb) { duty = 1.0 - duty; } /* EVB backlight is active low. */
-        arcs_st7789_backlight(s->screen, pwm || (driven & (1u << pin)) ? duty : 0);
+        st7789_backlight(s->screen, arcs_board_backlight(&s->board, &s->soc));
     }
 }
 
@@ -757,38 +754,47 @@ static void backlight_pad(void *opaque, int pin, int level) { backlight(opaque);
 static void connect_panel(ArcsMachine *s)
 {
     DeviceState *soc = DEVICE(&s->soc);
-    s->screen = qdev_new(TYPE_ARCS_ST7789);
-    object_property_add_child(OBJECT(s), "screen", OBJECT(s->screen));
-    if (!s->evb) { qdev_prop_set_uint32(s->screen, "height", 240); }
-    qdev_prop_set_uint32(s->screen, "rotation", s->evb ? 270 : 90);
-    qdev_prop_set_bit(s->screen, "panel-inverted", true);
-    arcs_st7789_failure_callback(s->screen, report, s);
+    ListenaiBoard *b = &s->board;
+    if (!b->panel) { return; }
+    s->screen = listenai_board_panel_new(b, OBJECT(s));
+    st7789_failure_callback(s->screen, report, s);
     unsigned spi = s->evb ? 1 : 0;
-    ssi_realize_and_unref(s->screen, s->soc.spi[spi].device.bus, &error_fatal);
-    s->soc.spi[spi].device.route_valid = lcd_route_valid; s->soc.spi[spi].device.route_opaque = s;
+    if (b->configured) {
+        arcs_board_attach_spi(b, &s->soc, s->screen);
+    } else {
+        ssi_realize_and_unref(s->screen, s->soc.spi[spi].device.bus, &error_fatal);
+        s->soc.spi[spi].device.route_valid = lcd_route_valid;
+        s->soc.spi[spi].device.route_opaque = s;
+    }
     /* Mini routes CS through the SPI peripheral function. EVB uses a GPIO
      * software CS on B5, so leaving the SPI CS output disconnected preserves
      * the firmware's GPIO writes. */
-    if (!s->evb) {
+    if (!s->evb && !b->configured) {
         qdev_connect_gpio_out_named(soc, "spi-cs", spi, qemu_allocate_irq(lcd_cs, s, 0));
     }
-    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 37 : 22,
-                                qdev_get_gpio_in_named(s->screen, SSI_GPIO_CS, 0));
-    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 32 : 23,
-                                qdev_get_gpio_in(s->screen, 0));
-    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 1 : 41,
-                                qdev_get_gpio_in(s->screen, 1));
-    qdev_connect_gpio_out_named(s->screen, "te", 0,
-                                qdev_get_gpio_in_named(soc, "pad-in", s->evb ? 40 : 27));
-    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 0 : 21,
-                                qemu_allocate_irq(backlight_pad, s, 0));
+    listenai_board_panel_wire(b, soc, s->screen);
+    listenai_board_connect_gpio(b, DEVICE(&s->soc), b->backlight_pad, qemu_allocate_irq(backlight_pad, s, 0));
     s->soc.gpt.changed = backlight; s->soc.gpt.opaque = s;
+}
+
+static bool extio_route(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    return arcs_pinmux_function(&s->soc.pinmux[0], s->board.extio_scl, 8) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], s->board.extio_sda, 8);
+}
+
+static bool typec_route(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    return arcs_pinmux_function(&s->soc.pinmux[0], s->board.typec_scl, 8) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], s->board.typec_sda, 8);
 }
 
 static bool camera_clock(ArcsMachine *s)
 {
     return s->soc.dvp.clock && (s->soc.dvp.regs[0x10 / 4] & 1) &&
-        arcs_pinmux_function(&s->soc.pinmux[0], 26, 16);
+        arcs_pinmux_function(&s->soc.pinmux[0], s->board.camera_pads[LISTENAI_CAM_MCLK], 16);
 }
 
 static void camera_clock_changed(void *opaque)
@@ -829,6 +835,9 @@ static void camera_pad(void *opaque, int pin, int level)
 static bool camera_sccb_route(void *opaque)
 {
     ArcsMachine *s = opaque;
+    if (s->board.configured) {
+        return arcs_board_camera_route(&s->board, &s->soc);
+    }
     if (s->evb) {
         return arcs_pinmux_function(&s->soc.pinmux[0], 22, 8) &&
                arcs_pinmux_function(&s->soc.pinmux[0], 23, 8);
@@ -849,7 +858,7 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
 {
     ArcsMachine *s = opaque;
     if (!camera_clock(s)) { return false; }
-    if (s->camera_generation && camera_input_receive(s, s->camera_generation, errp) < 0) { return false; }
+    if (listenai_camera_scene_receive(&s->camera_scene, errp) < 0) { return false; }
     for (unsigned pin = 10; pin <= 20; pin++) {
         if (!arcs_pinmux_function(&s->soc.pinmux[0], pin, 16)) {
             error_setg(errp, "GC0328 DVP pins are not routed to the receiver"); return false;
@@ -882,154 +891,47 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
         error_setg(errp, "Unsupported GC0328 line/frame timing"); return false;
     }
     frame->sample = camera_sample; frame->opaque = s->camera;
-    if (s->camera_generation) {
-        if (s->camera_latched_frame == s->camera_frame_index) { s->camera_repeated++; }
-        else { s->camera_skipped += s->camera_frame_index - s->camera_latched_frame - 1; }
-        s->camera_latched_frame = s->camera_frame_index;
-        LisaCameraInput *p = s->camera_mapping.address;
-        __atomic_store_n(&p->consumed, s->camera_latched_frame, __ATOMIC_RELEASE);
-        __atomic_store_n(&p->skipped, s->camera_skipped, __ATOMIC_RELEASE);
-    }
+    listenai_camera_scene_latch(&s->camera_scene);
     return true;
 }
 
-/* Media publications never run through the monitor. A bounded reader locks
- * the latest complete slot; the sensor copies its pending scene at SOF. */
-static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp)
+static void camera_source_changed(void *opaque)
 {
-    LisaCameraInput *p = s->camera_mapping.address;
-    if (!p) { return 0; }
-    int best = -1;
-    uint64_t sequence = generation == s->camera_generation ? s->camera_sequence : 0;
-    /* Even selection metadata is accessed only with reader ownership. A
-     * pending new generation cannot hide the active source's other slots. */
-    for (unsigned slot = 0; slot < 3; slot++) {
-        uint64_t expected = 0;
-        if (!__atomic_compare_exchange_n(&p->owners[slot], &expected, 2, false,
-                                         __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) { continue; }
-        LisaCameraFrame *frame = &p->frames[slot];
-        if (frame->generation == generation && frame->sequence > sequence) {
-            if (best >= 0) { __atomic_store_n(&p->owners[best], 0, __ATOMIC_RELEASE); }
-            best = slot; sequence = frame->sequence;
-        } else { __atomic_store_n(&p->owners[slot], 0, __ATOMIC_RELEASE); }
-    }
-    if (best < 0) { return 0; }
-    LisaCameraFrame *frame = &p->frames[best];
-    int result = 1;
-    if (frame->state > 3 || ((frame->state == 1 || frame->state == 2) && !frame->frame_index) ||
-        (generation == s->camera_generation && frame->frame_index < s->camera_frame_index)) {
-        error_setg(errp, "Invalid camera source state"); result = -1; goto out;
-    }
-    if (frame->state == 1 || frame->state == 2) {
-        if (!gc0328_set_frame(s->camera, frame->rgb, LISA_CAMERA_BYTES, errp)) {
-            result = -1; goto out;
-        }
-    } else { gc0328_clear_frame(s->camera); }
-    s->camera_sequence = frame->sequence;
-    s->camera_frame_index = frame->frame_index;
-    s->camera_host_ns = frame->host_ns;
-    s->camera_received_ns = g_get_monotonic_time() * 1000;
-    s->camera_source_state = frame->state;
-out:
-    __atomic_store_n(&p->owners[best], 0, __ATOMIC_RELEASE);
-    return result;
+    arcs_dvp_source_changed(&((ArcsMachine *)opaque)->soc);
 }
 
-static void camera_input_poll(void *opaque)
+static bool camera_receiver_enabled(void *opaque)
 {
-    ArcsMachine *s = opaque;
-    if (s->camera_generation) {
-        Error *error = NULL;
-        int changed = camera_input_receive(s, s->camera_generation, &error);
-        if (error) { error_report_err(error); exit(1); }
-        if (changed > 0) { arcs_dvp_source_changed(&s->soc); }
-    }
-    /* Wake an idle receiver after a live source reconnects. Host polling does
-     * not advance guest time; each new frame is still latched at sensor SOF. */
-    timer_mod(s->camera_poll, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 16);
-}
-
-static void camera_source_set(Object *obj, const char *value, Error **errp)
-{
-    ArcsMachine *s = ARCS_MACHINE(obj);
-    uint64_t generation;
-    if (!s->camera_mapping.address) { error_setg(errp, "Camera shared input is not configured"); return; }
-    if (!*value || strspn(value, "0123456789") != strlen(value) ||
-        qemu_strtou64(value, NULL, 10, &generation) || !generation ||
-        generation <= s->camera_generation) {
-        error_setg(errp, "Camera source generation is invalid or stale"); return;
-    }
-    int result = camera_input_receive(s, generation, errp);
-    if (result < 0) { return; }
-    if (!result) { error_setg(errp, "Camera source has no complete published frame"); return; }
-    s->camera_generation = generation;
-    s->camera_latched_frame = 0;
-    s->camera_skipped = s->camera_repeated = 0;
-    LisaCameraInput *p = s->camera_mapping.address;
-    __atomic_store_n(&p->consumed, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&p->skipped, 0, __ATOMIC_RELEASE);
-    arcs_dvp_source_changed(&s->soc);
-}
-
-static char *camera_input_status(ArcsMachine *s)
-{
-    LisaCameraInput *p = s->camera_mapping.address;
-    const char *states[] = {"none", "still", "live", "disconnected"};
-    return g_strdup_printf("{\"receiver_enabled\":%s,\"generation\":%" PRIu64 ",\"sequence\":%" PRIu64
-        ",\"received_frame\":%" PRIu64 ",\"sampled_frame\":%" PRIu64
-        ",\"source_state\":\"%s\",\"captured_host_ns\":%" PRIu64
-        ",\"received_host_ns\":%" PRIu64 ",\"skipped_frames\":%" PRIu64
-        ",\"repeated_frames\":%" PRIu64 ",\"producer_dropped_frames\":%" PRIu64 "}",
-        arcs_dvp_enabled(&s->soc.dvp) ? "true" : "false",
-        s->camera_generation, s->camera_sequence, s->camera_frame_index, s->camera_latched_frame,
-        states[s->camera_source_state],
-        s->camera_host_ns, s->camera_received_ns, s->camera_skipped, s->camera_repeated,
-        p ? __atomic_load_n(&p->dropped, __ATOMIC_ACQUIRE) : 0);
-}
-
-static void camera_frame_set(Object *obj, const char *value, Error **errp)
-{
-    ArcsMachine *s = ARCS_MACHINE(obj);
-    if (s->camera_mapping.address) { error_setg(errp, "Shared camera input owns this run"); return; }
-    if (!*value) { gc0328_clear_frame(s->camera); return; }
-    const size_t bytes = 640 * 480 * 3, encoded = bytes / 3 * 4;
-    if (strlen(value) != encoded || strspn(value,
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") != encoded) {
-        error_setg(errp, "Camera input must be base64 640x480 RGB888"); return;
-    }
-    gsize length;
-    g_autofree uint8_t *rgb = g_base64_decode(value, &length);
-    if (gc0328_set_frame(s->camera, rgb, length, errp)) {
-        arcs_dvp_source_changed(&s->soc);
-    }
+    return arcs_dvp_enabled(&((ArcsMachine *)opaque)->soc.dvp);
 }
 
 static void connect_camera(ArcsMachine *s)
 {
+    if (!s->board.camera) { return; }
+    unsigned i2c = s->board.camera_i2c;
     I2CSlave *sensor = i2c_slave_new(TYPE_GC0328, 0x21);
     s->camera = DEVICE(sensor);
     object_property_add_child(OBJECT(s), "camera", OBJECT(sensor));
-    i2c_slave_realize_and_unref(sensor, s->soc.i2c[0].controller.bus, &error_fatal);
-    s->soc.i2c[0].controller.route_valid = camera_sccb_route;
-    s->soc.i2c[0].controller.route_opaque = s;
+    i2c_slave_realize_and_unref(sensor, s->soc.i2c[i2c].controller.bus, &error_fatal);
+    listenai_board_camera_wire(&s->board, DEVICE(&s->soc), s->camera);
+    s->soc.i2c[i2c].controller.route_valid = camera_sccb_route;
+    s->soc.i2c[i2c].controller.route_opaque = s;
     s->soc.dvp.begin_frame = camera_begin;
     s->soc.dvp.clock_changed = camera_clock_changed;
     s->soc.dvp.opaque = s;
     gc0328_set_notify(s->camera, camera_sensor_changed, s);
-    qdev_connect_gpio_out_named(DEVICE(&s->soc), "pad-out", 26,
-                               qemu_allocate_irq(camera_pad, s, 0));
-    object_property_add_str(OBJECT(s), "x-lisa-camera-frame", NULL, camera_frame_set);
-    object_property_add_str(OBJECT(s), "x-lisa-camera-source", NULL, camera_source_set);
-    const char *name = getenv("ARCS_QEMU_CAMERA_SHM");
-    if (name) {
-        LisaCameraInput *p = lisa_named_mapping(name, sizeof(*p), true, &s->camera_mapping);
-        if (!p) { perror("Create camera input map"); exit(1); }
-        p->width = 640; p->height = 480; p->stride = 640 * 3; p->bytes = LISA_CAMERA_BYTES;
-        __atomic_store_n(&p->magic, LISA_CAMERA_MAGIC, __ATOMIC_RELEASE);
-        s->camera_poll = timer_new_ms(QEMU_CLOCK_REALTIME, camera_input_poll, s);
-        timer_mod(s->camera_poll, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 16);
-    }
+    arcs_board_connect_pad(&s->soc, s->board.camera_pads[LISTENAI_CAM_MCLK],
+                          qemu_allocate_irq(camera_pad, s, 0));
+    listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera,
+        getenv("ARCS_QEMU_CAMERA_SHM"), camera_source_changed, camera_receiver_enabled, s);
     camera_clock_changed(s);
+}
+
+static bool touch_route(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    return arcs_pinmux_function(&s->soc.pinmux[0], s->board.touch_scl, 8) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], s->board.touch_sda, 8);
 }
 
 static void connect_touch(ArcsMachine *s)
@@ -1037,34 +939,13 @@ static void connect_touch(ArcsMachine *s)
     I2CSlave *touch = i2c_slave_new(TYPE_CST328, 0x1d);
     s->touch = DEVICE(touch);
     object_property_add_child(OBJECT(s), "touch", OBJECT(touch));
-    i2c_slave_realize_and_unref(touch, s->soc.i2c[0].controller.bus, &error_fatal);
+    i2c_slave_realize_and_unref(touch, s->soc.i2c[s->board.touch_i2c].controller.bus, &error_fatal);
+    if (s->board.configured && !s->camera) {
+        s->soc.i2c[s->board.touch_i2c].controller.route_valid = touch_route;
+        s->soc.i2c[s->board.touch_i2c].controller.route_opaque = s;
+    }
     qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
-                                qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 24));
-}
-
-static char *touch_get(Object *obj, Error **errp)
-{
-    ArcsMachine *s = ARCS_MACHINE(obj);
-    uint16_t x, y;
-    return cst328_get_contact(s->touch, &x, &y) ?
-           g_strdup_printf("%u,%u,press", x, y) : g_strdup("release");
-}
-
-static void touch_set(Object *obj, const char *value, Error **errp)
-{
-    ArcsMachine *s = ARCS_MACHINE(obj);
-    unsigned x, y;
-    char state[8] = { 0 };
-    if (!strcmp(value, "release")) {
-        cst328_set_contact(s->touch, false, 0, 0);
-        return;
-    }
-    if (sscanf(value, "%u,%u,%7s", &x, &y, state) != 3 || x >= 240 || y >= 320 ||
-        strcmp(state, "press")) {
-        error_setg(errp, "Touch input must be x,y,press or release");
-        return;
-    }
-    cst328_set_contact(s->touch, true, x, y);
+                                qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", s->board.touch_irq));
 }
 
 static void finish(void *opaque)
@@ -1090,7 +971,15 @@ static void power_button_update(void *opaque)
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     bool pressed = now >= s->press_ns && now < s->release_ns;
     /* Active-low PB4 is a board input, including across a warm reset. */
-    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !pressed);
+    if (s->board.configured) {
+        if (!s->board.button_count) { return; }
+        ListenaiBoardButton *b = &s->board.buttons[0];
+        if (b->analog) { keypad_drive(s); }
+        else { listenai_board_gpio_input(&s->board, DEVICE(&s->soc), b->pad,
+                                        pressed ? b->pressed_level : b->released_level); }
+    } else {
+        qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !pressed);
+    }
     timer_del(s->power_button);
     if (now < s->press_ns) { timer_mod(s->power_button, s->press_ns); }
     else if (now < s->release_ns) { timer_mod(s->power_button, s->release_ns); }
@@ -1122,57 +1011,17 @@ static void boot_pin_set(Object *obj, bool asserted, Error **errp)
 
 static void signals_apply(ArcsMachine *s)
 {
-    for (unsigned pin = 0; pin < 64; pin++) {
-        if (s->signal_pad_mask & (1ull << pin)) {
-            qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", pin),
-                         !!(s->signal_pad_levels & (1ull << pin)));
-        }
-    }
-    s->soc.adc.voltage_mask = s->signal_adc_mask;
-    memcpy(s->soc.adc.voltage_uv, s->signal_adc_uv, sizeof(s->signal_adc_uv));
+    listenai_board_inputs_apply(&s->board, &s->inputs, DEVICE(&s->soc));
+    s->soc.adc.voltage_mask = s->inputs.adc_mask;
+    memcpy(s->soc.adc.voltage_uv, s->inputs.adc_uv, sizeof(s->inputs.adc_uv));
 }
 
 static void signals_set(Object *obj, const char *value, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
-    if (strlen(value) > 8192) { error_setg(errp, "Input payload too large"); return; }
-    QObject *root = qobject_from_json(value, errp);
-    QDict *dict = qobject_to(QDict, root);
-    QDict *pads = dict ? qdict_get_qdict(dict, "pads") : NULL;
-    QDict *adc = dict ? qdict_get_qdict(dict, "adc_uv") : NULL;
-    uint64_t pad_mask = 0, pad_levels = 0;
-    uint16_t adc_mask = 0;
-    uint32_t adc_uv[16] = { 0 };
-    if (!root) { return; }
-    if (!dict || qdict_size(dict) != 2 || !pads || !adc) { goto invalid; }
-    for (const QDictEntry *e = qdict_first(pads); e; e = qdict_next(pads, e)) {
-        uint64_t pin;
-        QBool *level = qobject_to(QBool, qdict_entry_value(e));
-        if (qemu_strtou64(qdict_entry_key(e), NULL, 10, &pin) || pin >= 64 || !level) { goto invalid; }
-        pad_mask |= 1ull << pin;
-        if (qbool_get_bool(level)) { pad_levels |= 1ull << pin; }
+    if (listenai_board_inputs_parse(&s->board, &s->inputs, value, 28, 10, 4, 10, errp)) {
+        signals_apply(s);
     }
-    for (const QDictEntry *e = qdict_first(adc); e; e = qdict_next(adc, e)) {
-        uint64_t channel, uv;
-        QNum *number = qobject_to(QNum, qdict_entry_value(e));
-        if (qemu_strtou64(qdict_entry_key(e), NULL, 10, &channel) || channel < 4 || channel > 9 ||
-            !number || !qnum_get_try_uint(number, &uv) || uv > 3600000) { goto invalid; }
-        adc_mask |= 1u << channel;
-        adc_uv[channel] = uv;
-    }
-    /* A control batch is validated before any edge reaches the chip. */
-    if ((s->signal_pad_mask && s->signal_pad_mask != pad_mask) ||
-        (s->signal_adc_mask && s->signal_adc_mask != adc_mask)) { goto invalid; }
-    s->signal_pad_mask = pad_mask;
-    s->signal_pad_levels = pad_levels;
-    s->signal_adc_mask = adc_mask;
-    memcpy(s->signal_adc_uv, adc_uv, sizeof(adc_uv));
-    signals_apply(s);
-    qobject_unref(root);
-    return;
-invalid:
-    qobject_unref(root);
-    error_setg(errp, "Invalid board input levels or wiring");
 }
 
 static void machine_reset(MachineState *machine, ResetType type)
@@ -1198,11 +1047,21 @@ static void machine_reset(MachineState *machine, ResetType type)
     if (s->ble_capture) { g_string_truncate(s->ble_capture, 0); s->ble_frames = 0; }
     if (s->ble_input) { timer_del(s->ble_input); s->ble_input_status = "idle"; }
     /* Board inputs are applied after every chip has finished resetting. */
+    listenai_board_pulls_apply(&s->board, DEVICE(&s->soc));
     signals_apply(s);
     timer_mod(s->deadline, s->budget);
     if (s->power_button) { power_button_update(s); }
     if (s->evb) {
         button_drive(s, s->desktop_pressed);
+    } else if (s->board.configured) {
+        for (unsigned i = 0; i < s->board.button_count; i++) {
+            ListenaiBoardButton *b = &s->board.buttons[i];
+            if (!b->analog) {
+                listenai_board_gpio_input(&s->board, DEVICE(&s->soc), b->pad,
+                                           b->pressed ? b->pressed_level : b->released_level);
+            }
+        }
+        keypad_drive(s);
     } else if (s->desktop_directory) {
         qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !s->desktop_pressed);
     }
@@ -1235,7 +1094,12 @@ static void machine_init(MachineState *machine)
     s->budget = getenv("ARCS_QEMU_BUDGET_NS") ?
                 g_ascii_strtoull(getenv("ARCS_QEMU_BUDGET_NS"), NULL, 10) : 1000000;
     s->report = getenv("ARCS_QEMU_REPORT");
-    arcs_xccela_init(&s->psram);
+    s->evb = !strcmp(object_get_typename(OBJECT(machine)), TYPE_ARCS_EVB_MACHINE);
+    arcs_board_load(&s->board, s->evb);
+    if (!strcmp(object_get_typename(OBJECT(machine)), TYPE_ARCS_BOARD_MACHINE) && !s->board.configured) {
+        error_report("arcs-board requires a checked board assembly file"); exit(1);
+    }
+    arcs_xccela_init(&s->psram, s->board.psram_bytes);
     memory_region_add_subregion(get_system_memory(), 0x28000000, &s->psram.ram);
     arcs_nor_init(&s->flash, 0x30000000, machine->firmware,
                   getenv("ARCS_QEMU_FLASH_PERSIST") != NULL);
@@ -1243,9 +1107,8 @@ static void machine_init(MachineState *machine)
     qdev_prop_set_uint64(DEVICE(&s->soc), "entry", entry);
     qdev_prop_set_uint32(DEVICE(&s->soc), "boot-hart", boot_hart);
     qdev_prop_set_bit(DEVICE(&s->soc), "probe", probe);
-    s->evb = !strcmp(object_get_typename(OBJECT(machine)), TYPE_ARCS_EVB_MACHINE);
     /* Mini's six-wire SD expansion has no mechanical card-detect connection. */
-    qdev_prop_set_bit(DEVICE(&s->soc), "sd-no-card-detect", !s->evb);
+    qdev_prop_set_bit(DEVICE(&s->soc), "sd-no-card-detect", !s->board.sd_detect);
     s->soc.report = report;
     s->soc.report_opaque = s;
     s->soc.psram.chip = &s->psram;
@@ -1261,9 +1124,22 @@ static void machine_init(MachineState *machine)
         }
         s->boot_pin = timer_new_ns(QEMU_CLOCK_VIRTUAL, boot_pin_release, s);
     }
+    if (s->board.expander) {
+        unsigned bus = s->board.extio_i2c;
+        listenai_board_attach_extio(&s->board, OBJECT(s), s->soc.i2c[bus].controller.bus);
+        s->soc.i2c[bus].controller.route_valid = extio_route;
+        s->soc.i2c[bus].controller.route_opaque = s;
+    }
+    if (s->board.typec) {
+        unsigned bus = s->board.typec_i2c;
+        listenai_board_attach_typec(&s->board, OBJECT(s), DEVICE(&s->soc), s->soc.i2c[bus].controller.bus);
+        s->soc.i2c[bus].controller.route_valid = typec_route;
+        s->soc.i2c[bus].controller.route_opaque = s;
+    }
+    listenai_board_sd_wire(&s->board, DEVICE(&s->soc), s->soc.sd.host);
     connect_panel(s);
     connect_camera(s);
-    if (s->evb) { connect_touch(s); }
+    if (s->board.touch) { connect_touch(s); }
     connect_pcm(s);
     s->wifi_capture = g_byte_array_new(); reset_radio(s);
     s->access_points_present = true;
@@ -1348,7 +1224,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     desktop_capture(s);
     g_autofree char *events = event_get(obj, errp);
     g_autofree char *sequence = button_sequence_get(obj, errp);
-    g_autofree char *camera = camera_input_status(s);
+    g_autofree char *camera = listenai_camera_scene_status(&s->camera_scene);
     g_autofree char *wifi = arcs_wifi_environment_status(s->access_points);
     g_autofree char *input = input_status(s, false);
     g_autofree char *audio_output = g_strdup_printf("{\"samples\":%" PRIu64 ",\"nonzero_samples\":%" PRIu64
@@ -1362,7 +1238,22 @@ static char *desktop_snapshot(Object *obj, Error **errp)
                           evb_button_get(s, 1) ? "true" : "false",
                           evb_button_get(s, 2) ? "true" : "false")
         : g_strdup_printf("{\"function\":%s}", s->desktop_pressed ? "true" : "false");
-    return g_strdup_printf("{\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
+    if (s->board.configured) {
+        QDict *buttons = qdict_new();
+        for (unsigned i = 0; i < s->board.button_count; i++) {
+            ListenaiBoardButton *b = &s->board.buttons[i];
+            qdict_put_bool(buttons, b->id, b->pressed);
+        }
+        GString *text = qobject_to_json(QOBJECT(buttons));
+        g_free(controls);
+        controls = g_string_free(text, false);
+        qobject_unref(buttons);
+    }
+    QDict *devices = listenai_board_devices_snapshot(&s->board);
+    GString *device_text = qobject_to_json(QOBJECT(devices));
+    g_autofree char *device_json = g_string_free(device_text, false);
+    qobject_unref(devices);
+    return g_strdup_printf("{\"devices\":%s,\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":%s},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
@@ -1370,7 +1261,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
-        audio_output, events, wifi, s->access_points_present ? "true" : "false",
+        device_json, audio_output, events, wifi, s->access_points_present ? "true" : "false",
         camera, sequence, controls,
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((NucleiN300State *)s->soc.cpu[0].env.nuclei_state)->exceptions,
@@ -1391,10 +1282,38 @@ static bool desktop_button_get(Object *obj, Error **errp)
     return ARCS_MACHINE(obj)->desktop_pressed;
 }
 
+static void keypad_drive(ArcsMachine *s)
+{
+    ListenaiBoard *b = &s->board;
+    if (!b->keypad) { return; }
+    double load = 1.0;
+    bool grounded = false;
+    for (unsigned i = 0; i < b->button_count; i++) {
+        if (b->buttons[i].analog && b->buttons[i].pressed) {
+            unsigned resistance = b->buttons[i].resistance_ohms;
+            if (!resistance) { grounded = true; }
+            else { load += (double)b->keypad_pull_up_ohms / resistance; }
+        }
+    }
+    s->soc.adc.voltage_mask |= 1u << b->keypad_channel;
+    s->soc.adc.voltage_uv[b->keypad_channel] = grounded ? 0 : b->keypad_supply_uv / load;
+}
+
 static void button_drive(ArcsMachine *s, bool pressed)
 {
     s->desktop_pressed = pressed;
-    if (s->evb) {
+    if (s->board.configured) {
+        if (s->button_id >= s->board.button_count) { return; }
+        ListenaiBoardButton *b = &s->board.buttons[s->button_id];
+        b->pressed = pressed;
+        if (b->analog) { keypad_drive(s); }
+        else { listenai_board_gpio_input(&s->board, DEVICE(&s->soc), b->pad,
+                                        pressed ? b->pressed_level : b->released_level); }
+        s->desktop_pressed = false;
+        for (unsigned i = 0; i < s->board.button_count; i++) {
+            s->desktop_pressed |= s->board.buttons[i].pressed;
+        }
+    } else if (s->evb) {
         static const int adc_codes[] = { 14, 319, 473 };
         s->evb_button_pressed = pressed;
         qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "adc-input", 4),
@@ -1458,10 +1377,16 @@ static void button_cancel(ArcsMachine *s, const char *reason, bool release)
     s->button_finished_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
 
+static bool selected_button_pressed(ArcsMachine *s)
+{
+    return s->board.configured && s->button_id < s->board.button_count
+        ? s->board.buttons[s->button_id].pressed : s->desktop_pressed;
+}
+
 static void button_sequence_step(void *opaque)
 {
     ArcsMachine *s = opaque;
-    bool released = s->desktop_pressed;
+    bool released = selected_button_pressed(s);
     button_drive(s, !released);
     if (released && ++s->button_completed == s->button_count) {
         s->button_status = "completed";
@@ -1479,9 +1404,9 @@ static char *button_sequence_get(Object *obj, Error **errp)
     return g_strdup_printf("{\"sequence\":%" PRIu64 ",\"button_id\":%u,\"status\":\"%s\","
         "\"reason\":\"%s\",\"count\":%u,\"completed\":%u,\"pressed\":%s,"
         "\"started_ns\":%" PRId64 ",\"finished_ns\":%" PRId64 "}",
-        s->button_sequence, s->evb ? s->button_id : UINT_MAX, s->button_status ? s->button_status : "idle",
+        s->button_sequence, (s->evb || s->board.configured) ? s->button_id : UINT_MAX, s->button_status ? s->button_status : "idle",
         s->button_reason ? s->button_reason : "", s->button_count,
-        s->button_completed, s->desktop_pressed ? "true" : "false",
+        s->button_completed, selected_button_pressed(s) ? "true" : "false",
         s->button_started_ns, s->button_finished_ns);
 }
 
@@ -1498,11 +1423,11 @@ static void button_sequence_set(Object *obj, const char *value, Error **errp)
     fields = g_strsplit(value, ",", -1);
     unsigned offset = g_strv_length(fields) == 4 ? 1 : 0;
     if ((g_strv_length(fields) != 3 && g_strv_length(fields) != 4) ||
-        (offset && (!s->evb || qemu_strtou64(fields[0], NULL, 10, &id))) ||
+        (offset && (!(s->evb || s->board.configured) || qemu_strtou64(fields[0], NULL, 10, &id))) ||
         qemu_strtou64(fields[offset], NULL, 10, &count) ||
         qemu_strtou64(fields[offset + 1], NULL, 10, &hold) ||
         qemu_strtou64(fields[offset + 2], NULL, 10, &gap) ||
-        id >= (s->evb ? 3 : 1) ||
+        id >= (s->board.configured ? s->board.button_count : s->evb ? 3 : 1) ||
         !count || count > 32 || !hold || hold > 60000 || gap > 60000 ||
         (count > 1 && !gap) || count * hold + (count - 1) * gap > 60000) {
         goto invalid;
@@ -1510,8 +1435,8 @@ static void button_sequence_set(Object *obj, const char *value, Error **errp)
     if (s->button_status && !strcmp(s->button_status, "running")) {
         error_setg(errp, "A button sequence is already running"); return;
     }
-    if (s->desktop_pressed) {
-        error_setg(errp, "Release the manual button before starting a sequence"); return;
+    if (s->board.configured ? s->board.buttons[id].pressed : s->desktop_pressed) {
+        error_setg(errp, "Release the selected manual button before starting a sequence"); return;
     }
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t duration = (count * hold + (count - 1) * gap) * 1000000;
@@ -1543,6 +1468,28 @@ static void desktop_button_set(Object *obj, bool pressed, Error **errp)
     /* Transfer ownership without a release/press pulse on an already held key. */
     event_cancel(s, "manual-input");
     button_cancel(s, "manual-input", false);
+    button_drive(s, pressed);
+}
+
+static void board_button_get(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    ListenaiBoardButton *b = opaque;
+    bool pressed = b->pressed;
+    visit_type_bool(v, name, &pressed, errp);
+}
+
+static void board_button_set(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    ListenaiBoardButton *b = opaque;
+    ArcsMachine *s = b->owner;
+    bool pressed;
+    if (!visit_type_bool(v, name, &pressed, errp)) { return; }
+    event_cancel(s, "manual-input");
+    bool same = s->button_id == (unsigned)(b - s->board.buttons);
+    button_cancel(s, "manual-input", !same);
+    s->button_id = b - s->board.buttons;
     button_drive(s, pressed);
 }
 
@@ -1713,14 +1660,24 @@ static void desktop_init(ArcsMachine *s)
     if (s->power_button) {
         error_report("Desktop input cannot share a scheduled power button"); exit(1);
     }
-    lisa_display_init(qemu_console_lookup_by_device(s->screen, 0), s->desktop_directory);
+    if (s->screen) {
+        lisa_display_init(qemu_console_lookup_by_device(s->screen, 0), s->desktop_directory,
+                          getenv("ARCS_QEMU_DISPLAY_SHM"));
+    }
     object_property_add_str(OBJECT(s), "x-lisa-snapshot", desktop_snapshot, NULL);
     object_property_add_bool(OBJECT(s), "x-lisa-function-pressed", desktop_button_get, desktop_button_set);
+    if (s->touch) { cst328_add_input(OBJECT(s), s->touch, "x-lisa-touch"); }
+    for (unsigned i = 0; i < s->board.button_count; i++) {
+        g_autofree char *name = g_strdup_printf("x-lisa-button-%u", i);
+        s->board.buttons[i].owner = s;
+        object_property_add(OBJECT(s), name, "bool", board_button_get,
+                            board_button_set, NULL, &s->board.buttons[i]);
+    }
     if (s->evb) {
         object_property_add_bool(OBJECT(s), "x-lisa-evb-k1-pressed", evb_k1_get, evb_k1_set);
         object_property_add_bool(OBJECT(s), "x-lisa-evb-k2-pressed", evb_k2_get, evb_k2_set);
         object_property_add_bool(OBJECT(s), "x-lisa-evb-k3-pressed", evb_k3_get, evb_k3_set);
-        object_property_add_str(OBJECT(s), "x-lisa-touch", touch_get, touch_set);
+
     }
     s->event_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, event_step, s);
     object_property_add_str(OBJECT(s), "x-lisa-events", event_get, event_set);
@@ -1761,8 +1718,8 @@ static void machine_finalize(Object *obj)
     g_free(s->pcm_input);
     if (s->tap_lease) { timer_free(s->tap_lease); }
     if (s->audio_tap) { g_byte_array_unref(s->audio_tap); }
-    if (s->camera_poll) { timer_free(s->camera_poll); }
-    lisa_mapping_close(&s->camera_mapping);
+    listenai_camera_scene_destroy(&s->camera_scene);
+    listenai_board_cleanup(&s->board);
 }
 
 static const TypeInfo machine_type = {
@@ -1774,9 +1731,14 @@ static const TypeInfo evb_machine_type = {
     .name = TYPE_ARCS_EVB_MACHINE,
     .parent = TYPE_ARCS_MACHINE,
 };
+static const TypeInfo board_machine_type = {
+    .name = TYPE_ARCS_BOARD_MACHINE,
+    .parent = TYPE_ARCS_MACHINE,
+};
 static void register_types(void)
 {
     type_register_static(&machine_type);
     type_register_static(&evb_machine_type);
+    type_register_static(&board_machine_type);
 }
 type_init(register_types)

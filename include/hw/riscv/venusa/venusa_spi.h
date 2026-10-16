@@ -18,4 +18,5 @@ void venusa_spi_clock(VenusASoC *s);
 void venusa_spi_dma_update(VenusASoC *s);
 void venusa_spi_pins_changed(VenusASoC *s);
 void venusa_spi_pad_input(VenusASoC *s, unsigned pad, bool level);
+bool venusa_spi_pad_selected(void *opaque, unsigned signal, unsigned pad);
 #endif

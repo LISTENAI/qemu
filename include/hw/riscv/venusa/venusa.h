@@ -2,6 +2,7 @@
 #ifndef HW_RISCV_VENUSA_H
 #define HW_RISCV_VENUSA_H
 #include "hw/sysbus.h"
+#include "hw/core/listenai-board.h"
 #include "hw/misc/listenai_luna.h"
 #include "qemu/units.h"
 #include "hw/riscv/venusa/venusa_audio.h"
@@ -104,6 +105,8 @@ void venusa_storage_init(VenusASoC *s);
 void venusa_storage_reset(VenusASoC *s);
 void venusa_uart_init(VenusASoC *s);
 void venusa_uart_update_dma(VenusASoC *s);
+DeviceState *venusa_board_camera_connect(VenusASoC *soc, Object *owner, ListenaiBoard *b);
+char *venusa_board_camera_status(DeviceState *dev);
 char *venusa_snapshot(VenusASoC *s, const char *status);
 void venusa_runtime_init(VenusASoC *s);
 void venusa_report(VenusASoC *s, const char *status);

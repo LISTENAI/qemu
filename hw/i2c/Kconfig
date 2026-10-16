@@ -62,6 +62,10 @@ config FT6236
     bool
     select I2C
 
+config CST328
+    bool
+    depends on I2C
+
 config LISTENAI_EXTIO
     bool
     depends on I2C

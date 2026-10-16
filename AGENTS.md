@@ -13,6 +13,12 @@
 - `hw/char/`、`hw/dma/`、`hw/gpio/`、`hw/i2c/`、`hw/mem/`、`hw/rtc/`、
   `hw/ssi/`、`hw/timer/`、`hw/watchdog/` 中的 ListenAI 模型承载共用 IP。
   芯片适配层传入地址空间、IRQ、DMA 请求、时钟与差异参数，不反向依赖板型。
+- `hw/core/listenai-board*`、`listenai-camera-scene*`：检查后的板级装配、
+  GPIO/扩展器端点和宿主光学场景通道，不依赖 SoC 类型，不编程 PinMux。
+  具体芯片适配层提供控制器、焊盘路由、时钟和 IRQ。独立器件按 qdev 类型
+  注册；固定 EXTIO 1.3 协议使用 `listenai-extio-ch32v003-v1.3`。
+  HUSB320-BA 接收实际虚拟主机的连接边沿，在虚拟时钟上完成 CC/VBUS
+  去抖；USB 控制器及 TCP 适配层不生成器件的寄存器应答。
 - `hw/display/`、`hw/i2c/`、`hw/audio/`：显示、传感器、触控及音频通道。
   芯片寄存器、独立器件和宿主传输保持分层，不将固件业务放入模型。
 - 共用控制器和器件的接口放在对应的 `include/hw/` 目录，公共头不依赖

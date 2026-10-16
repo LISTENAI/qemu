@@ -4,10 +4,9 @@
 
 #include "hw/mem/listenai_psram.h"
 typedef struct ArcsSoC ArcsSoC;
-typedef ListenAIXccela ArcsXccela128;
 typedef ListenAIPSRAM ArcsPSRAM;
 
-void arcs_xccela_init(ArcsXccela128 *chip);
+void arcs_xccela_init(ListenAIXccela *chip, uint64_t size);
 void arcs_psram_init(ArcsSoC *soc);
 void arcs_psram_reset(ArcsSoC *soc);
 #endif

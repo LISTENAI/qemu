@@ -1,4 +1,5 @@
-system_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs_st7789.c', 'lisa_display.c'))
+system_ss.add(when: 'CONFIG_ST7789', if_true: files('st7789.c'))
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('lisa_display.c'))
 hw_display_modules = {}
 
 system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))

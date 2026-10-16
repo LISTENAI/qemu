@@ -61,6 +61,13 @@ static const unsigned pins[2][4] = {
     {22, 23, 24, 21},
 };
 
+bool venusa_spi_pad_selected(void *opaque, unsigned signal, unsigned pad)
+{
+    VenusASPI *p = opaque;
+    return signal < 4 && pad == pins[p->index][signal] &&
+           listenai_pinmux_function(&p->soc->pinmux, pad, 5 + p->index);
+}
+
 static void pin_output(void *opaque, int pin, int level)
 {
     VenusASPI *p = opaque;

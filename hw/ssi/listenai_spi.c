@@ -395,7 +395,8 @@ static void drain(void *opaque)
         for (unsigned b = 0; b < s->bits / 8; b++) {
             unsigned shift = lsb ? 8 * b : s->bits - 8 - 8 * b;
             uint8_t data = frame >> shift;
-            uint8_t input = ssi_transfer(s->bus, lsb ? reverse(data) : data);
+            SSIBus *bus = s->board_bus ? s->board_bus(s->board_opaque) : s->bus;
+            uint8_t input = ssi_transfer(bus, lsb ? reverse(data) : data);
             result |= (uint32_t)(lsb ? reverse(input) : input) << shift;
         }
         received |= merge ? result << (8 * i) : result;

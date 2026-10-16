@@ -11,6 +11,7 @@
 #include "qobject/qstring.h"
 #include "qemu/bswap.h"
 #include "hw/riscv/arcs/arcs_usb_host.h"
+#include "hw/irq.h"
 
 #define RX_READY 1
 #define TX_READY 2
@@ -634,12 +635,14 @@ static void lab_set(Object *obj, const char *command, Error **errp)
     } else if (!strcmp(command, "clear")) {
         h->trace_count = 0; h->sequence = 0; h->epoch++;
     } else { error_setg(errp, "Unknown USB lab command"); }
+    qemu_set_irq(s->host_connected, h->connected);
 }
 
 void arcs_usb_init(ArcsSoC *soc)
 {
     ArcsUSB *s = &soc->usb; s->soc = soc;
     s->host = g_new0(ArcsUSBHost, 1);
+    qdev_init_gpio_out_named(DEVICE(soc), &s->host_connected, "usb-host-connected", 1);
     s->host->controller = s; s->host->status = "disconnected";
     s->host->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, host_tick, s->host);
     s->host->sof = timer_new_ns(QEMU_CLOCK_VIRTUAL, sof_tick, s->host);

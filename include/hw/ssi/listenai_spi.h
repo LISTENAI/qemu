@@ -55,6 +55,9 @@ struct ListenaiSPI {
     bool active, io_busy, phase, safe_reads;
     bool (*route_valid)(void *opaque);
     void *route_opaque;
+    /* Board-selected slave bus; controller timing and FIFO service stay local. */
+    SSIBus *(*board_bus)(void *opaque);
+    void *board_opaque;
 };
 
 enum {

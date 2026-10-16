@@ -10,7 +10,7 @@ rom_header = custom_target('arcs-rom-images',
             '--output', '@OUTPUT@'])
 
 arcs_sources = files(
-  'arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c',
+  'arcs.c', 'arcs_board.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c',
   'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c',
   'arcs_spi.c', 'arcs_gpt.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c',
   'arcs_usb.c', 'arcs_usb_adb.c', 'arcs_i2c.c', 'arcs_dvp.c',
@@ -19,7 +19,6 @@ arcs_sources = files(
   'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c',
   'arcs_wifi_ap.c', 'arcs_wifi_security.c', 'arcs_hsu.c',
   'arcs_aes.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c',
-  '../../i2c/cst328.c',
 )
 arcs_assets = declare_dependency(
   sources: [rom_header],

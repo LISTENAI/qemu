@@ -1,4 +1,5 @@
 config VENUSA
+    select LISTENAI_BOARD
     select FT6236
     select LISTENAI_I2S
     select LISTENAI_I2S_PEER
@@ -27,6 +28,7 @@ config VENUSA
     select LISTENAI_UART
 
 config ARCS
+    select LISTENAI_BOARD
     select LISTENAI_I2S
     select LISTENAI_I2S_PEER
     select GC0328

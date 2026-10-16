@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Standalone RGB565 ST7789 with digital GRAM, display pins and scan TE. */
 #include "qemu/osdep.h"
-#include "hw/display/arcs_st7789.h"
+#include "hw/display/st7789.h"
 #include "hw/ssi/ssi.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -10,7 +10,7 @@
 #include "qapi/error.h"
 #include "ui/console.h"
 
-typedef struct ArcsST7789 {
+typedef struct ST7789State {
     SSIPeripheral parent;
     QemuConsole *console;
     QEMUTimer *scan;
@@ -29,10 +29,10 @@ typedef struct ArcsST7789 {
     bool scanning, blanking, scan_reverse;
     void (*failure)(void *, const char *);
     void *failure_opaque;
-} ArcsST7789;
-OBJECT_DECLARE_SIMPLE_TYPE(ArcsST7789, ARCS_ST7789)
+} ST7789State;
+OBJECT_DECLARE_SIMPLE_TYPE(ST7789State, ST7789)
 
-static void fail(ArcsST7789 *s, const char *message, unsigned value)
+static void fail(ST7789State *s, const char *message, unsigned value)
 {
     error_report("ST7789 %s (command=0x%02x value=0x%x)", message, s->command, value);
     if (s->failure) { s->failure(s->failure_opaque, "unsupported-panel"); }
@@ -43,7 +43,7 @@ static void update(void *opaque);
 
 /* Complete rows before a GRAM/control write. This gives each row its virtual
  * sampling time without adding a timer callback for every scan line. */
-static void scan_rows(ArcsST7789 *s, int64_t now)
+static void scan_rows(ST7789State *s, int64_t now)
 {
     if (!s->scanning || s->blanking || now <= s->scan_start) { return; }
     unsigned rows = MIN((now - s->scan_start) / s->line_ns, 320);
@@ -55,13 +55,13 @@ static void scan_rows(ArcsST7789 *s, int64_t now)
     }
 }
 
-static int64_t line_period(ArcsST7789 *s)
+static int64_t line_period(ST7789State *s)
 {
     /* ST7789P3 FRCTRL2: 10 MHz oscillator, 250 + 16 * RTNA clocks/line. */
     return (250 + 16 * (s->analog[0xc6][0] & 31)) * 100;
 }
 
-static void schedule(ArcsST7789 *s)
+static void schedule(ST7789State *s)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (s->sleeping || !s->reset_released) {
@@ -78,7 +78,7 @@ static void schedule(ArcsST7789 *s)
 
 static void scan(void *opaque)
 {
-    ArcsST7789 *s = opaque;
+    ST7789State *s = opaque;
     int64_t now = s->scan_start + (s->blanking ? 0 : 320 * s->line_ns);
     if (s->blanking) {
         s->blanking = false; s->scanned_rows = 0;
@@ -105,7 +105,7 @@ static void scan(void *opaque)
     timer_mod(s->scan, s->scan_start);
 }
 
-static void reset_controller(ArcsST7789 *s)
+static void reset_controller(ST7789State *s)
 {
     s->count = 0; memset(s->analog_count, 0, sizeof(s->analog_count));
     s->analog[0xc6][0] = 15;
@@ -118,7 +118,7 @@ static void reset_controller(ArcsST7789 *s)
 
 static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev);
+    ST7789State *s = ST7789(dev);
     if (!s->reset_released) { return 0; }
     scan_rows(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (!s->data_mode) {
@@ -205,12 +205,12 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
     return 0;
 }
 
-static bool enabled(ArcsST7789 *s)
+static bool enabled(ST7789State *s)
 {
     return s->on && !s->sleeping && s->reset_released;
 }
 
-static uint32_t rgb(ArcsST7789 *s, unsigned x, unsigned y)
+static uint32_t rgb(ST7789State *s, unsigned x, unsigned y)
 {
     unsigned px = x, py = y;
     switch (s->rotation) {
@@ -231,7 +231,7 @@ static uint32_t rgb(ArcsST7789 *s, unsigned x, unsigned y)
 
 static void update(void *opaque)
 {
-    ArcsST7789 *s = opaque;
+    ST7789State *s = opaque;
     if (!s->dirty) { return; }
     DisplaySurface *surface = qemu_console_surface(s->console);
     assert(surface_bits_per_pixel(surface) == 32);
@@ -243,29 +243,32 @@ static void update(void *opaque)
     dpy_gfx_update(s->console, 0, 0, surface_width(surface), surface_height(surface));
 }
 
-static void invalidate(void *opaque) { ((ArcsST7789 *)opaque)->dirty = true; }
+static void invalidate(void *opaque) { ((ST7789State *)opaque)->dirty = true; }
 static const GraphicHwOps graphics = { .invalidate = invalidate, .gfx_update = update };
 
 static void input(void *opaque, int pin, int level)
 {
-    ArcsST7789 *s = opaque;
+    ST7789State *s = opaque;
     if (pin == 0) { s->data_mode = level; }
     else {
-        if (!level && s->reset_released) { reset_controller(s); }
-        s->reset_released = level; s->dirty = true; schedule(s);
+        if (s->reset_released == !!level) { return; }
+        bool asserted = !level;
+        s->reset_released = level;
+        if (asserted) { reset_controller(s); }
+        s->dirty = true; schedule(s);
     }
 }
 
-void arcs_st7789_backlight(DeviceState *dev, double duty)
+void st7789_backlight(DeviceState *dev, double duty)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev);
+    ST7789State *s = ST7789(dev);
     assert(duty >= 0 && duty <= 1);
     if (s->backlight != duty) { s->backlight = duty; s->dirty = true; }
 }
 
-void arcs_st7789_save(DeviceState *dev, const char *path)
+void st7789_save(DeviceState *dev, const char *path)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev);
+    ST7789State *s = ST7789(dev);
     unsigned width = s->rotation % 180 ? s->height : s->width;
     unsigned height = s->rotation % 180 ? s->width : s->height;
     FILE *f = fopen(path, "wb");
@@ -282,21 +285,21 @@ void arcs_st7789_save(DeviceState *dev, const char *path)
     if (fclose(f)) { perror("ST7789 frame"); exit(1); }
 }
 
-void arcs_st7789_report(DeviceState *dev, FILE *f)
+void st7789_report(DeviceState *dev, FILE *f)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev);
+    ST7789State *s = ST7789(dev);
     fprintf(f, "{\"pixels_written\":%" PRIu64 ",\"enabled\":%s,\"backlight\":%.9f}",
             s->pixels, enabled(s) ? "true" : "false", s->backlight);
 }
 
-void arcs_st7789_failure_callback(DeviceState *dev, void (*fn)(void *, const char *), void *opaque)
+void st7789_failure_callback(DeviceState *dev, void (*fn)(void *, const char *), void *opaque)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev); s->failure = fn; s->failure_opaque = opaque;
+    ST7789State *s = ST7789(dev); s->failure = fn; s->failure_opaque = opaque;
 }
 
 static void reset(DeviceState *dev)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev);
+    ST7789State *s = ST7789(dev);
     reset_controller(s); memset(s->gram, 0, sizeof(s->gram)); s->pixels = 0;
     memset(s->scanned, 0, sizeof(s->scanned));
     memset(s->presented, 0, sizeof(s->presented));
@@ -305,9 +308,15 @@ static void reset(DeviceState *dev)
     /* Pin levels and backlight belong to the board, not controller reset. */
 }
 
+void st7789_redrive(DeviceState *dev)
+{
+    ST7789State *s = ST7789(dev);
+    qemu_set_irq(s->te, s->scanning && s->blanking && s->tear);
+}
+
 static void realize(SSIPeripheral *dev, Error **errp)
 {
-    ArcsST7789 *s = ARCS_ST7789(dev);
+    ST7789State *s = ST7789(dev);
     if (!s->width || !s->height || s->width > 240 || s->height > 320 ||
         s->x_offset > 240 - s->width || s->y_offset > 320 - s->height ||
         s->rotation > 270 || s->rotation % 90) {
@@ -323,12 +332,12 @@ static void realize(SSIPeripheral *dev, Error **errp)
 }
 
 static const Property properties[] = {
-    DEFINE_PROP_UINT32("width", ArcsST7789, width, 240),
-    DEFINE_PROP_UINT32("height", ArcsST7789, height, 320),
-    DEFINE_PROP_UINT32("x-offset", ArcsST7789, x_offset, 0),
-    DEFINE_PROP_UINT32("y-offset", ArcsST7789, y_offset, 0),
-    DEFINE_PROP_UINT32("rotation", ArcsST7789, rotation, 0),
-    DEFINE_PROP_BOOL("panel-inverted", ArcsST7789, panel_inverted, false),
+    DEFINE_PROP_UINT32("width", ST7789State, width, 240),
+    DEFINE_PROP_UINT32("height", ST7789State, height, 320),
+    DEFINE_PROP_UINT32("x-offset", ST7789State, x_offset, 0),
+    DEFINE_PROP_UINT32("y-offset", ST7789State, y_offset, 0),
+    DEFINE_PROP_UINT32("rotation", ST7789State, rotation, 0),
+    DEFINE_PROP_BOOL("panel-inverted", ST7789State, panel_inverted, false),
 };
 
 static void class_init(ObjectClass *klass, const void *data)
@@ -340,8 +349,8 @@ static void class_init(ObjectClass *klass, const void *data)
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
 }
 static const TypeInfo info = {
-    .name = TYPE_ARCS_ST7789, .parent = TYPE_SSI_PERIPHERAL,
-    .instance_size = sizeof(ArcsST7789), .class_init = class_init,
+    .name = TYPE_ST7789, .parent = TYPE_SSI_PERIPHERAL,
+    .instance_size = sizeof(ST7789State), .class_init = class_init,
 };
 static void register_types(void) { type_register_static(&info); }
 type_init(register_types)

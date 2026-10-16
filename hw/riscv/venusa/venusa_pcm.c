@@ -4,16 +4,19 @@
 #include "hw/riscv/venusa/venusa.h"
 #include "hw/audio/lisa_stream.h"
 #include "hw/loader.h"
+#include "hw/i2c/listenai_extio.h"
 #include "qemu/error-report.h"
 #include "system/system.h"
 
 typedef struct VenusAPCM {
     VenusASoC *soc;
+    DeviceState *extio;
     LisaHostAudio host;
     Notifier exit;
     uint8_t *input;
     size_t length, position;
-    unsigned rate, channels, output_rate;
+    unsigned rate, channels, output_rate, amplifier_pad;
+    bool amplifier_active;
     GByteArray *output;
     const char *output_path;
 } VenusAPCM;
@@ -44,8 +47,15 @@ static void input(void *opaque, unsigned rate, int16_t samples[2])
 static bool pa_enabled(VenusAPCM *p)
 {
     uint32_t driven, levels;
-    listenai_gpio_outputs_snapshot(&p->soc->gpio[0], &driven, &levels);
-    return (driven & levels & 1) != 0;
+    if (p->amplifier_pad == UINT_MAX) { return false; }
+    unsigned pad = p->amplifier_pad;
+    if (pad >= 64) {
+        unsigned pin = pad - 64;
+        listenai_extio_outputs(p->extio, pin / 8, &driven, &levels);
+        pad = pin % 8;
+    } else { listenai_gpio_outputs_snapshot(&p->soc->gpio[pad / 32], &driven, &levels); pad %= 32; }
+    return (driven & (1u << (pad % 32))) &&
+           !!(levels & (1u << (pad % 32))) == p->amplifier_active;
 }
 
 static void output(void *opaque, unsigned rate, int16_t sample)
@@ -105,10 +115,12 @@ static void finish(Notifier *notifier, void *data)
     g_free(p);
 }
 
-void venusa_board_audio_connect(VenusASoC *s)
+void venusa_board_audio_connect(VenusASoC *s, unsigned pad, bool active, DeviceState *extio)
 {
     VenusAPCM *p = g_new0(VenusAPCM, 1);
-    p->soc = s;
+    p->soc = s; p->extio = extio;
+    p->amplifier_pad = pad;
+    p->amplifier_active = active;
     const char *path = getenv("LISEM_QEMU_AUDIO_INPUT");
     if (path) {
         const char *format = getenv("LISEM_QEMU_AUDIO_FORMAT");

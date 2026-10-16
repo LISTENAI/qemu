@@ -9,7 +9,7 @@ struct GC0328State {
     I2CSlave parent_obj;
     uint8_t regs[2][256];
     uint8_t page, address;
-    bool pointer, clock;
+    bool pointer, clock, reset_released, power_down;
     uint8_t rgb[640 * 480 * 3], frame_rgb[640 * 480 * 3];
     uint8_t frame_regs[256];
     bool has_frame, sample_cached;
@@ -44,7 +44,7 @@ static void sensor_reset(DeviceState *dev)
 static int event(I2CSlave *dev, enum i2c_event event)
 {
     GC0328State *s = GC0328(dev);
-    if ((event == I2C_START_SEND || event == I2C_START_RECV) && !s->clock) { return 1; }
+    if ((event == I2C_START_SEND || event == I2C_START_RECV) && (!s->clock || !s->reset_released || s->power_down)) { return 1; }
     if (event == I2C_START_SEND) { s->pointer = true; }
     return 0;
 }
@@ -96,7 +96,7 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
 {
     GC0328State *s = GC0328(dev);
     uint8_t *r = s->regs[0];
-    if (!s->clock || !(r[0xfc] & 16) || (r[0xfc] & 1) ||
+    if (!s->clock || !s->reset_released || s->power_down || !(r[0xfc] & 16) || (r[0xfc] & 1) ||
         (r[0xf1] & 0x77) != 7 || !(r[0xf2] & 1)) { return false; }
     if (!s->has_frame) { return false; }
     unsigned format = r[0x44] & 31;
@@ -196,6 +196,28 @@ void gc0328_clear_frame(DeviceState *dev) { GC0328(dev)->has_frame = false; }
 unsigned gc0328_sync_mode(DeviceState *dev) { return GC0328(dev)->regs[0][0x46]; }
 void gc0328_set_clock(DeviceState *dev, bool enabled) { GC0328(dev)->clock = enabled; }
 
+static void control_input(void *opaque, int pin, int level)
+{
+    GC0328State *s = opaque;
+    if (pin == 0) {
+        if (s->reset_released == !!level) { return; }
+        s->reset_released = level;
+        if (!level) { sensor_reset(DEVICE(s)); }
+        else if (s->notify) { s->notify(s->opaque, true); }
+    } else {
+        if (s->power_down == !!level) { return; }
+        s->power_down = level;
+        if (s->notify) { s->notify(s->opaque, true); }
+    }
+}
+
+static void instance_init(Object *obj)
+{
+    GC0328State *s = GC0328(obj);
+    s->reset_released = true;
+    qdev_init_gpio_in_named(DEVICE(s), control_input, "control", 2);
+}
+
 static void class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -206,6 +228,7 @@ static void class_init(ObjectClass *klass, const void *data)
 static const TypeInfo info = {
     .name = TYPE_GC0328, .parent = TYPE_I2C_SLAVE,
     .instance_size = sizeof(GC0328State), .class_init = class_init,
+    .instance_init = instance_init,
 };
 static void register_types(void) { type_register_static(&info); }
 type_init(register_types)

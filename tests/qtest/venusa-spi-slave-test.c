@@ -452,7 +452,7 @@ static void observer_ssi_route(const void *opaque)
         QTestState *q =
             qtest_initf("-machine venusa-rd-evb -drive "
                         "if=pflash,format=raw,file=%s "
-                        "-device arcs-st7789,id=panel,bus=venusa-spi0 %s",
+                        "-device st7789,id=panel,bus=venusa-spi0 %s",
                         path, routes[mode]);
         for (unsigned pad = 16; pad <= 19; pad++) {
             qtest_writel(q, 0x44100000 + pad * 4, 5);

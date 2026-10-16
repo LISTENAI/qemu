@@ -49,6 +49,7 @@ struct SDHCIState {
     QEMUTimer *insert_timer;       /* timer for 'changing' sd card. */
     QEMUTimer *transfer_timer;
     qemu_irq irq;
+    qemu_irq media_present;
 
     /* Registers cleared on reset */
     uint32_t sdmasysad;    /* SDMA System Address register */
