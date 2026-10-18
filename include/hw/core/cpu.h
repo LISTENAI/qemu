@@ -508,6 +508,7 @@ struct CPUState {
     __uint128_t icount_phase;
     int64_t icount_cycle_epoch;
     uint64_t icount_cycles;
+    uint64_t icount_cycles_at_frontier;
     __uint128_t icount_cycle_phase;
     uint64_t icount_hz;
     __uint128_t icount_clock_scale;

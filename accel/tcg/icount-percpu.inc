@@ -32,7 +32,8 @@ static void icount_clock_catch_up(CPUState *cpu, int64_t now)
     if (cpu->icount_time_ns < now) {
         /* WFI/reset hold advances clock phase, never instruction count. */
         uint64_t delta = now - cpu->icount_time_ns;
-        icount_clock_accumulate(cpu, delta, cpu->icount_phase, &cpu->icount_phase);
+        cpu->icount_cycles_at_frontier += icount_clock_accumulate(cpu, delta,
+                                            cpu->icount_phase, &cpu->icount_phase);
         cpu->icount_time_ns = now;
     }
 }
@@ -70,6 +71,7 @@ void icount_clock_set_ratio(CPUState *cpu, uint64_t numerator,
     icount_clock_catch_up(cpu, now);
     cpu->icount_cycles = icount_clock_cycles(cpu, now,
                                              &cpu->icount_cycle_phase);
+    cpu->icount_cycles_at_frontier = cpu->icount_cycles;
     cpu->icount_cycle_epoch = now;
     uint64_t a = denominator;
     uint64_t b = cpu->icount_clock_scale % denominator;
@@ -132,6 +134,7 @@ static void icount_clock_advance(CPUState *cpu, uint64_t instructions)
                                                    &cpu->icount_phase);
         assert(elapsed == instructions);
         cpu->icount_time_ns += ns;
+        cpu->icount_cycles_at_frontier += elapsed;
     }
     icount_clock_frontier();
 }
@@ -191,14 +194,36 @@ void icount_clock_finish(CPUState *cpu)
                          &timers_state.vm_clock_lock);
 }
 
+static bool icount_clock_active(CPUState *cpu)
+{
+    if (!cpu->icount_hz || cpu != current_cpu || !cpu->running) {
+        return false;
+    }
+    if (!cpu->neg.can_do_io) {
+        error_report("Bad icount read");
+        exit(1);
+    }
+    return cpu->icount_time_ns >=
+           qatomic_read_i64(&timers_state.qemu_icount_bias);
+}
+
 int64_t icount_get_cpu_raw(CPUState *cpu)
 {
+    if (icount_clock_active(cpu)) {
+        return qatomic_read_i64(&cpu->icount_executed) + icount_get_executed(cpu);
+    }
     int64_t total = icount_get_raw();
     return cpu->icount_hz ? qatomic_read_i64(&cpu->icount_executed) : total;
 }
 
 int64_t icount_get_cpu_cycles(CPUState *cpu)
 {
+    if (icount_clock_active(cpu)) {
+        /* One retired instruction consumes one oscillator cycle. Pending
+         * work is still debited once at the ordinary accounting boundary;
+         * observing a counter neither advances time nor rebudgets the TB. */
+        return cpu->icount_cycles_at_frontier + icount_get_executed(cpu);
+    }
     int64_t now = icount_get();
     if (!cpu->icount_hz) {
         return now;
