@@ -5,8 +5,10 @@
 
 void arcs_xccela_init(ListenAIXccela *chip, uint64_t size)
 {
-    static const uint8_t modes[10] = { 0x20, 0x0d, 0xdd };
+    uint8_t modes[10] = { 0x20, 0x0d };
     assert(size == 8 * 1024 * 1024 || size == 16 * 1024 * 1024);
+    /* MR2 combines the density, device ID and size-specific good-die bits. */
+    modes[2] = size == 8 * 1024 * 1024 ? 0x93 : 0xdd;
     listenai_xccela_init(chip, NULL, "arcs-xccela", size, modes);
 }
 
