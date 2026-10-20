@@ -195,7 +195,7 @@ static void realize(DeviceState *dev, Error **errp)
         { "venusa-core1-ilm", 0x200000, 0x2000 },
         { "venusa-core1-dlm", 0x300000, 0x2000 },
         { "venusa-sram", 0x20000000, 0x80000 },
-        { "venusa-luna-private", 0x20080000, 0x6000 },
+        { "venusa-luna-private", 0x20080000, 0x20000 },
     };
     memory_region_init_io(&s->io, OBJECT(s), &io_ops, s, "venusa-strict-mmio", UINT64_C(0x100000000));
     /* Peripheral DMA can synchronously access UART FIFO registers. */

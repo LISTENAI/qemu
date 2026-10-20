@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 
 #define LUNA 0x46000000
@@ -31,6 +32,33 @@ static void control(void)
     g_assert_cmpuint(qtest_readb(q, 0xe00210a8), ==, 0);
     qtest_quit(q);
 }
+
+static void private_ram(void)
+{
+    QTestState *q = start();
+    uint8_t expected[0x4000], actual[0x4000];
+
+    qtest_writel(q, 0x43100034, 0x80);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        for (unsigned i = 0; i < sizeof(expected) / 4; i++) {
+            unsigned word = bank * (sizeof(expected) / 4) + i;
+            stl_le_p(expected + i * 4, (word * 0x9e3779b9u) ^ 0x12345678u);
+        }
+        qtest_memwrite(q, 0x20080000 + bank * sizeof(expected),
+                      expected, sizeof(expected));
+    }
+    qtest_writel(q, LUNA + 0xc0, 0x7fff);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        for (unsigned i = 0; i < sizeof(expected) / 4; i++) {
+            unsigned word = bank * (sizeof(expected) / 4) + i;
+            stl_le_p(expected + i * 4, (word * 0x9e3779b9u) ^ 0x12345678u);
+        }
+        qtest_memread(q, 0x20080000 + bank * sizeof(actual),
+                     actual, sizeof(actual));
+        g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    }
+    qtest_quit(q);
+}
 static void reject(const void *opaque)
 {
     bool scheduler = GPOINTER_TO_UINT(opaque);
@@ -54,6 +82,7 @@ int main(int argc, char **argv)
     g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
     close(fd);
     qtest_add_func("venusa/luna/control-reset", control);
+    qtest_add_func("venusa/luna/private-ram", private_ram);
     qtest_add_data_func("venusa/luna/reject-partial-reset", GUINT_TO_POINTER(0), reject);
     qtest_add_data_func("venusa/luna/reject-scheduler", GUINT_TO_POINTER(1), reject);
     int result = g_test_run();
