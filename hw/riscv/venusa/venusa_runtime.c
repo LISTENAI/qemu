@@ -48,7 +48,11 @@ void venusa_report(VenusASoC *s, const char *status)
     if (!f) { error_report("Could not open VenusA report"); exit(1); }
     s->reported = true;
     g_autofree char *json = venusa_snapshot(s, status);
-    fprintf(f, "%s\n", json);
+    if (s->signal_trace && s->signal_trace->id[0]) {
+        listenai_signal_trace_stop(s->signal_trace, "runtime-ended");
+        g_autofree char *trace = listenai_signal_trace_json(s->signal_trace);
+        fprintf(f, "%.*s,\"signal_trace\":%s}\n", (int)strlen(json) - 1, json, trace);
+    } else { fprintf(f, "%s\n", json); }
     if (f == stdout) { fflush(f); } else { fclose(f); }
 }
 

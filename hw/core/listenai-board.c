@@ -236,6 +236,7 @@ void listenai_board_connect_pad(DeviceState *soc, unsigned pad, qemu_irq input)
 
 void listenai_board_cleanup(ListenaiBoard *b)
 {
+    listenai_signal_trace_destroy(&b->signal_trace);
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
     g_free(b->extio_id);
 }

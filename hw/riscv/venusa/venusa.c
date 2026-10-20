@@ -179,6 +179,7 @@ static void board_reset(void *opaque)
     }
     listenai_board_inputs_apply(b, &s->inputs, DEVICE(s->soc));
     if (s->screen) { backlight(s, 0, 0); }
+    listenai_signal_trace_stop(&b->signal_trace, "reset");
 }
 
 static void venusa_board_init(MachineState *machine)
@@ -211,6 +212,10 @@ static void venusa_board_init(MachineState *machine)
         board->soc->i2c[1].route_valid = extio_route;
         board->soc->i2c[1].route_opaque = board;
     }
+    listenai_signal_trace_init(&b->signal_trace, OBJECT(board), OBJECT(board->soc),
+                              board->soc->gpio,
+                              32, 22, b->extio);
+    board->soc->signal_trace = &b->signal_trace;
     if (b->typec) {
         if (b->typec_scl != 34 || b->typec_sda != 33 || b->typec_host) {
             error_report("Unsupported VenusA HUSB320 route or USB host transport"); exit(1);

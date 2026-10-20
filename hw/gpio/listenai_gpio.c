@@ -56,8 +56,32 @@ void listenai_gpio_outputs_snapshot(ListenaiGPIO *s, uint32_t *driven, uint32_t 
     }
 }
 
+static void gpio_observe(ListenaiGPIO *s)
+{
+    if (!s->observe) { return; }
+    uint32_t driven = 0, levels = 0;
+    for (unsigned i = 0; i < 32; i++) {
+        uint32_t mask = 1u << i;
+        bool direction = !!(s->regs[0x28 / 4] & mask);
+        if (output_enabled(s->pinmux, s->first_pad + i, direction)) { driven |= mask; }
+        if (resolve(s->pinmux, s->first_pad + i, direction,
+                    !!(s->regs[0x24 / 4] & mask), !!(s->inputs & mask))) { levels |= mask; }
+    }
+    s->observe(s->observe_opaque, s->first_pad, driven, levels);
+}
+
+void listenai_gpio_observe(ListenaiGPIO *s,
+                          void (*observe)(void *, unsigned, uint32_t, uint32_t),
+                          void *opaque)
+{
+    s->observe = observe;
+    s->observe_opaque = opaque;
+    gpio_observe(s);
+}
+
 static void gpio_outputs(ListenaiGPIO *s)
 {
+    gpio_observe(s);
     for (unsigned i = 0; i < 32; i++) {
         uint32_t mask = 1u << i;
         s->callbacks.output(s->callbacks.opaque, s->first_pad + i,

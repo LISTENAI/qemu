@@ -7,4 +7,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(ListenaiEXTIO, LISTENAI_EXTIO)
 void listenai_extio_outputs(DeviceState *dev, unsigned bank, uint32_t *driven, uint32_t *levels);
 double listenai_extio_duty(DeviceState *dev, unsigned pin);
 bool listenai_extio_voltage(DeviceState *dev, unsigned channel, unsigned uv);
+uint32_t listenai_extio_valid_pins(void);
+void listenai_extio_observe(DeviceState *dev,
+                           void (*observe)(void *, unsigned, uint32_t, uint32_t),
+                           void *opaque);
 #endif

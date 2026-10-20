@@ -44,6 +44,7 @@ typedef struct VenusAPeripheral {
 
 struct VenusASoC {
     SysBusDevice parent_obj;
+    ListenaiSignalTrace *signal_trace;
     VenusAAudio audio;
     ListenAILUNA luna;
     uint32_t luna_mtq_control, luna_mtq_mask, luna_busrd;

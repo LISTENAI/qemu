@@ -587,7 +587,12 @@ static void report(void *opaque, const char *status)
     g_autofree char *sequence = button_sequence_get(OBJECT(s), NULL);
     lisa_host_audio_finish(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     desktop_capture(s);
-    fprintf(f, "{\"chip_roms\":{\"ap\":{\"address\":0,\"size\":65536,\"sha256\":\"%s\"},"
+    listenai_signal_trace_stop(&s->board.signal_trace, "runtime-ended");
+    if (s->board.signal_trace.id[0]) {
+        g_autofree char *trace = listenai_signal_trace_json(&s->board.signal_trace);
+        fprintf(f, "{\"signal_trace\":%s,", trace);
+    } else { fputc('{', f); }
+    fprintf(f, "\"chip_roms\":{\"ap\":{\"address\":0,\"size\":65536,\"sha256\":\"%s\"},"
             "\"cp\":{\"address\":2097152,\"size\":32768,\"sha256\":\"%s\"}},",
             arcs_soc_rom_sha256(0), arcs_soc_rom_sha256(1));
     g_autofree char *input = input_status(s, true);
@@ -1080,6 +1085,7 @@ static void machine_reset(MachineState *machine, ResetType type)
     }
     qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 3), !s->boot_asserted);
     if (!s->started) { s->started = g_get_monotonic_time(); }
+    listenai_signal_trace_stop(&s->board.signal_trace, "reset");
 }
 
 static void machine_init(MachineState *machine)
@@ -1139,6 +1145,9 @@ static void machine_init(MachineState *machine)
         s->soc.i2c[bus].controller.route_valid = extio_route;
         s->soc.i2c[bus].controller.route_opaque = s;
     }
+    listenai_signal_trace_init(&s->board.signal_trace, OBJECT(s), OBJECT(&s->soc),
+                              s->soc.gpio,
+                              28, 10, s->board.extio);
     if (s->board.typec) {
         unsigned bus = s->board.typec_i2c;
         listenai_board_attach_typec(&s->board, OBJECT(s), DEVICE(&s->soc), s->soc.i2c[bus].controller.bus);

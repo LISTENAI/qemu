@@ -28,6 +28,8 @@ struct ListenaiGPIO {
     uint32_t base, first_pad, inputs, pending;
     uint32_t regs[0x78 / 4];
     ListenaiGPIOCallbacks callbacks;
+    void (*observe)(void *opaque, unsigned first, uint32_t driven, uint32_t levels);
+    void *observe_opaque;
 };
 
 void listenai_pinmux_init_unmapped(ListenaiPinmux *s, unsigned count,
@@ -45,6 +47,9 @@ void listenai_gpio_reset(ListenaiGPIO *s, uint32_t inputs);
 void listenai_pinmux_reset(ListenaiPinmux *s);
 void listenai_gpio_outputs_snapshot(ListenaiGPIO *s, uint32_t *driven,
                                    uint32_t *levels);
+void listenai_gpio_observe(ListenaiGPIO *s,
+                          void (*observe)(void *, unsigned, uint32_t, uint32_t),
+                          void *opaque);
 void listenai_pinmux_output(ListenaiPinmux *s, unsigned pin, unsigned function,
                            bool value);
 /* Withdraw one peripheral output without changing PinMux or its saved level. */

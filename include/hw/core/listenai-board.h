@@ -2,6 +2,7 @@
 #ifndef HW_CORE_LISTENAI_BOARD_H
 #define HW_CORE_LISTENAI_BOARD_H
 #include "hw/ssi/listenai_spi.h"
+#include "hw/core/listenai-signal-trace.h"
 #include "hw/i2c/i2c.h"
 #include "qobject/qdict.h"
 
@@ -16,6 +17,7 @@ typedef struct ListenaiBoardButton {
 } ListenaiBoardButton;
 
 typedef struct ListenaiBoard {
+    ListenaiSignalTrace signal_trace;
     bool configured, panel, camera, sd, amplifier, touch, keypad;
     unsigned touch_scl, touch_sda, touch_irq, touch_i2c;
     unsigned keypad_channel, keypad_supply_uv, keypad_pull_up_ohms;

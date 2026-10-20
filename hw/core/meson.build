@@ -51,4 +51,4 @@ user_ss.add(files(
   'qdev-user.c',
 ))
 
-system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai-board.c', 'listenai-camera-scene.c', 'listenai-board-inputs.c'))
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai-board.c', 'listenai-camera-scene.c', 'listenai-board-inputs.c', 'listenai-signal-trace.c'))

@@ -16,6 +16,8 @@ struct ListenaiEXTIO {
     qemu_irq outputs[32];
     QEMUTimer *adc_timer, *pwm_timer;
     uint64_t pwm_epoch, pwm_cycles, adc_epoch, adc_cycles;
+    void (*observe)(void *opaque, unsigned bank, uint32_t driven, uint32_t levels);
+    void *observe_opaque;
 };
 
 static unsigned valid(unsigned bank)
@@ -45,14 +47,45 @@ static bool gpio_level(ListenaiEXTIO *s, unsigned pin, bool *driven)
     return (s->reg[b + 4] & mask) && (s->reg[b + 5] & mask);
 }
 
+static void observe_state(ListenaiEXTIO *s)
+{
+    if (s->observe) {
+        uint32_t driven = 0, levels = 0;
+        for (unsigned bank = 0; bank < 4; bank++) {
+            uint32_t d, l;
+            listenai_extio_outputs(DEVICE(s), bank, &d, &l);
+            driven |= d << (bank * 8); levels |= l << (bank * 8);
+        }
+        s->observe(s->observe_opaque, 0, driven, levels);
+    }
+}
+
 static void publish(ListenaiEXTIO *s)
 {
+    observe_state(s);
     for (unsigned pin = 0; pin < 32; pin++) {
         bool driven;
         if (valid(pin / 8) & (1u << (pin % 8))) {
             qemu_set_irq(s->outputs[pin], gpio_level(s, pin, &driven));
         }
     }
+}
+
+uint32_t listenai_extio_valid_pins(void)
+{
+    uint32_t pins = 0;
+    for (unsigned bank = 0; bank < 4; bank++) { pins |= valid(bank) << (bank * 8); }
+    return pins;
+}
+
+void listenai_extio_observe(DeviceState *dev,
+                           void (*observe)(void *, unsigned, uint32_t, uint32_t),
+                           void *opaque)
+{
+    ListenaiEXTIO *s = LISTENAI_EXTIO(dev);
+    s->observe = observe;
+    s->observe_opaque = opaque;
+    observe_state(s);
 }
 
 void listenai_extio_outputs(DeviceState *dev, unsigned bank, uint32_t *driven, uint32_t *levels)
