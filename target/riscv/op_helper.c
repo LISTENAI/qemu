@@ -23,6 +23,7 @@
 #include "nuclei_n300.h"
 #include "internals.h"
 #include "exec/cputlb.h"
+#include "exec/icount.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/probe.h"
 #include "exec/helper-proto.h"
@@ -542,6 +543,11 @@ void helper_wfi(CPURISCVState *env)
                (prv_u || (prv_s && get_field(env->hstatus, HSTATUS_VTW)))) {
         riscv_raise_exception(env, RISCV_EXCP_VIRT_INSTRUCTION_FAULT, GETPC());
     } else {
+        /* Publish the final instructions before the I/O thread can observe
+         * all CPUs halted and warp the virtual clock to the next timer. */
+        if (icount_enabled()) {
+            icount_update(cs);
+        }
         cs->halted = 1;
         cs->exception_index = EXCP_HLT;
         cpu_loop_exit(cs);
