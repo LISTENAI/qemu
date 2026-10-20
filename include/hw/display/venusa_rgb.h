@@ -6,17 +6,17 @@
 #include "qemu/int128.h"
 
 /* Digital RGB controller, independent of any external panel. */
-typedef struct VenusRGBCallbacks {
+typedef struct VenusARGBCallbacks {
     void *opaque;
     void (*irq)(void *opaque, bool level);
     void (*fail)(void *opaque, hwaddr address, unsigned size, bool write, uint64_t value);
     void (*request_changed)(void *opaque);
-} VenusRGBCallbacks;
+} VenusARGBCallbacks;
 
-typedef struct VenusRGB {
+typedef struct VenusARGB {
     MemoryRegion io;
     hwaddr base;
-    VenusRGBCallbacks cb;
+    VenusARGBCallbacks cb;
     QEMUTimer *event;
     uint32_t regs[10];
     uint8_t fifo[128];
@@ -28,10 +28,10 @@ typedef struct VenusRGB {
     int64_t event_epoch;
     bool clock_enabled, active, valid_frame, starved, syncing;
     char *capture_path;
-} VenusRGB;
+} VenusARGB;
 
-void venusa_rgb_init(VenusRGB *s, Object *owner, hwaddr base, VenusRGBCallbacks cb);
-void venusa_rgb_reset(VenusRGB *s);
-void venusa_rgb_clock(VenusRGB *s, bool enabled, uint64_t numerator, uint64_t denominator);
-bool venusa_rgb_request(VenusRGB *s);
+void venusa_rgb_init(VenusARGB *s, Object *owner, hwaddr base, VenusARGBCallbacks cb);
+void venusa_rgb_reset(VenusARGB *s);
+void venusa_rgb_clock(VenusARGB *s, bool enabled, uint64_t numerator, uint64_t denominator);
+bool venusa_rgb_request(VenusARGB *s);
 #endif

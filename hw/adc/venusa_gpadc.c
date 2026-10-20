@@ -19,7 +19,7 @@
 
 static const uint32_t interrupt_bits[] = { 0x3f000f, 0x3f003f, 0x3f003f };
 
-static void update_irq(VenusGPADC *s)
+static void update_irq(VenusAGPADC *s)
 {
     bool pending = false;
     for (unsigned n = 0; n < 3; n++) {
@@ -28,7 +28,7 @@ static void update_irq(VenusGPADC *s)
     s->callbacks.irq(s->callbacks.opaque, pending);
 }
 
-static void fail(VenusGPADC *s, hwaddr off, unsigned size, bool write,
+static void fail(VenusAGPADC *s, hwaddr off, unsigned size, bool write,
                  uint64_t value)
 {
     s->callbacks.fail(s->callbacks.opaque, s->base + off, size, write, value);
@@ -47,7 +47,7 @@ static bool register_valid(hwaddr off, unsigned size)
            (off >= FIFO_CTRL && off <= 0xe8);
 }
 
-static bool sample(VenusGPADC *s, unsigned channel, uint16_t *value)
+static bool sample(VenusAGPADC *s, unsigned channel, uint16_t *value)
 {
     unsigned selection = (REG(s, CONFIG) >> 4) & 3;
     uint32_t reference = s->callbacks.reference_uv(s->callbacks.opaque,
@@ -61,7 +61,7 @@ static bool sample(VenusGPADC *s, unsigned channel, uint16_t *value)
     return true;
 }
 
-static bool convert(VenusGPADC *s, uint32_t control)
+static bool convert(VenusAGPADC *s, uint32_t control)
 {
     unsigned rounds = control >> 24;
     unsigned selected = REG(s, CHSEL) & 0x3f;
@@ -116,7 +116,7 @@ static bool convert(VenusGPADC *s, uint32_t control)
 
 static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 {
-    VenusGPADC *s = opaque;
+    VenusAGPADC *s = opaque;
     if (!register_valid(off, size)) {
         fail(s, off, size, false, 0);
         return 0;
@@ -154,7 +154,7 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 
 static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
-    VenusGPADC *s = opaque;
+    VenusAGPADC *s = opaque;
     if (!register_valid(off, size)) {
         fail(s, off, size, true, value);
         return;
@@ -221,7 +221,7 @@ static const MemoryRegionOps ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4 },
 };
 
-void venusa_gpadc_reset(VenusGPADC *s)
+void venusa_gpadc_reset(VenusAGPADC *s)
 {
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->head, 0, sizeof(s->head));
@@ -238,8 +238,8 @@ void venusa_gpadc_reset(VenusGPADC *s)
     update_irq(s);
 }
 
-void venusa_gpadc_init(VenusGPADC *s, Object *owner, const char *name,
-                      hwaddr base, VenusGPADCCallbacks callbacks)
+void venusa_gpadc_init(VenusAGPADC *s, Object *owner, const char *name,
+                      hwaddr base, VenusAGPADCCallbacks callbacks)
 {
     s->base = base;
     s->callbacks = callbacks;
@@ -247,12 +247,12 @@ void venusa_gpadc_init(VenusGPADC *s, Object *owner, const char *name,
     venusa_gpadc_reset(s);
 }
 
-void venusa_gpadc_clock(VenusGPADC *s, bool enabled)
+void venusa_gpadc_clock(VenusAGPADC *s, bool enabled)
 {
     s->clock_enabled = enabled;
 }
 
-bool venusa_gpadc_set_voltage(VenusGPADC *s, unsigned channel, uint32_t uv)
+bool venusa_gpadc_set_voltage(VenusAGPADC *s, unsigned channel, uint32_t uv)
 {
     if (channel >= VENUSA_GPADC_CHANNELS) {
         return false;

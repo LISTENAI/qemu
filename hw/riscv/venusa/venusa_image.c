@@ -65,9 +65,9 @@ void venusa_image_clock(VenusASoC *s)
 }
 void venusa_image_init(VenusASoC *s)
 {
-    VenusDMA2DCallbacks dma = { .opaque=s, .irq=dma_irq, .fail=fault,
+    VenusADMA2DCallbacks dma = { .opaque=s, .irq=dma_irq, .fail=fault,
         .memory_allowed=memory_allowed, .request=request };
-    VenusRGBCallbacks rgb = { .opaque=s, .irq=rgb_irq, .fail=fault,
+    VenusARGBCallbacks rgb = { .opaque=s, .irq=rgb_irq, .fail=fault,
         .request_changed=request_changed };
     venusa_dma2d_init(&s->dma2d, OBJECT(s), 0x44900000, dma);
     venusa_rgb_init(&s->rgb, OBJECT(s), 0x4200b000, rgb);

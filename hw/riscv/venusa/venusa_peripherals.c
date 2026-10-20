@@ -62,7 +62,7 @@ static void adc_voltage(void *opaque, int channel, int voltage)
 }
 void venusa_peripherals_init(VenusASoC *s)
 {
-    VenusGPADCCallbacks adc_cb = { .opaque = s, .irq = adc_irq,
+    VenusAGPADCCallbacks adc_cb = { .opaque = s, .irq = adc_irq,
         .fail = calendar_fault, .reference_uv = adc_reference };
     venusa_gpadc_init(&s->gpadc, OBJECT(s), "venusa-gpadc", 0x43500000, adc_cb);
     memory_region_add_subregion(get_system_memory(), 0x43500000, &s->gpadc.io);

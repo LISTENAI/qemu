@@ -5,24 +5,24 @@
 #include "system/address-spaces.h"
 #include "qemu/host-utils.h"
 
-static void fail(VenusDMA2D *s, hwaddr off, bool write, uint32_t v)
+static void fail(VenusADMA2D *s, hwaddr off, bool write, uint32_t v)
 {
     s->cb.fail(s->cb.opaque, s->base + off, 4, write, v);
 }
-static uint32_t status(VenusDMA2D *s, unsigned ch)
+static uint32_t status(VenusADMA2D *s, unsigned ch)
 {
     uint32_t mask = (s->regs[(0x240 + ch * 4) / 4] & ~1u) |
                     s->channels[ch].working.block_mask;
     return s->channels[ch].raw & ~mask & 31;
 }
-static void irq(VenusDMA2D *s, unsigned ch)
+static void irq(VenusADMA2D *s, unsigned ch)
 {
     s->cb.irq(s->cb.opaque, ch,
               status(s, ch) && s->channels[ch].working.irq_enable);
 }
-static void activate(VenusDMA2D *s, unsigned ch)
+static void activate(VenusADMA2D *s, unsigned ch)
 {
-    VenusDMA2DChannel *c = &s->channels[ch];
+    VenusADMA2DChannel *c = &s->channels[ch];
     if (!c->active && c->pending && (s->regs[ch] & 1)) {
         c->working = c->queued;
         c->transferred = 0;
@@ -34,9 +34,9 @@ static void activate(VenusDMA2D *s, unsigned ch)
         irq(s, ch);
     }
 }
-static bool ready(VenusDMA2D *s, unsigned ch)
+static bool ready(VenusADMA2D *s, unsigned ch)
 {
-    VenusDMA2DChannel *c = &s->channels[ch];
+    VenusADMA2DChannel *c = &s->channels[ch];
     if (!c->active || !(s->regs[ch] & 1)) { return false; }
     unsigned mode = (c->working.control >> 1) & 3;
     return mode == 2 || s->cb.request(s->cb.opaque, c->working.control >> 28,
@@ -48,7 +48,7 @@ static Int128 multiply(uint64_t a, uint64_t b)
     mulu64(&lo, &hi, a, b);
     return int128_make128(lo, hi);
 }
-static void sync_clock(VenusDMA2D *s)
+static void sync_clock(VenusADMA2D *s)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (s->clock_enabled && s->clock_n && !int128_eq(s->clock_work, int128_zero())) {
@@ -57,7 +57,7 @@ static void sync_clock(VenusDMA2D *s)
     }
     s->event_epoch = now;
 }
-static void arm(VenusDMA2D *s)
+static void arm(VenusADMA2D *s)
 {
     Int128 work = int128_add(s->clock_work, int128_make64(s->clock_n - 1));
     Int128 wait = int128_divs(work, int128_make64(s->clock_n));
@@ -66,7 +66,7 @@ static void arm(VenusDMA2D *s)
     }
     timer_mod(s->event, s->event_epoch + MAX(INT64_C(1), int128_get64(wait)));
 }
-void venusa_dma2d_request(VenusDMA2D *s)
+void venusa_dma2d_request(VenusADMA2D *s)
 {
     if (s->servicing || !s->clock_enabled || !s->clock_n || timer_pending(s->event)) {
         return;
@@ -89,7 +89,7 @@ static uint32_t next_address(uint32_t a, unsigned mode, unsigned bytes)
 }
 static void transfer(void *opaque)
 {
-    VenusDMA2D *s = opaque;
+    VenusADMA2D *s = opaque;
     if (!s->clock_enabled) { return; }
     sync_clock(s);
     s->servicing = true;
@@ -101,8 +101,8 @@ static void transfer(void *opaque)
     }
     if (chosen < VENUSA_DMA2D_CHANNELS) {
         unsigned ch = chosen;
-        VenusDMA2DChannel *c = &s->channels[ch];
-        VenusDMA2DDescriptor *w = &c->working;
+        VenusADMA2DChannel *c = &s->channels[ch];
+        VenusADMA2DDescriptor *w = &c->working;
         unsigned width = 1u << ((w->control >> 3) & 3);
         unsigned mode = (w->control >> 1) & 3;
         unsigned burst[] = { 1, 4, 8, 16 };
@@ -145,9 +145,9 @@ static void transfer(void *opaque)
     }
     s->clock_work = int128_zero();
 }
-static void queue(VenusDMA2D *s, unsigned ch)
+static void queue(VenusADMA2D *s, unsigned ch)
 {
-    VenusDMA2DChannel *c = &s->channels[ch];
+    VenusADMA2DChannel *c = &s->channels[ch];
     uint32_t ctrl = s->regs[ch];
     unsigned mode = (ctrl >> 1) & 3, width = (ctrl >> 3) & 3;
     uint32_t src = s->regs[(0xa0 + 4 * ch) / 4];
@@ -164,15 +164,15 @@ static void queue(VenusDMA2D *s, unsigned ch)
         s->regs[(0x100 + ch * 4) / 4] || s->regs[(0x300 + ch * 4) / 4]) {
         fail(s, ch * 4, true, ctrl); return;
     }
-    c->queued = (VenusDMA2DDescriptor){ctrl, src, dst, len,
+    c->queued = (VenusADMA2DDescriptor){ctrl, src, dst, len,
         s->regs[(0x220 + 4 * ch) / 4], s->regs[(0x240 + 4 * ch) / 4] & 1};
     c->pending = true;
     if (s->clock_enabled) { activate(s, ch); }
     venusa_dma2d_request(s);
 }
-static void cancel(VenusDMA2D *s, unsigned ch)
+static void cancel(VenusADMA2D *s, unsigned ch)
 {
-    VenusDMA2DChannel *c = &s->channels[ch];
+    VenusADMA2DChannel *c = &s->channels[ch];
     c->active = c->pending = false;
     c->raw |= 16;
     irq(s, ch);
@@ -184,11 +184,11 @@ static void cancel(VenusDMA2D *s, unsigned ch)
 }
 static uint64_t read_reg32(void *opaque, hwaddr off, unsigned size)
 {
-    VenusDMA2D *s = opaque;
+    VenusADMA2D *s = opaque;
     unsigned ch = (off & 31) / 4, bank = off & ~31;
     if (size != 4 || (off & 3)) { fail(s, off, false, 0); return 0; }
     if (ch < 6 && (bank <= 0x160 || (bank >= 0x200 && bank <= 0x340))) {
-        VenusDMA2DChannel *c = &s->channels[ch];
+        VenusADMA2DChannel *c = &s->channels[ch];
         switch (bank) {
         case 0x200: return c->pending;
         case 0x260: return 0;
@@ -200,7 +200,7 @@ static uint64_t read_reg32(void *opaque, hwaddr off, unsigned size)
         }
     }
     if (ch < 6 && bank >= 0x380 && bank <= 0x4a0) {
-        VenusDMA2DChannel *c = &s->channels[ch];
+        VenusADMA2DChannel *c = &s->channels[ch];
         if (bank == 0x380) { return c->working.src; }
         if (bank == 0x3a0) { return c->working.dst; }
         if (bank == 0x460) { return ((c->working.control >> 8) & 3) << 24 |
@@ -218,12 +218,12 @@ static uint64_t read_reg32(void *opaque, hwaddr off, unsigned size)
 }
 static void write_reg32(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
-    VenusDMA2D *s = opaque;
+    VenusADMA2D *s = opaque;
     uint32_t v = value;
     unsigned ch = (off & 31) / 4, bank = off & ~31;
     if (size != 4 || (off & 3)) { fail(s, off, true, v); return; }
     if (ch < 6 && (bank <= 0x160 || (bank >= 0x200 && bank <= 0x300))) {
-        VenusDMA2DChannel *c = &s->channels[ch];
+        VenusADMA2DChannel *c = &s->channels[ch];
         bool shadow_write = bank == 0xa0 || bank == 0xc0 || bank == 0xe0 ||
                             bank == 0x220 || (bank == 0x240 &&
                             ((v ^ s->regs[off / 4]) & 1));
@@ -272,7 +272,7 @@ static void write_reg32(void *opaque, hwaddr off, uint64_t value, unsigned size)
 }
 static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 {
-    VenusDMA2D *s = opaque;
+    VenusADMA2D *s = opaque;
     if ((size != 1 && size != 2 && size != 4) || (off & 3) + size > 4) {
         s->cb.fail(s->cb.opaque, s->base + off, size, false, 0); return 0;
     }
@@ -281,7 +281,7 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 }
 static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
-    VenusDMA2D *s = opaque;
+    VenusADMA2D *s = opaque;
     if ((size != 1 && size != 2 && size != 4) || (off & 3) + size > 4) {
         s->cb.fail(s->cb.opaque, s->base + off, size, true, value); return;
     }
@@ -298,7 +298,7 @@ static const MemoryRegionOps ops = {
     .read = read_reg, .write = write_reg, .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 4 },
 };
-void venusa_dma2d_reset(VenusDMA2D *s)
+void venusa_dma2d_reset(VenusADMA2D *s)
 {
     timer_del(s->event);
     memset(s->regs, 0, sizeof(s->regs));
@@ -315,7 +315,7 @@ void venusa_dma2d_reset(VenusDMA2D *s)
     s->regs[0x4d8 / 4] = 15;
     s->cb.irq(s->cb.opaque, 6, false);
 }
-void venusa_dma2d_clock(VenusDMA2D *s, bool enabled, uint64_t n, uint64_t d)
+void venusa_dma2d_clock(VenusADMA2D *s, bool enabled, uint64_t n, uint64_t d)
 {
     sync_clock(s);
     timer_del(s->event);
@@ -330,7 +330,7 @@ void venusa_dma2d_clock(VenusDMA2D *s, bool enabled, uint64_t n, uint64_t d)
     s->clock_enabled = enabled; s->clock_n = n; s->clock_d = d;
     venusa_dma2d_request(s);
 }
-void venusa_dma2d_init(VenusDMA2D *s, Object *owner, hwaddr base, VenusDMA2DCallbacks cb)
+void venusa_dma2d_init(VenusADMA2D *s, Object *owner, hwaddr base, VenusADMA2DCallbacks cb)
 {
     s->base = base; s->cb = cb;
     s->event = timer_new_ns(QEMU_CLOCK_VIRTUAL, transfer, s);

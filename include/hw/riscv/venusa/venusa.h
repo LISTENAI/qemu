@@ -47,12 +47,12 @@ struct VenusASoC {
     VenusAAudio audio;
     ListenAILUNA luna;
     uint32_t luna_mtq_control, luna_mtq_mask, luna_busrd;
-    VenusGPADC gpadc;
+    VenusAGPADC gpadc;
     NucleiCIDU cidu;
     VenusASPI spi[2];
     VenusADVP dvp;
-    VenusDMA2D dma2d;
-    VenusRGB rgb;
+    VenusADMA2D dma2d;
+    VenusARGB rgb;
     uint32_t rgb_clock_config, rgb_div;
     bool core1_held;
     RISCVCPU cpu[2];
