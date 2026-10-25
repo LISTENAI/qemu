@@ -144,14 +144,16 @@ static void reset_radio(ArcsMachine *s)
 static bool radio_transmit(void *opaque, const uint8_t *frame, unsigned length, uint64_t us)
 {
     ArcsMachine *s = opaque;
-    if (s->wifi_frames == 4096) {
-        error_report("ARCS Wi-Fi capture capacity reached"); report(s, "radio-error"); exit(1);
+    if (s->wifi_capture) {
+        if (s->wifi_frames == 4096) {
+            error_report("ARCS Wi-Fi capture capacity reached"); report(s, "radio-error"); exit(1);
+        }
+        uint8_t record[16];
+        stl_le_p(record, us / 1000000); stl_le_p(record + 4, us % 1000000);
+        stl_le_p(record + 8, length); stl_le_p(record + 12, length);
+        g_byte_array_append(s->wifi_capture, record, sizeof(record));
+        g_byte_array_append(s->wifi_capture, frame, length); s->wifi_frames++;
     }
-    uint8_t record[16];
-    stl_le_p(record, us / 1000000); stl_le_p(record + 4, us % 1000000);
-    stl_le_p(record + 8, length); stl_le_p(record + 12, length);
-    g_byte_array_append(s->wifi_capture, record, sizeof(record));
-    g_byte_array_append(s->wifi_capture, frame, length); s->wifi_frames++;
     bool acknowledged = false;
     for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
         acknowledged |= arcs_wifi_ap_transmit(&s->access_points[i], frame, length);
@@ -1159,7 +1161,9 @@ static void machine_init(MachineState *machine)
     connect_camera(s);
     if (s->board.touch) { connect_touch(s); }
     connect_pcm(s);
-    s->wifi_capture = g_byte_array_new(); reset_radio(s);
+    if (getenv("ARCS_QEMU_WIFI_CAPTURE")) {
+        s->wifi_capture = g_byte_array_new(); reset_radio(s);
+    }
     s->access_points_present = true;
     for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
         arcs_wifi_ap_init(&s->access_points[i], &s->soc.wifi);
@@ -1177,7 +1181,8 @@ static void machine_init(MachineState *machine)
     if (environment) { wifi_environment_set(OBJECT(s), environment, &error_fatal); }
     const char *network_library = getenv("ARCS_QEMU_NETWORK_LIBRARY");
     arcs_network_init(&s->network, &s->access_points[0], network_library,
-                      g_strcmp0(getenv("ARCS_QEMU_NETWORK_LOOPBACK"), "1") == 0);
+                      g_strcmp0(getenv("ARCS_QEMU_NETWORK_LOOPBACK"), "1") == 0,
+                      getenv("ARCS_QEMU_NETWORK_CAPTURE") != NULL);
     if (g_strcmp0(getenv("ARCS_QEMU_WIFI_AP_PRESENT"), "0") == 0) {
         wifi_ap_present_set(OBJECT(s), false, &error_fatal);
     }

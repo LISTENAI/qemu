@@ -20,6 +20,7 @@ static void check(ArcsNetwork *s, int result)
 
 static void capture(ArcsNetwork *s, const uint8_t *frame, unsigned length)
 {
+    if (!s->capture) { return; }
     if (s->capture->len > 64 * 1024 * 1024 - 16 - length) { fail(s, "Ethernet capture exceeds 64 MiB limit"); }
     uint64_t us = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1000;
     uint8_t record[16];
@@ -93,7 +94,8 @@ void arcs_network_save(ArcsNetwork *s, const char *path)
     }
 }
 
-void arcs_network_init(ArcsNetwork *s, ArcsWiFiAP *ap, const char *library, bool loopback)
+void arcs_network_init(ArcsNetwork *s, ArcsWiFiAP *ap, const char *library,
+                       bool loopback, bool capture_enabled)
 {
     s->ap = ap; s->loopback = loopback;
     if (!library) { return; }
@@ -109,11 +111,13 @@ void arcs_network_init(ArcsNetwork *s, ArcsWiFiAP *ap, const char *library, bool
 #undef BIND
     s->version = g_strdup(s->get_version());
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, poll_network, s);
-    s->capture = g_byte_array_new();
-    uint8_t header[24] = {0};
-    stl_le_p(header, 0xa1b2c3d4); stw_le_p(header + 4, 2); stw_le_p(header + 6, 4);
-    stl_le_p(header + 16, 65535); stl_le_p(header + 20, 1);
-    g_byte_array_append(s->capture, header, sizeof(header));
+    if (capture_enabled) {
+        s->capture = g_byte_array_new();
+        uint8_t header[24] = {0};
+        stl_le_p(header, 0xa1b2c3d4); stw_le_p(header + 4, 2); stw_le_p(header + 6, 4);
+        stl_le_p(header + 16, 65535); stl_le_p(header + 20, 1);
+        g_byte_array_append(s->capture, header, sizeof(header));
+    }
     for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
         ap[i].ethernet_transmit = transmit; ap[i].ethernet_opaque = s;
     }

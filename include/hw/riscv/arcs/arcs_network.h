@@ -21,7 +21,8 @@ typedef struct ArcsNetwork {
     uint64_t (*dropped)(void *context);
     const char *(*get_version)(void);
 } ArcsNetwork;
-void arcs_network_init(ArcsNetwork *s, ArcsWiFiAP *ap, const char *library, bool loopback);
+void arcs_network_init(ArcsNetwork *s, ArcsWiFiAP *ap, const char *library,
+                       bool loopback, bool capture_enabled);
 void arcs_network_enable(ArcsNetwork *s, bool enabled);
 void arcs_network_reset(ArcsNetwork *s);
 void arcs_network_save(ArcsNetwork *s, const char *path);
