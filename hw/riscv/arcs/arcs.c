@@ -233,6 +233,19 @@ static char *wifi_status_get(Object *obj, Error **errp)
     return arcs_wifi_environment_status(ARCS_MACHINE(obj)->access_points);
 }
 
+static char *wifi_observation_get(Object *obj, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    g_autofree char *status = arcs_wifi_environment_status(s->access_points);
+    QObject *root = qobject_from_json(status, &error_abort);
+    QDict *value = qobject_to(QDict, root);
+    qdict_put_bool(value, "present", s->access_points_present);
+    qdict_put_int(value, "sampled_virtual_ns", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    GString *text = qobject_to_json(root);
+    qobject_unref(root);
+    return g_string_free(text, false);
+}
+
 static void wifi_environment_set(Object *obj, const char *value, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
@@ -1178,6 +1191,7 @@ static void machine_init(MachineState *machine)
     if (ssid) { wifi_ap_set(OBJECT(s), ssid, &error_fatal); }
     object_property_add_str(OBJECT(s), "wifi-environment", wifi_environment_get, wifi_environment_set);
     object_property_add_str(OBJECT(s), "wifi-status", wifi_status_get, NULL);
+    object_property_add_str(OBJECT(s), "x-lisem-wifi-status", wifi_observation_get, NULL);
     const char *environment = getenv("ARCS_QEMU_WIFI_ENVIRONMENT");
     if (environment) { wifi_environment_set(OBJECT(s), environment, &error_fatal); }
     const char *network_library = getenv("ARCS_QEMU_NETWORK_LIBRARY");
