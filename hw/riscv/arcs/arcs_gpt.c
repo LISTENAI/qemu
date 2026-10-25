@@ -8,11 +8,12 @@ double arcs_gpt_duty(ArcsGPT *s, unsigned ch)
 {
     assert(ch < 8);
     uint32_t control = s->regs[9 + ch], reload = s->regs[17 + ch];
-    bool invert = control & 64;
-    if (!s->running[ch]) { return invert ? 1 : 0; }
+    bool idle_high = control & 64;
+    if (!s->running[ch]) { return idle_high ? 1 : 0; }
     unsigned high = (reload >> 16) + 1, low = (reload & 65535) + 1;
-    double duty = (double)high / (high + low);
-    return invert ? 1 - duty : duty;
+    /* In the implemented edge-aligned mode the reload fields determine
+     * pulse polarity. Bit 6 selects the stopped output, not an inversion. */
+    return (double)high / (high + low);
 }
 
 static uint64_t gpt_read(void *opaque, hwaddr off, unsigned size)

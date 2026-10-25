@@ -8,6 +8,7 @@
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
+#include "qobject/qnum.h"
 #include "ui/console.h"
 
 typedef struct ST7789State {
@@ -290,6 +291,17 @@ void st7789_report(DeviceState *dev, FILE *f)
     ST7789State *s = ST7789(dev);
     fprintf(f, "{\"pixels_written\":%" PRIu64 ",\"enabled\":%s,\"backlight\":%.9f}",
             s->pixels, enabled(s) ? "true" : "false", s->backlight);
+}
+
+QDict *st7789_display_state(DeviceState *dev)
+{
+    ST7789State *s = ST7789(dev);
+    QDict *state = qdict_new();
+    qdict_put_bool(state, "enabled", enabled(s));
+    qdict_put_int(state, "pixels_written", s->pixels);
+    qdict_put_obj(state, "drive_duty", QOBJECT(qnum_from_double(s->backlight)));
+    qdict_put_obj(state, "effective_duty", QOBJECT(qnum_from_double(enabled(s) ? s->backlight : 0)));
+    return state;
 }
 
 void st7789_failure_callback(DeviceState *dev, void (*fn)(void *, const char *), void *opaque)

@@ -10,11 +10,13 @@
 #include "hw/core/split-irq.h"
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qobject/qjson.h"
 #include "qobject/qnum.h"
 #include "qobject/qbool.h"
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
+#include "qemu/timer.h"
 
 static G_NORETURN void invalid(const char *field)
 {
@@ -98,6 +100,15 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     b->amplifier = qdict_haskey(dict, "amplifier");
     if (b->panel) {
         QDict *p = qdict_get_qdict(dict, "panel");
+        b->panel_id = g_strdup(qdict_get_try_str(p, "id"));
+        b->panel_controller_id = g_strdup(qdict_get_try_str(p, "controller_id"));
+        b->backlight_id = g_strdup(qdict_get_try_str(p, "backlight_id"));
+        /* Older checked assembly plans lack IDs and remain runnable. They
+         * report observation unavailable rather than inventing device IDs. */
+        const char *ids[] = {b->panel_id, b->panel_controller_id, b->backlight_id};
+        for (unsigned i = 0; i < ARRAY_SIZE(ids); i++) {
+            if (ids[i] && (!*ids[i] || strlen(ids[i]) > 64)) { invalid("display device ID"); }
+        }
         QDict *pins = p ? qdict_get_qdict(p, "pads") : NULL;
         b->lcd_sck = pad(pins, "SCK", pa_pads, pb_pads); b->lcd_sdi = pad(pins, "SDI", pa_pads, pb_pads);
         b->lcd_cs = gpio_endpoint(b, pins, "CS", pa_pads, pb_pads); b->lcd_dc = gpio_endpoint(b, pins, "DC", pa_pads, pb_pads);
@@ -239,6 +250,49 @@ void listenai_board_cleanup(ListenaiBoard *b)
     listenai_signal_trace_destroy(&b->signal_trace);
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
     g_free(b->extio_id);
+    g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
+}
+
+QDict *listenai_board_display_snapshot(ListenaiBoard *b)
+{
+    QDict *result = qdict_new(), *displays = qdict_new();
+    bool available = !b->panel || (b->panel_device && b->panel_id &&
+                                  b->panel_controller_id && b->backlight_id);
+    qdict_put_bool(result, "available", available);
+    qdict_put_int(result, "sampled_virtual_ns", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    qdict_put_obj(result, "displays", QOBJECT(displays));
+    if (!available) {
+        qdict_put_str(result, "reason", "Display device IDs or model are unavailable");
+    } else if (b->panel) {
+        QDict *panel = st7789_display_state(b->panel_device), *light = qdict_new();
+        qdict_put_bool(panel, "available", true);
+        qdict_put_str(panel, "controller_id", b->panel_controller_id);
+        qdict_put_str(light, "device_id", b->backlight_id);
+        qdict_put_bool(light, "available", true);
+        qdict_put_str(light, "unit", "ratio");
+        qdict_put_obj(light, "drive_duty", qobject_ref(qdict_get(panel, "drive_duty")));
+        qdict_put_obj(light, "effective_duty", qobject_ref(qdict_get(panel, "effective_duty")));
+        qdict_del(panel, "drive_duty"); qdict_del(panel, "effective_duty");
+        qdict_put_obj(panel, "backlight", QOBJECT(light));
+        qdict_put_obj(displays, b->panel_id, QOBJECT(panel));
+    }
+    return result;
+}
+
+static void display_observer_get(Object *obj, Visitor *visitor, const char *name,
+                                 void *opaque, Error **errp)
+{
+    QDict *state = listenai_board_display_snapshot(opaque);
+    GString *json = qobject_to_json(QOBJECT(state));
+    char *text = json->str;
+    visit_type_str(visitor, name, &text, errp);
+    g_string_free(json, true); qobject_unref(state);
+}
+
+void listenai_board_display_observer_init(ListenaiBoard *b, Object *owner)
+{
+    object_property_add(owner, "x-lisem-display-status", "str", display_observer_get,
+                        NULL, NULL, b);
 }
 
 void listenai_board_attach_typec(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus)

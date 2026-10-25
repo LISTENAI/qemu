@@ -41,6 +41,7 @@ typedef struct ListenaiBoard {
     ListenaiBoardButton buttons[LISTENAI_BOARD_BUTTONS];
     SSIBus *panel_bus;
     DeviceState *panel_device;
+    char *panel_id, *panel_controller_id, *backlight_id;
     struct {
         struct ListenaiBoard *board;
         ListenaiSPI *spi;
@@ -72,5 +73,7 @@ void listenai_board_attach_typec(ListenaiBoard *b, Object *owner, DeviceState *s
 void listenai_board_connect_gpio(ListenaiBoard *b, DeviceState *soc, unsigned endpoint, qemu_irq input);
 void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endpoint, bool level);
 QDict *listenai_board_devices_snapshot(ListenaiBoard *b);
+QDict *listenai_board_display_snapshot(ListenaiBoard *b);
+void listenai_board_display_observer_init(ListenaiBoard *b, Object *owner);
 void listenai_board_cleanup(ListenaiBoard *b);
 #endif

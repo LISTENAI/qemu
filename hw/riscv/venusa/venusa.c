@@ -131,6 +131,7 @@ static char *snapshot(Object *obj, Error **errp)
     g_autofree char *camera = venusa_board_camera_status(s->camera);
     qdict_put_obj(dict, "camera_input", qobject_from_json(camera, &error_abort));
     qdict_put_obj(dict, "devices", QOBJECT(listenai_board_devices_snapshot(&s->components)));
+    qdict_put_obj(dict, "display", QOBJECT(listenai_board_display_snapshot(&s->components)));
     qdict_put_obj(dict, "pads", QOBJECT(banks));
     qdict_put_obj(dict, "controls", QOBJECT(controls));
     GString *text = qobject_to_json(root);
@@ -226,6 +227,7 @@ static void venusa_board_init(MachineState *machine)
     }
     listenai_board_sd_wire(b, DEVICE(board->soc), board->soc->sd.host);
     panel_connect(board);
+    listenai_board_display_observer_init(b, OBJECT(board));
     touch_connect(board);
     board->camera = venusa_board_camera_connect(board->soc, OBJECT(board), b);
     for (unsigned i = 0; i < b->button_count; i++) {

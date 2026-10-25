@@ -1158,6 +1158,7 @@ static void machine_init(MachineState *machine)
     }
     listenai_board_sd_wire(&s->board, DEVICE(&s->soc), s->soc.sd.host);
     connect_panel(s);
+    listenai_board_display_observer_init(&s->board, OBJECT(s));
     connect_camera(s);
     if (s->board.touch) { connect_touch(s); }
     connect_pcm(s);
@@ -1276,8 +1277,12 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     GString *device_text = qobject_to_json(QOBJECT(devices));
     g_autofree char *device_json = g_string_free(device_text, false);
     qobject_unref(devices);
+    QDict *display = listenai_board_display_snapshot(&s->board);
+    GString *display_text = qobject_to_json(QOBJECT(display));
+    g_autofree char *display_json = g_string_free(display_text, false);
+    qobject_unref(display);
     return g_strdup_printf("{\"bluetooth_capture\":{\"frames\":%" PRIu64 ",\"retained\":%" PRIu64 ",\"dropped\":%" PRIu64 "},"
-        "\"devices\":%s,\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
+        "\"display\":%s,\"devices\":%s,\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":%s},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
@@ -1286,7 +1291,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
         s->ble_frames, MIN(s->ble_frames, UINT64_C(4096)), s->ble_dropped,
-        device_json, audio_output, events, wifi, s->access_points_present ? "true" : "false",
+        display_json, device_json, audio_output, events, wifi, s->access_points_present ? "true" : "false",
         camera, sequence, controls,
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((NucleiN300State *)s->soc.cpu[0].env.nuclei_state)->exceptions,
