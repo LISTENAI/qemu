@@ -37,6 +37,9 @@ struct ArcsBluetooth {
     unsigned fifo_head, fifo_count;
     uint64_t submitted, completed;
     QEMUTimer *reception, *scan_response, *data_response;
+    QEMUTimer *aes_event;
+    uint8_t aes_key[16], aes_input[16];
+    uint32_t aes_address;
     uint8_t received[257];
     unsigned received_length, receive_index, receive_channel;
     uint64_t receive_start;

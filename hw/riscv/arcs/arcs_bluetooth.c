@@ -5,6 +5,7 @@
 #include "system/address-spaces.h"
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
+#include "crypto/aes.h"
 
 #define BASE 0x4a000000
 #define PERIOD (UINT64_C(0x10000000) * 625)
@@ -16,6 +17,7 @@ static bool dm_register(hwaddr off)
     switch (off) {
     case 0xc: case 0x18: case 0x2c: case 0x30: case 0x3c: case 0x74:
     case 0xe0: case 0xe8: case 0xec: case 0xf0: case 0xf4: case 0xf8: case 0xfc:
+    case 0xb0: case 0xb4: case 0xb8: case 0xbc: case 0xc0: case 0xc4:
         return true;
     default: return false;
     }
@@ -78,6 +80,33 @@ static void write16(ArcsBluetooth *s, uint32_t address, uint16_t value)
     if (address_space_write(&address_space_memory, address, MEMTXATTRS_UNSPECIFIED, data, 2) != MEMTX_OK) {
         activity_fail(s, "EM write failed");
     }
+}
+
+/* DM AES uses the Bluetooth little-endian 128-bit convention. The input
+ * block is followed by its output block in EM; completion alone writes it.
+ * The functional one-microsecond event is not a silicon latency model. */
+static void aes_complete(void *opaque)
+{
+    ArcsBluetooth *s = opaque;
+    uint8_t key[16], input[16], output[16], wire[16];
+    AES_KEY schedule;
+
+    for (unsigned i = 0; i < 16; i++) {
+        key[i] = s->aes_key[15 - i];
+        input[i] = s->aes_input[15 - i];
+    }
+    AES_set_encrypt_key(key, 128, &schedule);
+    AES_encrypt(input, output, &schedule);
+    for (unsigned i = 0; i < 16; i++) {
+        wire[i] = output[15 - i];
+    }
+    if (address_space_write(&address_space_memory, s->aes_address + 16,
+                            MEMTXATTRS_UNSPECIFIED, wire, 16) != MEMTX_OK) {
+        activity_fail(s, "AES output write failed");
+    }
+    s->dm[0xb0 / 4] &= ~1u;
+    s->pending |= 4;
+    irq(s);
 }
 
 static void activity_status(ArcsBTActivity *a, unsigned status)
@@ -459,6 +488,10 @@ static void reset_controller(ArcsBluetooth *s)
         timer_del(a->event); a->owned = a->started = false; a->cs = 0;
     }
     timer_del(s->reception); timer_del(s->scan_response); timer_del(s->data_response);
+    timer_del(s->aes_event);
+    memset(s->aes_key, 0, sizeof(s->aes_key));
+    memset(s->aes_input, 0, sizeof(s->aes_input));
+    s->aes_address = 0;
     memset(s->links, 0, sizeof(s->links));
     s->tx_acknowledged = s->retransmissions = 0;
     s->current_channel = 0; s->channel_status_reads = 0;
@@ -562,6 +595,22 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
         return;
     }
     if (!dm_register(off)) { goto invalid; }
+    if (off >= 0xb0 && off <= 0xc4) {
+        if (timer_pending(s->aes_event) || (off == 0xc4 && value > 0x3fff) ||
+            (off == 0xb0 && (value & ~1u))) {
+            goto invalid;
+        }
+        if (off == 0xb0 && (value & 1)) {
+            s->aes_address = EM + 4 * s->dm[0xc4 / 4];
+            check_em(s, s->aes_address, 32);
+            em_read(s, s->aes_address, s->aes_input, 16);
+            for (unsigned i = 0; i < 4; i++) {
+                stl_le_p(s->aes_key + 4 * i, s->dm[(0xb4 + 4 * i) / 4]);
+            }
+            timer_mod(s->aes_event,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+        }
+    }
     if (off == 0x2c && value) { goto invalid; }
     if (off == 0x30 && (value & ~0x80000000u)) { goto invalid; }
     if (off >= 0xe8 && off <= 0xfc) {
@@ -626,6 +675,7 @@ void arcs_bluetooth_init(ArcsSoC *soc)
     s->reception = timer_new_ns(QEMU_CLOCK_VIRTUAL, receive_complete, s);
     s->scan_response = timer_new_ns(QEMU_CLOCK_VIRTUAL, scan_response, s);
     s->data_response = timer_new_ns(QEMU_CLOCK_VIRTUAL, data_response, s);
+    s->aes_event = timer_new_ns(QEMU_CLOCK_VIRTUAL, aes_complete, s);
     memory_region_init_io(&s->io, OBJECT(soc), &ops, s, "arcs-bluetooth-control", 0x1000);
     memory_region_add_subregion(get_system_memory(), BASE, &s->io);
     memory_region_init_io(&s->channel_io, OBJECT(soc), &channel_ops, s, "arcs-ble-logical-channel-diagnostic", 0x20);
