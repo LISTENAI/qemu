@@ -27,6 +27,7 @@
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
 #include "hw/core/listenai-camera-scene.h"
+#include "hw/core/listenai-ble-central.h"
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
@@ -119,6 +120,8 @@ struct ArcsMachine {
     bool ble_crc;
     const char *ble_input_status;
     bool ble_tx_stop, ble_peer_stop;
+    ListenaiBLECentral *ble_central;
+    char *ble_central_reply;
 };
 
 static void report(void *opaque, const char *status);
@@ -311,6 +314,8 @@ static void ble_transmit(void *opaque, const uint8_t *pdu, unsigned length,
     for (unsigned i = 0; i < length; i++) { g_string_append_printf(s->ble_capture, "%02x", pdu[i]); }
     g_string_append_printf(s->ble_capture, "\",\"access_address\":%u}\n", address);
     s->ble_frames++;
+    listenai_ble_central_transmit(s->ble_central, pdu, length, channel,
+                                 address, half_us);
     if (s->ble_peer_stop || (s->ble_tx_stop && (pdu[0] & 15) == 0)) {
         /* Debug-only lockstep for an out-of-process peer. All virtual events
          * retain their deadlines; host pause time is not a performance result. */
@@ -409,6 +414,36 @@ static bool ble_peer_stop_get(Object *obj, Error **errp)
 static void ble_peer_stop_set(Object *obj, bool value, Error **errp)
 {
     ARCS_MACHINE(obj)->ble_peer_stop = value;
+}
+
+static bool ble_central_receive(void *opaque, const uint8_t *pdu,
+                                unsigned length, unsigned channel,
+                                uint32_t address)
+{
+    ArcsMachine *s = opaque;
+    return arcs_bluetooth_receive(&s->soc.bluetooth, pdu, length, channel,
+                                  address, true);
+}
+
+static void ble_central_set(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (strlen(value) > 2048 || s->ble_tx_stop || s->ble_peer_stop) {
+        error_setg(errp,
+                   "BLE central requires bounded requests without debug lockstep");
+        return;
+    }
+    char *reply = listenai_ble_central_command(s->ble_central, value, errp);
+    if (reply) {
+        g_free(s->ble_central_reply);
+        s->ble_central_reply = reply;
+    }
+}
+
+static char *ble_central_get(Object *obj, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    return g_strdup(s->ble_central_reply ? s->ble_central_reply : "{}");
 }
 
 static bool pa_enabled(ArcsMachine *s)
@@ -1073,6 +1108,9 @@ static void machine_reset(MachineState *machine, ResetType type)
     if (s->network.library) { arcs_network_reset(&s->network); }
     if (s->ble_capture) {
         g_string_truncate(s->ble_capture, 0); s->ble_frames = 0; s->ble_dropped = 0;
+        if (s->ble_central) {
+            listenai_ble_central_reset(s->ble_central);
+        }
     }
     if (s->ble_input) { timer_del(s->ble_input); s->ble_input_status = "idle"; }
     /* Board inputs are applied after every chip has finished resetting. */
@@ -1207,6 +1245,10 @@ static void machine_init(MachineState *machine)
     s->ble_capture = g_string_new(NULL);
     s->soc.bluetooth.medium_opaque = s; s->soc.bluetooth.transmit = ble_transmit;
     s->ble_input = timer_new_ns(QEMU_CLOCK_VIRTUAL, ble_input, s);
+    s->ble_central = listenai_ble_central_new(ble_central_receive, s,
+                                             &s->soc.bluetooth.epoch);
+    object_property_add_str(OBJECT(s), "x-lisem-ble-central",
+                            ble_central_get, ble_central_set);
     s->ble_input_status = "idle";
     object_property_add_str(OBJECT(s), "ble-rx", ble_input_get, ble_input_set);
     object_property_add_str(OBJECT(s), "ble-tx", ble_capture_get, NULL);
@@ -1755,6 +1797,8 @@ static void machine_class_init(ObjectClass *klass, const void *data)
 static void machine_finalize(Object *obj)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
+    listenai_ble_central_destroy(s->ble_central);
+    g_free(s->ble_central_reply);
     if (s->event_timer) { timer_free(s->event_timer); }
     qobject_unref(s->event_actions); g_free(s->event_error);
     if (s->input_prefetch) { timer_free(s->input_prefetch); }
