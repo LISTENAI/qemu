@@ -32,6 +32,7 @@ struct VenusABoard {
 static void backlight(void *opaque, int unused, int level)
 {
     VenusABoard *s = opaque;
+    if (s->components.epaper) { return; }
     unsigned pad = s->components.backlight_pad;
     if (pad >= 64) {
         double duty = listenai_extio_duty(s->components.extio, pad - 64);
@@ -71,8 +72,10 @@ static void panel_connect(VenusABoard *s)
     listenai_board_attach_spi(b, DEVICE(s->soc), s->screen, controllers, opaque, 2,
                               venusa_spi_pad_selected);
     listenai_board_panel_wire(b, DEVICE(s->soc), s->screen);
-    listenai_board_connect_gpio(b, DEVICE(s->soc), b->backlight_pad,
-                               qemu_allocate_irq(backlight, s, 0));
+    if (!b->epaper) {
+        listenai_board_connect_gpio(b, DEVICE(s->soc), b->backlight_pad,
+                                   qemu_allocate_irq(backlight, s, 0));
+    }
     const char *directory = getenv("LISEM_QEMU_DESKTOP");
     if (directory) {
         lisa_display_init(qemu_console_lookup_by_device(s->screen, 0), directory,

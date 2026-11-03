@@ -156,3 +156,7 @@ config VENUSA_RGB
 config ST7789
     bool
     select SSI
+
+config JD79651C
+    bool
+    select SSI

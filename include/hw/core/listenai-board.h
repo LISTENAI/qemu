@@ -18,7 +18,7 @@ typedef struct ListenaiBoardButton {
 
 typedef struct ListenaiBoard {
     ListenaiSignalTrace signal_trace;
-    bool configured, panel, camera, sd, amplifier, touch, keypad;
+    bool configured, panel, epaper, camera, sd, amplifier, touch, keypad;
     unsigned touch_scl, touch_sda, touch_irq, touch_i2c;
     unsigned keypad_channel, keypad_supply_uv, keypad_pull_up_ohms;
     bool sd_detect, sd_external_detect, sd_detect_active, expander;
@@ -62,7 +62,7 @@ typedef struct ListenaiBoard {
     } rotaries[4];
     SSIBus *panel_bus;
     DeviceState *panel_device;
-    char *panel_id, *panel_controller_id, *backlight_id;
+    char *panel_id, *panel_controller_id, *backlight_id, *panel_otp_luts;
     struct {
         struct ListenaiBoard *board;
         ListenaiSPI *spi;
@@ -87,6 +87,10 @@ void listenai_board_attach_spi(ListenaiBoard *b, DeviceState *soc,
 void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sensor);
 DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner);
 void listenai_board_panel_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *panel);
+void listenai_board_panel_failure_callback(ListenaiBoard *b,
+    void (*fn)(void *, const char *), void *opaque);
+void listenai_board_panel_report(ListenaiBoard *b, FILE *stream);
+void listenai_board_panel_save(ListenaiBoard *b, const char *path);
 void listenai_board_sd_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sd_host);
 void listenai_board_pulls_apply(ListenaiBoard *b, DeviceState *soc);
 void listenai_board_attach_extio(ListenaiBoard *b, Object *owner, I2CBus *bus);

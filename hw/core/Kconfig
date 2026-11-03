@@ -44,6 +44,7 @@ config LISTENAI_BOARD
     select HUSB320
     select LISTENAI_EXTIO
     select ST7789
+    select JD79651C
     select GC0328
     select CST328
     select SPLIT_IRQ

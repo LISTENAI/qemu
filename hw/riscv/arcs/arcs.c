@@ -700,9 +700,9 @@ static void report(void *opaque, const char *status)
                 c->pll_regs[2], c->pll_regs[3], c->pll_regs[6]);
     }
     if (s->screen) {
-        fprintf(f, ",\"screen\":"); st7789_report(s->screen, f);
+        fprintf(f, ",\"screen\":"); listenai_board_panel_report(&s->board, f);
         const char *path = getenv("ARCS_QEMU_SCREEN");
-        if (path) { st7789_save(s->screen, path); }
+        if (path) { listenai_board_panel_save(&s->board, path); }
     }
     LisemLunaStatus luna = lisem_luna_status(s->soc.luna.backend);
     fprintf(f, ",\"luna\":{\"completed\":%" PRIu64 ",\"busy\":%s,\"api\":%u,\"param\":%u}",
@@ -805,7 +805,7 @@ static void lcd_cs(void *opaque, int pin, int level)
 static void backlight(void *opaque)
 {
     ArcsMachine *s = opaque;
-    if (s->screen) {
+    if (s->screen && !s->board.epaper) {
         st7789_backlight(s->screen, arcs_board_backlight(&s->board, &s->soc));
     }
 }
@@ -818,7 +818,7 @@ static void connect_panel(ArcsMachine *s)
     ListenaiBoard *b = &s->board;
     if (!b->panel) { return; }
     s->screen = listenai_board_panel_new(b, OBJECT(s));
-    st7789_failure_callback(s->screen, report, s);
+    listenai_board_panel_failure_callback(b, report, s);
     unsigned spi = s->evb ? 1 : 0;
     if (b->configured) {
         arcs_board_attach_spi(b, &s->soc, s->screen);
@@ -834,8 +834,10 @@ static void connect_panel(ArcsMachine *s)
         qdev_connect_gpio_out_named(soc, "spi-cs", spi, qemu_allocate_irq(lcd_cs, s, 0));
     }
     listenai_board_panel_wire(b, soc, s->screen);
-    listenai_board_connect_gpio(b, DEVICE(&s->soc), b->backlight_pad, qemu_allocate_irq(backlight_pad, s, 0));
-    s->soc.gpt.changed = backlight; s->soc.gpt.opaque = s;
+    if (!b->epaper) {
+        listenai_board_connect_gpio(b, DEVICE(&s->soc), b->backlight_pad, qemu_allocate_irq(backlight_pad, s, 0));
+        s->soc.gpt.changed = backlight; s->soc.gpt.opaque = s;
+    }
 }
 
 static bool extio_route(void *opaque)

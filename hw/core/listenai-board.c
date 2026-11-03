@@ -7,6 +7,7 @@
 #include "hw/irq.h"
 #include "hw/input/quadrature.h"
 #include "hw/display/st7789.h"
+#include "hw/display/jd79651c.h"
 #include "hw/i2c/listenai_extio.h"
 #include "hw/i2c/husb320.h"
 #include "hw/i2c/fs1815.h"
@@ -153,6 +154,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     b->amplifier = qdict_haskey(dict, "amplifier");
     if (b->panel) {
         QDict *p = qdict_get_qdict(dict, "panel");
+        const char *controller = qdict_get_try_str(p, "model");
+        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_JD79651C)) {
+            invalid("display controller model");
+        }
+        b->epaper = controller && !strcmp(controller, TYPE_JD79651C);
+        b->panel_otp_luts = g_strdup(qdict_get_try_str(p, "otp_luts"));
         b->panel_id = g_strdup(qdict_get_try_str(p, "id"));
         b->panel_controller_id = g_strdup(qdict_get_try_str(p, "controller_id"));
         b->backlight_id = g_strdup(qdict_get_try_str(p, "backlight_id"));
@@ -165,18 +172,28 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         QDict *pins = p ? qdict_get_qdict(p, "pads") : NULL;
         b->lcd_sck = pad(pins, "SCK", pa_pads, pb_pads); b->lcd_sdi = pad(pins, "SDI", pa_pads, pb_pads);
         b->lcd_cs = gpio_endpoint(b, pins, "CS", pa_pads, pb_pads); b->lcd_dc = gpio_endpoint(b, pins, "DC", pa_pads, pb_pads);
-        b->lcd_reset = gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads); b->lcd_te = pad(pins, "TE", pa_pads, pb_pads);
+        b->lcd_reset = gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads);
+        b->lcd_te = b->epaper ? gpio_endpoint(b, pins, "BUSY", pa_pads, pb_pads)
+                              : pad(pins, "TE", pa_pads, pb_pads);
         b->lcd_width = number(p, "width", 240);
         b->lcd_height = number(p, "height", 320);
         b->lcd_x = number(p, "x_offset", 239); b->lcd_y = number(p, "y_offset", 319);
         b->lcd_rotation = number(p, "rotation", 270);
         if (!b->lcd_width || !b->lcd_height || b->lcd_rotation % 90 ||
-            b->lcd_x + b->lcd_width > 240 || b->lcd_y + b->lcd_height > 320) {
+            b->lcd_x + b->lcd_width > (b->epaper ? 176 : 240) ||
+            b->lcd_y + b->lcd_height > (b->epaper ? 296 : 320)) {
             invalid("panel viewport");
         }
-        b->lcd_inverted = boolean(p, "inverted");
-        b->backlight_pad = gpio_endpoint(b, p, "backlight_pad", pa_pads, pb_pads);
-        b->backlight_active = number(p, "backlight_active", 1);
+        if (b->epaper) {
+            if (qdict_haskey(p, "backlight_pad") || b->backlight_id || qdict_haskey(p, "inverted")) {
+                invalid("electronic-paper backlight or inversion");
+            }
+            b->backlight_pad = UINT_MAX;
+        } else {
+            b->lcd_inverted = boolean(p, "inverted");
+            b->backlight_pad = gpio_endpoint(b, p, "backlight_pad", pa_pads, pb_pads);
+            b->backlight_active = number(p, "backlight_active", 1);
+        }
     }
     if (b->camera) {
         QDict *p = qdict_get_qdict(dict, "camera");
@@ -343,28 +360,36 @@ void listenai_board_cleanup(ListenaiBoard *b)
     g_free(b->ls8500_id);
     g_free(b->extio_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
+    g_free(b->panel_otp_luts);
 }
 
 QDict *listenai_board_display_snapshot(ListenaiBoard *b)
 {
     QDict *result = qdict_new(), *displays = qdict_new();
     bool available = !b->panel || (b->panel_device && b->panel_id &&
-                                  b->panel_controller_id && b->backlight_id);
+                                  b->panel_controller_id && (b->epaper || b->backlight_id));
     qdict_put_bool(result, "available", available);
     qdict_put_int(result, "sampled_virtual_ns", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     qdict_put_obj(result, "displays", QOBJECT(displays));
     if (!available) {
         qdict_put_str(result, "reason", "Display device IDs or model are unavailable");
     } else if (b->panel) {
-        QDict *panel = st7789_display_state(b->panel_device), *light = qdict_new();
+        QDict *panel = b->epaper ? jd79651c_display_state(b->panel_device)
+                                 : st7789_display_state(b->panel_device);
+        QDict *light = qdict_new();
         qdict_put_bool(panel, "available", true);
         qdict_put_str(panel, "controller_id", b->panel_controller_id);
-        qdict_put_str(light, "device_id", b->backlight_id);
-        qdict_put_bool(light, "available", true);
-        qdict_put_str(light, "unit", "ratio");
-        qdict_put_obj(light, "drive_duty", qobject_ref(qdict_get(panel, "drive_duty")));
-        qdict_put_obj(light, "effective_duty", qobject_ref(qdict_get(panel, "effective_duty")));
-        qdict_del(panel, "drive_duty"); qdict_del(panel, "effective_duty");
+        if (b->epaper) {
+            qdict_put_bool(light, "available", false);
+            qdict_put_str(light, "reason", "Reflective panel has no backlight");
+        } else {
+            qdict_put_str(light, "device_id", b->backlight_id);
+            qdict_put_bool(light, "available", true);
+            qdict_put_str(light, "unit", "ratio");
+            qdict_put_obj(light, "drive_duty", qobject_ref(qdict_get(panel, "drive_duty")));
+            qdict_put_obj(light, "effective_duty", qobject_ref(qdict_get(panel, "effective_duty")));
+            qdict_del(panel, "drive_duty"); qdict_del(panel, "effective_duty");
+        }
         qdict_put_obj(panel, "backlight", QOBJECT(light));
         qdict_put_obj(displays, b->panel_id, QOBJECT(panel));
     }
@@ -413,7 +438,7 @@ void listenai_board_attach_typec(ListenaiBoard *b, Object *owner, DeviceState *s
 
 DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
 {
-    DeviceState *panel = qdev_new(TYPE_ST7789);
+    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : TYPE_ST7789);
     b->panel_device = panel;
     object_property_add_child(owner, "screen", OBJECT(panel));
     qdev_prop_set_uint32(panel, "width", b->lcd_width);
@@ -421,7 +446,9 @@ DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
     qdev_prop_set_uint32(panel, "x-offset", b->lcd_x);
     qdev_prop_set_uint32(panel, "y-offset", b->lcd_y);
     qdev_prop_set_uint32(panel, "rotation", b->lcd_rotation);
-    qdev_prop_set_bit(panel, "panel-inverted", b->lcd_inverted);
+    if (b->epaper) {
+        if (b->panel_otp_luts) { qdev_prop_set_string(panel, "otp-luts", b->panel_otp_luts); }
+    } else { qdev_prop_set_bit(panel, "panel-inverted", b->lcd_inverted); }
     return panel;
 }
 
@@ -430,7 +457,9 @@ void listenai_board_panel_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *
     listenai_board_connect_gpio(b, soc, b->lcd_cs, qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
     listenai_board_connect_gpio(b, soc, b->lcd_dc, qdev_get_gpio_in(panel, 0));
     listenai_board_connect_gpio(b, soc, b->lcd_reset, qdev_get_gpio_in(panel, 1));
-    qdev_connect_gpio_out_named(panel, "te", 0, qdev_get_gpio_in_named(soc, "pad-in", b->lcd_te));
+    qdev_connect_gpio_out_named(panel, b->epaper ? "busy-n" : "te", 0,
+        b->lcd_te < 64 ? qdev_get_gpio_in_named(soc, "pad-in", b->lcd_te) :
+                        qdev_get_gpio_in_named(b->extio, "pin-in", b->lcd_te - 64));
 }
 
 void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sensor)
@@ -599,7 +628,29 @@ void listenai_board_pulls_apply(ListenaiBoard *b, DeviceState *soc)
         }
     }
     /* Peripheral reset can precede the receiving GPIO controller's reset. */
-    if (b->panel_device) { st7789_redrive(b->panel_device); }
+    if (b->panel_device) {
+        if (b->epaper) { jd79651c_redrive(b->panel_device); }
+        else { st7789_redrive(b->panel_device); }
+    }
+}
+
+void listenai_board_panel_failure_callback(ListenaiBoard *b,
+    void (*fn)(void *, const char *), void *opaque)
+{
+    if (b->epaper) { jd79651c_failure_callback(b->panel_device, fn, opaque); }
+    else { st7789_failure_callback(b->panel_device, fn, opaque); }
+}
+
+void listenai_board_panel_report(ListenaiBoard *b, FILE *stream)
+{
+    if (b->epaper) { jd79651c_report(b->panel_device, stream); }
+    else { st7789_report(b->panel_device, stream); }
+}
+
+void listenai_board_panel_save(ListenaiBoard *b, const char *path)
+{
+    if (b->epaper) { jd79651c_save(b->panel_device, path); }
+    else { st7789_save(b->panel_device, path); }
 }
 
 void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus)
