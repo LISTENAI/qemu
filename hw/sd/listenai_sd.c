@@ -84,6 +84,7 @@ void listenai_sd_init(ListenAISD *sd, Object *owner, const char *name,
     qdev_prop_set_uint64(sd->host, "capareg", capabilities);
     qdev_prop_set_bit(sd->host, "no-card-detect", no_card_detect);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(sd->host), &error_fatal);
+    SYSBUS_SDHCI(sd->host)->quirks |= SDHCI_QUIRK_SDMA_STRICT_BOUNDARY;
     sysbus_connect_irq(SYS_BUS_DEVICE(sd->host), 0, irq);
     DeviceState *card = qdev_new(TYPE_SD_CARD);
     qdev_prop_set_drive_err(card, "drive", backend, &error_fatal);

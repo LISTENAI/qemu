@@ -123,6 +123,8 @@ typedef struct SDHCIState SDHCIState;
 #define SDHCI_QUIRK_NO_BUSY_IRQ    BIT(14)
 /* Some FTSDC021 integrations implement SDMA without advertising bit 22. */
 #define SDHCI_QUIRK_SDMA_CAP_MISSING BIT(15)
+/* Stop at SDMA boundaries even when the initial address is unaligned. */
+#define SDHCI_QUIRK_SDMA_STRICT_BOUNDARY BIT(16)
 
 #define TYPE_PCI_SDHCI "sdhci-pci"
 DECLARE_INSTANCE_CHECKER(SDHCIState, PCI_SDHCI,

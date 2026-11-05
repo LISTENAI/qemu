@@ -615,93 +615,68 @@ static void sdhci_write_dataport(SDHCIState *s, uint32_t value, unsigned size)
     }
 }
 
-/*
- * Single DMA data transfer
- */
-
-/* Multi block SDMA transfer */
-static void sdhci_sdma_transfer_multi_blocks(SDHCIState *s)
+static void sdhci_sdma_transfer_blocks(SDHCIState *s)
 {
-    bool page_aligned = false;
-    unsigned int begin;
     const uint16_t block_size = s->blksize & BLOCK_SIZE_MASK;
-    uint32_t boundary_chk = 1 << (((s->blksize & ~BLOCK_SIZE_MASK) >> 12) + 12);
-    uint32_t boundary_count = boundary_chk - (s->sdmasysad % boundary_chk);
+    const uint32_t boundary = 1 << (((s->blksize & ~BLOCK_SIZE_MASK) >> 12) + 12);
+    const bool strict = s->quirks & SDHCI_QUIRK_SDMA_STRICT_BOUNDARY;
+    const bool multi = s->trnmod & SDHC_TRNS_MULTI;
+    const bool count_enabled = s->trnmod & SDHC_TRNS_BLK_CNT_EN;
+    const bool read = s->trnmod & SDHC_TRNS_READ;
+    unsigned int blocks = multi ? s->blkcnt : 1;
+    uint32_t offset = s->sdmasysad % boundary;
+    uint32_t remaining = boundary - offset;
 
-    if (!(s->trnmod & SDHC_TRNS_BLK_CNT_EN) || !s->blkcnt) {
+    if (multi && (!count_enabled || !blocks)) {
         qemu_log_mask(LOG_UNIMP, "infinite transfer is not supported\n");
         return;
     }
 
     /*
-     * XXX: Some sd/mmc drivers (for example, u-boot-slp) do not account for
-     * possible stop at page boundary if initial address is not page aligned,
-     * allow them to work properly
+     * Keep the legacy unaligned transfer behavior for drivers such as
+     * u-boot-slp that do not service a boundary interrupt in this case.
      */
-    if ((s->sdmasysad % boundary_chk) == 0) {
-        page_aligned = true;
+    if (!strict && offset) {
+        remaining = UINT32_MAX;
     }
 
-    s->prnsts |= SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE;
-    if (s->trnmod & SDHC_TRNS_READ) {
-        s->prnsts |= SDHC_DOING_READ;
-        while (s->blkcnt) {
-            if (s->data_count == 0) {
+    s->prnsts |= SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE |
+                 (read ? SDHC_DOING_READ : SDHC_DOING_WRITE);
+    while (blocks && remaining) {
+        unsigned int begin = s->data_count;
+        unsigned int bytes = MIN(block_size - begin, remaining);
+
+        if (read) {
+            if (!begin) {
                 sdbus_read_data(&s->sdbus, s->fifo_buffer, block_size);
             }
-            begin = s->data_count;
-            if (((boundary_count + begin) < block_size) && page_aligned) {
-                s->data_count = boundary_count + begin;
-                boundary_count = 0;
-             } else {
-                s->data_count = block_size;
-                boundary_count -= block_size - begin;
-                if (s->trnmod & SDHC_TRNS_BLK_CNT_EN) {
-                    s->blkcnt--;
-                }
-            }
             dma_memory_write(s->dma_as, s->sdmasysad, &s->fifo_buffer[begin],
-                             s->data_count - begin, MEMTXATTRS_UNSPECIFIED);
-            s->sdmasysad += s->data_count - begin;
-            if (s->data_count == block_size) {
-                s->data_count = 0;
-            }
-            if (page_aligned && boundary_count == 0) {
-                break;
-            }
-        }
-    } else {
-        s->prnsts |= SDHC_DOING_WRITE;
-        while (s->blkcnt) {
-            begin = s->data_count;
-            if (((boundary_count + begin) < block_size) && page_aligned) {
-                s->data_count = boundary_count + begin;
-                boundary_count = 0;
-             } else {
-                s->data_count = block_size;
-                boundary_count -= block_size - begin;
-            }
+                             bytes, MEMTXATTRS_UNSPECIFIED);
+        } else {
             dma_memory_read(s->dma_as, s->sdmasysad, &s->fifo_buffer[begin],
-                            s->data_count - begin, MEMTXATTRS_UNSPECIFIED);
-            s->sdmasysad += s->data_count - begin;
-            if (s->data_count == block_size) {
+                            bytes, MEMTXATTRS_UNSPECIFIED);
+        }
+
+        s->sdmasysad += bytes;
+        s->data_count += bytes;
+        remaining -= bytes;
+        if (s->data_count == block_size) {
+            if (!read) {
                 sdbus_write_data(&s->sdbus, s->fifo_buffer, block_size);
-                s->data_count = 0;
-                if (s->trnmod & SDHC_TRNS_BLK_CNT_EN) {
-                    s->blkcnt--;
-                }
             }
-            if (page_aligned && boundary_count == 0) {
-                break;
+            s->data_count = 0;
+            blocks--;
+            if (count_enabled && s->blkcnt) {
+                s->blkcnt--;
             }
         }
     }
 
-    if (s->norintstsen & SDHC_NISEN_DMA) {
+    if ((!strict || blocks) && (s->norintstsen & SDHC_NISEN_DMA)) {
         s->norintsts |= SDHC_NIS_DMA;
     }
 
-    if (s->blkcnt == 0) {
+    if (!blocks) {
         sdhci_end_transfer(s);
     } else {
         sdhci_update_irq(s);
@@ -734,10 +709,11 @@ static void sdhci_sdma_transfer_single_block(SDHCIState *s)
 
 static void sdhci_sdma_transfer(SDHCIState *s)
 {
-    if ((s->blkcnt == 1) || !(s->trnmod & SDHC_TRNS_MULTI)) {
+    if (!(s->quirks & SDHCI_QUIRK_SDMA_STRICT_BOUNDARY) &&
+        ((s->blkcnt == 1) || !(s->trnmod & SDHC_TRNS_MULTI))) {
         sdhci_sdma_transfer_single_block(s);
     } else {
-        sdhci_sdma_transfer_multi_blocks(s);
+        sdhci_sdma_transfer_blocks(s);
     }
 }
 
@@ -1215,7 +1191,7 @@ sdhci_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
             s->sdmasysad = (s->sdmasysad & mask) | value;
             MASKED_WRITE(s->sdmasysad, mask, value);
             /* Writing to last byte of sdmasysad might trigger transfer */
-            if (!(mask & 0xFF000000) && s->blkcnt &&
+            if (!(mask & 0xFF000000) && (s->blkcnt || s->data_count) &&
                 (s->prnsts & SDHC_DATA_INHIBIT) &&
                 (s->trnmod & SDHC_TRNS_DMA) &&
                 (s->blksize & BLOCK_SIZE_MASK) &&
