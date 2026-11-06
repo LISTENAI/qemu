@@ -102,9 +102,15 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
         (r[0xf1] & 0x77) != 7 || !(r[0xf2] & 1)) { return false; }
     if (!s->has_frame) { return false; }
     unsigned format = r[0x44] & 31;
-    bool half = r[0x59] == 0x22 && r[0x5a] == 0x33 &&
+    static const uint8_t integer_table[8];
+    /* GC0328 Application Notes, table 4-7: integer 1/2 sampling uses
+     * cut mode on both axes and zero row/column selection tables. */
+    bool half_integer = (r[0x5a] & ~1u) == 0x0e &&
+        !memcmp(r + 0x5b, integer_table, sizeof(integer_table));
+    bool half_selected = r[0x5a] == 0x33 &&
         r[0x5b] == 0x02 && r[0x5c] == 0x04 && !r[0x5d] && !r[0x5e] &&
         r[0x5f] == 0x02 && r[0x60] == 0x04 && !r[0x61] && !r[0x62];
+    bool half = r[0x59] == 0x22 && (half_integer || half_selected);
     if ((format > 3 && format != 6) || (r[0x18] & 0xe0) ||
         (r[0x59] != 0x11 && !half) || (r[0x4c] & 7)) {
         error_setg(errp, "Unsupported GC0328 format, binning, subsampling or test pattern "
@@ -128,12 +134,14 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
     *lead_clocks = (r[0x12] + 8) * row_clocks;
     *frame_clocks = row_clocks * rows;
     *line_clocks = row_clocks * (half ? 2 : 1);
-    /* 0x5a extends output PCLK over the skipped column; row selection
-     * keeps the sensor readout/exposure frame period and vertical blank. */
+    /* Subsampling keeps the readout frame period. Only 0x5a[0]
+     * extends the output PCLK over the skipped column. */
     if (half) {
         *width /= 2;
         *height /= 2;
-        *pixel_clocks *= 2;
+        if (r[0x5a] & 1) {
+            *pixel_clocks *= 2;
+        }
     }
     memcpy(s->frame_regs, r, sizeof(s->frame_regs));
     memcpy(s->frame_rgb, s->rgb, sizeof(s->frame_rgb));
