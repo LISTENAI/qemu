@@ -4,6 +4,9 @@
 #include "hw/misc/listenai_luna.h"
 #include "system/address-spaces.h"
 #include "crypto/hash.h"
+#ifdef CONFIG_GCRYPT
+#include <gcrypt.h>
+#endif
 #include "qemu/error-report.h"
 
 static bool read_memory(void *opaque, uint32_t address, void *data, size_t size)
@@ -20,11 +23,27 @@ static bool write_memory(void *opaque, uint32_t address, const void *data, size_
 
 static bool sha256(const void *data, size_t size, char hex[65])
 {
+#ifdef CONFIG_GCRYPT
+    uint8_t digest[32];
+    gcry_buffer_t input = { .data = (void *)data, .len = size };
+    static const char digits[] = "0123456789abcdef";
+
+    /* Hash the current bytes without allocating a streaming context. */
+    if (gcry_md_hash_buffers(GCRY_MD_SHA256, 0, digest, &input, 1)) {
+        return false;
+    }
+    for (unsigned i = 0; i < sizeof(digest); i++) {
+        hex[2 * i] = digits[digest[i] >> 4];
+        hex[2 * i + 1] = digits[digest[i] & 15];
+    }
+    hex[64] = 0;
+#else
     g_autofree char *digest = NULL;
     if (qcrypto_hash_digest(QCRYPTO_HASH_ALGO_SHA256, data, size, &digest, NULL) < 0) {
         return false;
     }
     memcpy(hex, digest, 65);
+#endif
     return true;
 }
 

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* ARCS SPI clock/IRQ/DMA routing. */
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "hw/riscv/arcs/arcs.h"
 #include "hw/irq.h"
 #include "hw/gpio/listenai_gpio_wire.h"
@@ -74,10 +75,10 @@ static void pin_output(void *opaque, int pin, int level)
 {
     ArcsSPI *s = opaque;
     s->pin_level[pin] = level;
-    for (unsigned pad = 0; pad < 64; pad++) {
-        if (!(pin_routes[s->index][pin] & (UINT64_C(1) << pad))) {
-            continue;
-        }
+    uint64_t routes = pin_routes[s->index][pin];
+    while (routes) {
+        unsigned pad = ctz64(routes);
+        routes &= routes - 1;
         if (s->pin_enabled[pin]) {
             arcs_pinmux_output(&s->soc->pinmux[0], pad, 5 + s->index, level);
         } else {

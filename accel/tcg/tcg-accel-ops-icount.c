@@ -93,14 +93,22 @@ void icount_handle_deadline(void)
 /* Distribute the budget evenly across all CPUs */
 int64_t icount_percpu_budget(int cpu_count)
 {
-    int64_t limit = icount_get_limit();
-    int64_t timeslice = limit / cpu_count;
+    CPUState *cpu;
 
-    if (timeslice == 0) {
-        timeslice = limit;
+    CPU_FOREACH(cpu) {
+        if (!cpu->icount_hz) {
+            int64_t limit = icount_get_limit();
+            int64_t timeslice = limit / cpu_count;
+
+            return timeslice ? timeslice : limit;
+        }
     }
 
-    return timeslice;
+    /*
+     * Per-core clocks obtain a fresh deadline in icount_prepare_for_run().
+     * They do not consume the aggregate round-robin budget.
+     */
+    return 0;
 }
 
 void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
