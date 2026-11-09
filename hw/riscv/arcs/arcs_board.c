@@ -64,11 +64,12 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
     }
     if (b->touch) { b->touch_i2c = i2c_route(b->touch_scl, b->touch_sda); }
     if (b->expander) { b->extio_i2c = i2c_route(b->extio_scl, b->extio_sda); }
+    if (b->ls8500) { b->ls8500_i2c = i2c_route(b->ls8500_scl, b->ls8500_sda); }
     if (b->typec) { b->typec_i2c = i2c_route(b->typec_scl, b->typec_sda); }
-    unsigned scl[] = {b->camera_pads[LISTENAI_CAM_SCL], b->touch_scl, b->extio_scl, b->typec_scl};
-    unsigned sda[] = {b->camera_pads[LISTENAI_CAM_SDA], b->touch_sda, b->extio_sda, b->typec_sda};
-    unsigned bus[] = {b->camera_i2c, b->touch_i2c, b->extio_i2c, b->typec_i2c};
-    bool enabled[] = {b->camera, b->touch, b->expander, b->typec};
+    unsigned scl[] = {b->camera_pads[LISTENAI_CAM_SCL], b->touch_scl, b->extio_scl, b->typec_scl, b->ls8500_scl};
+    unsigned sda[] = {b->camera_pads[LISTENAI_CAM_SDA], b->touch_sda, b->extio_sda, b->typec_sda, b->ls8500_sda};
+    unsigned bus[] = {b->camera_i2c, b->touch_i2c, b->extio_i2c, b->typec_i2c, b->ls8500_i2c};
+    bool enabled[] = {b->camera, b->touch, b->expander, b->typec, b->ls8500};
     for (unsigned i = 0; i < ARRAY_SIZE(enabled); i++) {
         for (unsigned j = i + 1; j < ARRAY_SIZE(enabled); j++) {
             if (enabled[i] && enabled[j] && bus[i] == bus[j] && (scl[i] != scl[j] || sda[i] != sda[j])) {

@@ -3,7 +3,8 @@
 #define HW_CORE_LISTENAI_BOARD_INPUTS_H
 #include "hw/core/listenai-board.h"
 typedef struct ListenaiBoardInputs {
-    bool initialized;
+    bool initialized, illuminance;
+    uint32_t illuminance_lux;
     uint64_t pad_mask, pad_levels;
     uint32_t extio_mask, extio_levels;
     uint16_t adc_mask;

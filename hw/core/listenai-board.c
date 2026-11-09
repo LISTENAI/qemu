@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Board components and connections, independent of the SoC address map. */
 #include "qemu/osdep.h"
+#include "hw/i2c/ls8500.h"
 #include "hw/core/listenai-board.h"
 #include "hw/block/listenai_nor.h"
 #include "hw/irq.h"
@@ -110,6 +111,17 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         if (!b->nor_bytes[0]) { invalid("missing primary NOR"); }
         b->nor_cs1 = b->nor_bytes[1] != 0;
         b->nor_cs1_pad = 11;
+    }
+    b->ls8500 = qdict_haskey(dict, "ls8500");
+    if (b->ls8500) {
+        if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) { invalid("LS8500 chip adapter"); }
+        QDict *p = qdict_get_qdict(dict, "ls8500");
+        const char *id = qdict_get_try_str(p, "id");
+        if (!id || !*id) { invalid("LS8500 device ID"); }
+        b->ls8500_id = g_strdup(id);
+        b->ls8500_scl = pad(p, "SCL", pa_pads, pb_pads);
+        b->ls8500_sda = pad(p, "SDA", pa_pads, pb_pads);
+        b->ls8500_irq = pad(p, "INT", pa_pads, pb_pads);
     }
     b->typec = qdict_haskey(dict, "typec");
     if (b->typec) {
@@ -314,6 +326,7 @@ void listenai_board_cleanup(ListenaiBoard *b)
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
     for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
     for (unsigned i = 0; i < b->pwm_led_count; i++) { g_free(b->pwm_leds[i].id); }
+    g_free(b->ls8500_id);
     g_free(b->extio_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
 }
@@ -452,6 +465,10 @@ void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endp
 QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
 {
     QDict *devices = qdict_new();
+    if (b->ls8500_device) {
+        qdict_put_obj(devices, b->ls8500_id, QOBJECT(ls8500_snapshot(b->ls8500_device)));
+    }
+
     for (unsigned i = 0; i < b->pwm_led_count; i++) {
         double duty = b->output_duty ? b->output_duty(b->output_opaque, b->pwm_leds[i].pad) : -1;
         QDict *device = qdict_new();
@@ -566,3 +583,14 @@ void listenai_board_pulls_apply(ListenaiBoard *b, DeviceState *soc)
     /* Peripheral reset can precede the receiving GPIO controller's reset. */
     if (b->panel_device) { st7789_redrive(b->panel_device); }
 }
+
+void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus)
+{
+    I2CSlave *dev = i2c_slave_new(TYPE_LS8500, 0x54);
+    b->ls8500_device = DEVICE(dev);
+    object_property_add_child(owner, "ls8500", OBJECT(dev));
+    i2c_slave_realize_and_unref(dev, bus, &error_fatal);
+    qdev_connect_gpio_out_named(DEVICE(dev), "int", 0,
+                               qdev_get_gpio_in_named(soc, "pad-in", b->ls8500_irq));
+}
+

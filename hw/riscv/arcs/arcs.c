@@ -841,6 +841,13 @@ static bool extio_route(void *opaque)
            arcs_pinmux_function(&s->soc.pinmux[0], s->board.extio_sda, 8);
 }
 
+static bool ls8500_route(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    return arcs_pinmux_function(&s->soc.pinmux[0], s->board.ls8500_scl, 8) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], s->board.ls8500_sda, 8);
+}
+
 static bool typec_route(void *opaque)
 {
     ArcsMachine *s = opaque;
@@ -1222,6 +1229,12 @@ static void machine_init(MachineState *machine)
     listenai_board_rotaries_init(&s->board, OBJECT(s), DEVICE(&s->soc));
     connect_camera(s);
     if (s->board.touch) { connect_touch(s); }
+    if (s->board.ls8500) {
+        unsigned bus = s->board.ls8500_i2c;
+        listenai_board_attach_ls8500(&s->board, OBJECT(s), DEVICE(&s->soc), s->soc.i2c[bus].controller.bus);
+        s->soc.i2c[bus].controller.route_valid = ls8500_route;
+        s->soc.i2c[bus].controller.route_opaque = s;
+    }
     connect_pcm(s);
     if (getenv("ARCS_QEMU_WIFI_CAPTURE")) {
         s->wifi_capture = g_byte_array_new(); reset_radio(s);

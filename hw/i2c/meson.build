@@ -30,3 +30,5 @@ system_ss.add(when: 'CONFIG_CST328', if_true: files('cst328.c'))
 
 system_ss.add(when: 'CONFIG_LISTENAI_EXTIO', if_true: files('listenai_extio.c'))
 system_ss.add(when: 'CONFIG_HUSB320', if_true: files('husb320.c'))
+
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('ls8500.c'))

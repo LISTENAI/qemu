@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "hw/core/listenai-board-inputs.h"
 #include "hw/i2c/listenai_extio.h"
+#include "hw/i2c/ls8500.h"
 #include "qobject/qjson.h"
 #include "qobject/qnum.h"
 #include "qobject/qbool.h"
@@ -21,7 +22,16 @@ bool listenai_board_inputs_parse(ListenaiBoard *b, ListenaiBoardInputs *state,
     QDict *pads = dict ? qdict_get_qdict(dict, "pads") : NULL;
     QDict *adc = dict ? qdict_get_qdict(dict, "adc_uv") : NULL;
     QDict *devices = dict ? qdict_get_qdict(dict, "device_adc_uv") : NULL;
-    if (!dict || qdict_size(dict) != (devices ? 3 : 2) || !pads || !adc) { goto invalid; }
+    QDict *light = dict ? qdict_get_qdict(dict, "illuminance_lux") : NULL;
+    if (!dict || qdict_size(dict) != 2 + !!devices + !!light || !pads || !adc) { goto invalid; }
+    if (light && qdict_size(light)) {
+        uint64_t lux;
+        QNum *n = b->ls8500_id ? qobject_to(QNum, qdict_get(light, b->ls8500_id)) : NULL;
+        if (!b->ls8500_device || qdict_size(light) != 1 || !n ||
+            !qnum_get_try_uint(n, &lux) || lux > 60000) { goto invalid; }
+        next.illuminance = true;
+        next.illuminance_lux = lux;
+    }
     for (const QDictEntry *e = qdict_first(pads); e; e = qdict_next(pads, e)) {
         uint64_t pin;
         QBool *level = qobject_to(QBool, qdict_entry_value(e));
@@ -59,7 +69,8 @@ bool listenai_board_inputs_parse(ListenaiBoard *b, ListenaiBoardInputs *state,
         }
     }
     if (state->initialized && (state->pad_mask != next.pad_mask || state->extio_mask != next.extio_mask ||
-        state->adc_mask != next.adc_mask || state->extio_adc_mask != next.extio_adc_mask)) { goto invalid; }
+        state->adc_mask != next.adc_mask || state->extio_adc_mask != next.extio_adc_mask ||
+        state->illuminance != next.illuminance)) { goto invalid; }
     *state = next;
     qobject_unref(root);
     return true;
@@ -71,6 +82,7 @@ invalid:
 
 void listenai_board_inputs_apply(ListenaiBoard *b, ListenaiBoardInputs *state, DeviceState *soc)
 {
+    if (state->illuminance) { ls8500_set_illuminance(b->ls8500_device, state->illuminance_lux); }
     for (unsigned i = 0; i < 64; i++) {
         if (state->pad_mask & (UINT64_C(1) << i)) {
             listenai_board_gpio_input(b, soc, i, !!(state->pad_levels & (UINT64_C(1) << i)));
