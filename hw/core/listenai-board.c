@@ -1,16 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Board components and connections, independent of the SoC address map. */
 #include "qemu/osdep.h"
-#include "hw/i2c/ls8500.h"
 #include "hw/core/listenai-board.h"
 #include "hw/block/listenai_nor.h"
 #include "hw/irq.h"
 #include "hw/input/quadrature.h"
-#include "hw/display/st7789.h"
+#include "hw/display/sitronix_lcd.h"
 #include "hw/display/jd79651c.h"
 #include "hw/i2c/listenai_extio.h"
 #include "hw/i2c/husb320.h"
 #include "hw/i2c/fs1815.h"
+#include "hw/i2c/cst328.h"
+#include "hw/i2c/sc919_touch.h"
 #include "hw/i2c/ls8500.h"
 #include "hw/sd/sdhci.h"
 #include "hw/core/split-irq.h"
@@ -155,11 +156,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (b->panel) {
         QDict *p = qdict_get_qdict(dict, "panel");
         const char *controller = qdict_get_try_str(p, "model");
-        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_JD79651C)) {
+        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_SC919) && strcmp(controller, TYPE_JD79651C)) {
             invalid("display controller model");
         }
         b->epaper = controller && !strcmp(controller, TYPE_JD79651C);
         b->panel_otp_luts = g_strdup(qdict_get_try_str(p, "otp_luts"));
+        b->lcd_qspi = controller && !strcmp(controller, "sc919");
         b->panel_id = g_strdup(qdict_get_try_str(p, "id"));
         b->panel_controller_id = g_strdup(qdict_get_try_str(p, "controller_id"));
         b->backlight_id = g_strdup(qdict_get_try_str(p, "backlight_id"));
@@ -170,11 +172,18 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             if (ids[i] && (!*ids[i] || strlen(ids[i]) > 64)) { invalid("display device ID"); }
         }
         QDict *pins = p ? qdict_get_qdict(p, "pads") : NULL;
-        b->lcd_sck = pad(pins, "SCK", pa_pads, pb_pads); b->lcd_sdi = pad(pins, "SDI", pa_pads, pb_pads);
-        b->lcd_cs = gpio_endpoint(b, pins, "CS", pa_pads, pb_pads); b->lcd_dc = gpio_endpoint(b, pins, "DC", pa_pads, pb_pads);
-        b->lcd_reset = gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads);
-        b->lcd_te = b->epaper ? gpio_endpoint(b, pins, "BUSY", pa_pads, pb_pads)
-                              : pad(pins, "TE", pa_pads, pb_pads);
+        b->lcd_sck = pad(pins, "SCK", pa_pads, pb_pads);
+        if (b->lcd_qspi) {
+            for (unsigned i = 0; i < 4; i++) {
+                char name[] = {'D', '0' + i, 0};
+                b->lcd_data[i] = pad(pins, name, pa_pads, pb_pads);
+            }
+        } else {
+            b->lcd_sdi = pad(pins, "SDI", pa_pads, pb_pads);
+            b->lcd_dc = gpio_endpoint(b, pins, "DC", pa_pads, pb_pads);
+        }
+        b->lcd_cs = gpio_endpoint(b, pins, "CS", pa_pads, pb_pads);
+        b->lcd_reset = gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads); b->lcd_te = b->epaper ? gpio_endpoint(b, pins, "BUSY", pa_pads, pb_pads) : pad(pins, "TE", pa_pads, pb_pads);
         b->lcd_width = number(p, "width", 240);
         b->lcd_height = number(p, "height", 320);
         b->lcd_x = number(p, "x_offset", 239); b->lcd_y = number(p, "y_offset", 319);
@@ -246,6 +255,10 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     b->touch = qdict_haskey(dict, "touch");
     if (b->touch) {
         QDict *p = qdict_get_qdict(dict, "touch");
+        const char *model = qdict_get_try_str(p, "model");
+        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1")) { invalid("touch model"); }
+        b->touch_sc919 = model && !strcmp(model, "sc919-touch-v1");
+        if (b->touch_sc919) { b->touch_reset = pad(p, "RESET", pa_pads, pb_pads); }
         b->touch_scl = pad(p, "SCL", pa_pads, pb_pads);
         b->touch_sda = pad(p, "SDA", pa_pads, pb_pads);
         b->touch_irq = pad(p, "INT", pa_pads, pb_pads);
@@ -357,8 +370,8 @@ void listenai_board_cleanup(ListenaiBoard *b)
     for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
     for (unsigned i = 0; i < b->pwm_led_count; i++) { g_free(b->pwm_leds[i].id); }
     g_free(b->fs1815_id);
-    g_free(b->ls8500_id);
     g_free(b->extio_id);
+    g_free(b->ls8500_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
     g_free(b->panel_otp_luts);
 }
@@ -375,7 +388,7 @@ QDict *listenai_board_display_snapshot(ListenaiBoard *b)
         qdict_put_str(result, "reason", "Display device IDs or model are unavailable");
     } else if (b->panel) {
         QDict *panel = b->epaper ? jd79651c_display_state(b->panel_device)
-                                 : st7789_display_state(b->panel_device);
+                                 : sitronix_lcd_display_state(b->panel_device);
         QDict *light = qdict_new();
         qdict_put_bool(panel, "available", true);
         qdict_put_str(panel, "controller_id", b->panel_controller_id);
@@ -438,7 +451,7 @@ void listenai_board_attach_typec(ListenaiBoard *b, Object *owner, DeviceState *s
 
 DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
 {
-    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : TYPE_ST7789);
+    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : (b->lcd_qspi ? TYPE_SC919 : TYPE_ST7789));
     b->panel_device = panel;
     object_property_add_child(owner, "screen", OBJECT(panel));
     qdev_prop_set_uint32(panel, "width", b->lcd_width);
@@ -455,7 +468,7 @@ DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
 void listenai_board_panel_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *panel)
 {
     listenai_board_connect_gpio(b, soc, b->lcd_cs, qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
-    listenai_board_connect_gpio(b, soc, b->lcd_dc, qdev_get_gpio_in(panel, 0));
+    if (!b->lcd_qspi) { listenai_board_connect_gpio(b, soc, b->lcd_dc, qdev_get_gpio_in(panel, 0)); }
     listenai_board_connect_gpio(b, soc, b->lcd_reset, qdev_get_gpio_in(panel, 1));
     qdev_connect_gpio_out_named(panel, b->epaper ? "busy-n" : "te", 0,
         b->lcd_te < 64 ? qdev_get_gpio_in_named(soc, "pad-in", b->lcd_te) :
@@ -511,7 +524,6 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
     if (b->ls8500_device) {
         qdict_put_obj(devices, b->ls8500_id, QOBJECT(ls8500_snapshot(b->ls8500_device)));
     }
-
     for (unsigned i = 0; i < b->pwm_led_count; i++) {
         double duty = b->output_duty ? b->output_duty(b->output_opaque, b->pwm_leds[i].pad) : -1;
         QDict *device = qdict_new();
@@ -630,7 +642,7 @@ void listenai_board_pulls_apply(ListenaiBoard *b, DeviceState *soc)
     /* Peripheral reset can precede the receiving GPIO controller's reset. */
     if (b->panel_device) {
         if (b->epaper) { jd79651c_redrive(b->panel_device); }
-        else { st7789_redrive(b->panel_device); }
+        else { sitronix_lcd_redrive(b->panel_device); }
     }
 }
 
@@ -638,19 +650,41 @@ void listenai_board_panel_failure_callback(ListenaiBoard *b,
     void (*fn)(void *, const char *), void *opaque)
 {
     if (b->epaper) { jd79651c_failure_callback(b->panel_device, fn, opaque); }
-    else { st7789_failure_callback(b->panel_device, fn, opaque); }
+    else { sitronix_lcd_failure_callback(b->panel_device, fn, opaque); }
 }
 
 void listenai_board_panel_report(ListenaiBoard *b, FILE *stream)
 {
     if (b->epaper) { jd79651c_report(b->panel_device, stream); }
-    else { st7789_report(b->panel_device, stream); }
+    else { sitronix_lcd_report(b->panel_device, stream); }
 }
 
 void listenai_board_panel_save(ListenaiBoard *b, const char *path)
 {
     if (b->epaper) { jd79651c_save(b->panel_device, path); }
-    else { st7789_save(b->panel_device, path); }
+    else { sitronix_lcd_save(b->panel_device, path); }
+}
+
+DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
+                                     DeviceState *soc, I2CBus *bus)
+{
+    I2CSlave *touch = i2c_slave_new(b->touch_sc919 ? TYPE_SC919_TOUCH : TYPE_CST328,
+                                   b->touch_sc919 ? 0x28 : 0x1d);
+    object_property_add_child(owner, "touch", OBJECT(touch));
+    i2c_slave_realize_and_unref(touch, bus, &error_fatal);
+    qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
+                                qdev_get_gpio_in_named(soc, "pad-in", b->touch_irq));
+    if (b->touch_sc919) {
+        listenai_board_connect_pad(soc, b->touch_reset,
+                                  qdev_get_gpio_in_named(DEVICE(touch), "reset", 0));
+    }
+    return DEVICE(touch);
+}
+
+void listenai_board_touch_input(ListenaiBoard *b, Object *owner, DeviceState *touch)
+{
+    if (b->touch_sc919) { sc919_touch_add_input(owner, touch, "x-lisa-touch"); }
+    else { cst328_add_input(owner, touch, "x-lisa-touch"); }
 }
 
 void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus)

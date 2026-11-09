@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Standalone RGB565 ST7789 with digital GRAM, display pins and scan TE. */
+/* Shared Sitronix RGB565 GRAM and scan engine; controller protocols differ. */
 #include "qemu/osdep.h"
-#include "hw/display/st7789.h"
+#include "hw/display/sitronix_lcd.h"
 #include "hw/ssi/ssi.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -11,7 +11,7 @@
 #include "qobject/qnum.h"
 #include "ui/console.h"
 
-typedef struct ST7789State {
+typedef struct SitronixLCDState {
     SSIPeripheral parent;
     QemuConsole *console;
     QEMUTimer *scan;
@@ -28,14 +28,19 @@ typedef struct ST7789State {
     int64_t scan_start, line_ns;
     unsigned scanned_rows;
     bool scanning, blanking, scan_reverse;
+    bool sc919, command2;
+    uint8_t packet[4];
+    unsigned packet_count, lanes;
+    int64_t reset_start, ready_ns, sleep_ready_ns;
     void (*failure)(void *, const char *);
     void *failure_opaque;
-} ST7789State;
-OBJECT_DECLARE_SIMPLE_TYPE(ST7789State, ST7789)
+} SitronixLCDState;
+OBJECT_DECLARE_SIMPLE_TYPE(SitronixLCDState, SITRONIX_LCD)
 
-static void fail(ST7789State *s, const char *message, unsigned value)
+static void fail(SitronixLCDState *s, const char *message, unsigned value)
 {
-    error_report("ST7789 %s (command=0x%02x value=0x%x)", message, s->command, value);
+    error_report("%s %s (command=0x%02x value=0x%x)",
+                 s->sc919 ? "SC919" : "ST7789", message, s->command, value);
     if (s->failure) { s->failure(s->failure_opaque, "unsupported-panel"); }
     exit(1);
 }
@@ -44,7 +49,7 @@ static void update(void *opaque);
 
 /* Complete rows before a GRAM/control write. This gives each row its virtual
  * sampling time without adding a timer callback for every scan line. */
-static void scan_rows(ST7789State *s, int64_t now)
+static void scan_rows(SitronixLCDState *s, int64_t now)
 {
     if (!s->scanning || s->blanking || now <= s->scan_start) { return; }
     unsigned rows = MIN((now - s->scan_start) / s->line_ns, 320);
@@ -56,13 +61,14 @@ static void scan_rows(ST7789State *s, int64_t now)
     }
 }
 
-static int64_t line_period(ST7789State *s)
+static int64_t line_period(SitronixLCDState *s)
 {
-    /* ST7789P3 FRCTRL2: 10 MHz oscillator, 250 + 16 * RTNA clocks/line. */
-    return (250 + 16 * (s->analog[0xc6][0] & 31)) * 100;
+    /* ST7789P3 FRCTRL2 / SC919 v0.0 FRCTRL1: 10 MHz oscillator,
+     * 250 + 16 * RTNA clocks/line, with programmed front/back porches. */
+    return (250 + 16 * (s->analog[s->sc919 ? 0xb3 : 0xc6][0] & 31)) * 100;
 }
 
-static void schedule(ST7789State *s)
+static void schedule(SitronixLCDState *s)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (s->sleeping || !s->reset_released) {
@@ -79,7 +85,7 @@ static void schedule(ST7789State *s)
 
 static void scan(void *opaque)
 {
-    ST7789State *s = opaque;
+    SitronixLCDState *s = opaque;
     int64_t now = s->scan_start + (s->blanking ? 0 : 320 * s->line_ns);
     if (s->blanking) {
         s->blanking = false; s->scanned_rows = 0;
@@ -106,10 +112,12 @@ static void scan(void *opaque)
     timer_mod(s->scan, s->scan_start);
 }
 
-static void reset_controller(ST7789State *s)
+static void reset_controller(SitronixLCDState *s)
 {
     s->count = 0; memset(s->analog_count, 0, sizeof(s->analog_count));
     s->analog[0xc6][0] = 15;
+    s->analog[0xb3][0] = 15;
+    s->command2 = false;
     s->analog[0xb2][0] = s->analog[0xb2][1] = 12;
     s->sleeping = true; s->on = s->tear = s->inverted = false;
     s->madctl = s->command = 0; s->format = 6; s->pixel_high = -1;
@@ -119,7 +127,7 @@ static void reset_controller(ST7789State *s)
 
 static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     if (!s->reset_released) { return 0; }
     scan_rows(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (!s->data_mode) {
@@ -135,16 +143,23 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
         case 0x28: s->dirty = true; s->on = false; break;
         case 0x29: s->dirty = true; s->on = true; break;
         case 0x2c: s->x = s->x_start; s->y = s->y_start; break;
+        case 0x3c:
+            if (!s->sc919) { fail(s, "unimplemented command", data); }
+            break;
         case 0x34: s->tear = false; qemu_set_irq(s->te, 0); break;
         case 0x2a: case 0x2b: case 0x35: case 0x36: case 0x3a:
         case 0x26: case 0xb0: case 0xb1: case 0xb2: case 0xb7: case 0xba:
         case 0xbb: case 0xc0: case 0xc2: case 0xc3: case 0xc4:
         case 0xc6: case 0xd0: case 0xd6: case 0xdf: case 0xe0: case 0xe1: break;
-        default: fail(s, "unimplemented command", data);
+        default:
+            if (!s->sc919 || !((data >= 0x70 && data <= 0x8e) ||
+                               data == 0xb3 || data == 0xe4 || data == 0xe5)) {
+                fail(s, "unimplemented command", data);
+            }
         }
         schedule(s); return 0;
     }
-    if (s->command == 0x2c) {
+    if (s->command == 0x2c || (s->sc919 && s->command == 0x3c)) {
         if (s->format != 5) { fail(s, "requires RGB565", s->format); }
         if (s->pixel_high < 0) { s->pixel_high = data; }
         else {
@@ -161,6 +176,37 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
     }
     if (s->count == sizeof(s->parameters)) { fail(s, "too many parameters", data); }
     s->parameters[s->count++] = data;
+    if (s->sc919 && s->command >= 0x70) {
+        if (s->command != 0xdf && !s->command2) {
+            /* Command-table 2 writes are gated by CMD2EN, with EXTC low. */
+            return 0;
+        }
+        switch (s->command) {
+        case 0xdf:
+            if (s->count > 4 || (s->count <= 3 && data != (uint8_t[]){0x5a,0x69,0x02}[s->count-1]) ||
+                (s->count == 4 && (data & 0x30))) { fail(s, "unsupported command-table control", data); }
+            if (s->count == 4) { s->command2 = data & 1; }
+            break;
+        case 0xb0:
+            if (s->count > 2 || (s->count == 1 && data != 0x80) ||
+                (s->count == 2 && data != 0xf0)) { fail(s, "unsupported RAM interface", data); }
+            break;
+        case 0xb2:
+            if (s->count <= 2 && (!data || (data & 0x80))) { fail(s, "unsupported porch", data); }
+            break;
+        case 0xe4:
+            if (s->count > 4 || data != (uint8_t[]){0,0x78,0xa0,0}[s->count-1]) {
+                fail(s, "unsupported scan resolution", data);
+            }
+            break;
+        }
+        /* Analog drive/gamma controls are retained, with ideal panel voltages.
+         * Digital porch, frame rate, RAM mode and resolution are handled above.
+         * SC919 preliminary v0.0 and the module driver include reserved tails. */
+        memcpy(s->analog[s->command], s->parameters, s->count);
+        s->analog_count[s->command] = s->count;
+        return 0;
+    }
     switch (s->command) {
     case 0x2a: case 0x2b:
         if (s->count == 4) {
@@ -206,12 +252,62 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
     return 0;
 }
 
-static bool enabled(ST7789State *s)
+void sitronix_lcd_qspi_lanes(DeviceState *dev, unsigned lanes)
+{
+    SitronixLCDState *s = SITRONIX_LCD(dev);
+    assert(s->sc919 && (lanes == 1 || lanes == 4));
+    s->lanes = lanes;
+}
+
+static uint32_t sc919_transfer(SSIPeripheral *dev, uint32_t data)
+{
+    SitronixLCDState *s = SITRONIX_LCD(dev);
+    if (!s->reset_released) { return 0; }
+    if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->ready_ns) { fail(s, "reset recovery", data); }
+    if (s->packet_count < 4) {
+        unsigned i = s->packet_count++;
+        unsigned lanes = i && s->packet[0] == 0x38 ? 4 : 1;
+        if (s->lanes != lanes) { fail(s, "QSPI header lane count", s->lanes); }
+        s->packet[i] = data;
+        if (i == 0 && data != 0x02 && data != 0x32 && data != 0x38) {
+            fail(s, "unsupported QSPI instruction", data);
+        }
+        if ((i == 1 || i == 3) && data) { fail(s, "QSPI command address", data); }
+        if (i == 3) {
+            if (s->packet[2] == 0x11 && qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->sleep_ready_ns) {
+                fail(s, "sleep-out during reset recovery", s->packet[2]);
+            }
+            s->data_mode = false; transfer(dev, s->packet[2]); s->data_mode = true;
+        }
+    } else {
+        if (s->lanes != (s->packet[0] == 0x02 ? 1 : 4)) { fail(s, "QSPI payload lane count", s->lanes); }
+        transfer(dev, data);
+    }
+    return 0;
+}
+
+static int sc919_cs(SSIPeripheral *dev, bool level)
+{
+    SitronixLCDState *s = SITRONIX_LCD(dev);
+    if (level && s->reset_released) {
+        if (s->packet_count && s->packet_count < 4) { fail(s, "incomplete QSPI header", s->packet_count); }
+        if (s->pixel_high >= 0) { fail(s, "incomplete RGB565 pixel", s->pixel_high); }
+        if (s->packet_count == 4 &&
+            (((s->command == 0x2a || s->command == 0x2b || s->command == 0xdf) && s->count != 4) ||
+             ((s->command == 0x35 || s->command == 0x36 || s->command == 0x3a) && s->count != 1))) {
+            fail(s, "incomplete command parameters", s->count);
+        }
+    }
+    s->packet_count = 0;
+    return 0;
+}
+
+static bool enabled(SitronixLCDState *s)
 {
     return s->on && !s->sleeping && s->reset_released;
 }
 
-static uint32_t rgb(ST7789State *s, unsigned x, unsigned y)
+static uint32_t rgb(SitronixLCDState *s, unsigned x, unsigned y)
 {
     unsigned px = x, py = y;
     switch (s->rotation) {
@@ -232,7 +328,7 @@ static uint32_t rgb(ST7789State *s, unsigned x, unsigned y)
 
 static void update(void *opaque)
 {
-    ST7789State *s = opaque;
+    SitronixLCDState *s = opaque;
     if (!s->dirty) { return; }
     DisplaySurface *surface = qemu_console_surface(s->console);
     assert(surface_bits_per_pixel(surface) == 32);
@@ -244,36 +340,44 @@ static void update(void *opaque)
     dpy_gfx_update(s->console, 0, 0, surface_width(surface), surface_height(surface));
 }
 
-static void invalidate(void *opaque) { ((ST7789State *)opaque)->dirty = true; }
+static void invalidate(void *opaque) { ((SitronixLCDState *)opaque)->dirty = true; }
 static const GraphicHwOps graphics = { .invalidate = invalidate, .gfx_update = update };
 
 static void input(void *opaque, int pin, int level)
 {
-    ST7789State *s = opaque;
+    SitronixLCDState *s = opaque;
     if (pin == 0) { s->data_mode = level; }
     else {
         if (s->reset_released == !!level) { return; }
         bool asserted = !level;
         s->reset_released = level;
-        if (asserted) { reset_controller(s); }
+        if (s->sc919) {
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            if (asserted) { s->reset_start = now; }
+            else if (now - s->reset_start >= 10000) {
+                reset_controller(s); s->packet_count = 0;
+                s->ready_ns = now + 5000000;
+                s->sleep_ready_ns = now + 120000000;
+            }
+        } else if (asserted) { reset_controller(s); }
         s->dirty = true; schedule(s);
     }
 }
 
-void st7789_backlight(DeviceState *dev, double duty)
+void sitronix_lcd_backlight(DeviceState *dev, double duty)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     assert(duty >= 0 && duty <= 1);
     if (s->backlight != duty) { s->backlight = duty; s->dirty = true; }
 }
 
-void st7789_save(DeviceState *dev, const char *path)
+void sitronix_lcd_save(DeviceState *dev, const char *path)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     unsigned width = s->rotation % 180 ? s->height : s->width;
     unsigned height = s->rotation % 180 ? s->width : s->height;
     FILE *f = fopen(path, "wb");
-    if (!f) { perror("ST7789 frame"); exit(1); }
+    if (!f) { perror("Sitronix LCD frame"); exit(1); }
     fprintf(f, "P6\n%u %u\n255\n", width, height);
     for (unsigned y = 0; y < height; y++) {
         uint8_t row[320 * 3];
@@ -281,21 +385,21 @@ void st7789_save(DeviceState *dev, const char *path)
             uint32_t color = rgb(s, x, y);
             row[x * 3] = color >> 16; row[x * 3 + 1] = color >> 8; row[x * 3 + 2] = color;
         }
-        if (fwrite(row, 3, width, f) != width) { perror("ST7789 frame"); exit(1); }
+        if (fwrite(row, 3, width, f) != width) { perror("Sitronix LCD frame"); exit(1); }
     }
-    if (fclose(f)) { perror("ST7789 frame"); exit(1); }
+    if (fclose(f)) { perror("Sitronix LCD frame"); exit(1); }
 }
 
-void st7789_report(DeviceState *dev, FILE *f)
+void sitronix_lcd_report(DeviceState *dev, FILE *f)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     fprintf(f, "{\"pixels_written\":%" PRIu64 ",\"enabled\":%s,\"backlight\":%.9f}",
             s->pixels, enabled(s) ? "true" : "false", s->backlight);
 }
 
-QDict *st7789_display_state(DeviceState *dev)
+QDict *sitronix_lcd_display_state(DeviceState *dev)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     QDict *state = qdict_new();
     qdict_put_bool(state, "enabled", enabled(s));
     qdict_put_int(state, "pixels_written", s->pixels);
@@ -304,14 +408,16 @@ QDict *st7789_display_state(DeviceState *dev)
     return state;
 }
 
-void st7789_failure_callback(DeviceState *dev, void (*fn)(void *, const char *), void *opaque)
+void sitronix_lcd_failure_callback(DeviceState *dev, void (*fn)(void *, const char *), void *opaque)
 {
-    ST7789State *s = ST7789(dev); s->failure = fn; s->failure_opaque = opaque;
+    SitronixLCDState *s = SITRONIX_LCD(dev); s->failure = fn; s->failure_opaque = opaque;
 }
 
 static void reset(DeviceState *dev)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
+    s->packet_count = 0;
+    s->ready_ns = s->sleep_ready_ns = 0;
     reset_controller(s); memset(s->gram, 0, sizeof(s->gram)); s->pixels = 0;
     memset(s->scanned, 0, sizeof(s->scanned));
     memset(s->presented, 0, sizeof(s->presented));
@@ -320,19 +426,19 @@ static void reset(DeviceState *dev)
     /* Pin levels and backlight belong to the board, not controller reset. */
 }
 
-void st7789_redrive(DeviceState *dev)
+void sitronix_lcd_redrive(DeviceState *dev)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     qemu_set_irq(s->te, s->scanning && s->blanking && s->tear);
 }
 
 static void realize(SSIPeripheral *dev, Error **errp)
 {
-    ST7789State *s = ST7789(dev);
+    SitronixLCDState *s = SITRONIX_LCD(dev);
     if (!s->width || !s->height || s->width > 240 || s->height > 320 ||
         s->x_offset > 240 - s->width || s->y_offset > 320 - s->height ||
         s->rotation > 270 || s->rotation % 90) {
-        error_setg(errp, "Invalid ST7789 viewport or mounting rotation"); return;
+        error_setg(errp, "Invalid Sitronix LCD viewport or mounting rotation"); return;
     }
     s->scan = timer_new_ns(QEMU_CLOCK_VIRTUAL, scan, s);
     s->reset_released = true;
@@ -344,12 +450,12 @@ static void realize(SSIPeripheral *dev, Error **errp)
 }
 
 static const Property properties[] = {
-    DEFINE_PROP_UINT32("width", ST7789State, width, 240),
-    DEFINE_PROP_UINT32("height", ST7789State, height, 320),
-    DEFINE_PROP_UINT32("x-offset", ST7789State, x_offset, 0),
-    DEFINE_PROP_UINT32("y-offset", ST7789State, y_offset, 0),
-    DEFINE_PROP_UINT32("rotation", ST7789State, rotation, 0),
-    DEFINE_PROP_BOOL("panel-inverted", ST7789State, panel_inverted, false),
+    DEFINE_PROP_UINT32("width", SitronixLCDState, width, 240),
+    DEFINE_PROP_UINT32("height", SitronixLCDState, height, 320),
+    DEFINE_PROP_UINT32("x-offset", SitronixLCDState, x_offset, 0),
+    DEFINE_PROP_UINT32("y-offset", SitronixLCDState, y_offset, 0),
+    DEFINE_PROP_UINT32("rotation", SitronixLCDState, rotation, 0),
+    DEFINE_PROP_BOOL("panel-inverted", SitronixLCDState, panel_inverted, false),
 };
 
 static void class_init(ObjectClass *klass, const void *data)
@@ -361,8 +467,22 @@ static void class_init(ObjectClass *klass, const void *data)
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
 }
 static const TypeInfo info = {
-    .name = TYPE_ST7789, .parent = TYPE_SSI_PERIPHERAL,
-    .instance_size = sizeof(ST7789State), .class_init = class_init,
+    .name = TYPE_SITRONIX_LCD, .parent = TYPE_SSI_PERIPHERAL, .abstract = true,
+    .instance_size = sizeof(SitronixLCDState), .class_init = class_init,
 };
-static void register_types(void) { type_register_static(&info); }
+static void sc919_init(Object *obj) { SITRONIX_LCD(obj)->sc919 = true; }
+static void sc919_class(ObjectClass *klass, const void *data)
+{
+    SSIPeripheralClass *sc = SSI_PERIPHERAL_CLASS(klass);
+    sc->transfer = sc919_transfer; sc->set_cs = sc919_cs;
+}
+static const TypeInfo variants[] = {
+    { .name = TYPE_ST7789, .parent = TYPE_SITRONIX_LCD },
+    { .name = TYPE_SC919, .parent = TYPE_SITRONIX_LCD,
+      .instance_init = sc919_init, .class_init = sc919_class },
+};
+static void register_types(void) {
+    type_register_static(&info);
+    type_register_static_array(variants, ARRAY_SIZE(variants));
+}
 type_init(register_types)

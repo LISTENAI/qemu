@@ -1,4 +1,4 @@
-system_ss.add(when: 'CONFIG_ST7789', if_true: files('st7789.c'))
+system_ss.add(when: 'CONFIG_SITRONIX_LCD', if_true: files('sitronix_lcd.c'))
 system_ss.add(when: 'CONFIG_JD79651C', if_true: files('jd79651c.c'))
 system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('lisa_display.c'))
 hw_display_modules = {}

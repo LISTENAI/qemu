@@ -155,6 +155,14 @@ config VENUSA_RGB
 
 config ST7789
     bool
+    select SITRONIX_LCD
+
+config SC919
+    bool
+    select SITRONIX_LCD
+
+config SITRONIX_LCD
+    bool
     select SSI
 
 config JD79651C

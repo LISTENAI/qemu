@@ -45,6 +45,7 @@ config LISTENAI_BOARD
     select LISTENAI_EXTIO
     select ST7789
     select JD79651C
+    select SC919
     select GC0328
     select CST328
     select SPLIT_IRQ

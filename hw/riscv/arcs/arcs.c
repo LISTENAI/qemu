@@ -11,9 +11,8 @@
 #include "hw/i2c/listenai_extio.h"
 #include "hw/riscv/arcs/arcs_wifi_ap.h"
 #include "hw/riscv/arcs/arcs_network.h"
-#include "hw/display/st7789.h"
+#include "hw/display/sitronix_lcd.h"
 #include "hw/i2c/gc0328.h"
-#include "hw/i2c/cst328.h"
 #include "ui/lisa_display.h"
 #include "hw/audio/lisa_stream.h"
 #include "hw/audio/pcm_feedback.h"
@@ -806,7 +805,7 @@ static void backlight(void *opaque)
 {
     ArcsMachine *s = opaque;
     if (s->screen && !s->board.epaper) {
-        st7789_backlight(s->screen, arcs_board_backlight(&s->board, &s->soc));
+        sitronix_lcd_backlight(s->screen, arcs_board_backlight(&s->board, &s->soc));
     }
 }
 
@@ -1013,16 +1012,13 @@ static bool touch_route(void *opaque)
 
 static void connect_touch(ArcsMachine *s)
 {
-    I2CSlave *touch = i2c_slave_new(TYPE_CST328, 0x1d);
-    s->touch = DEVICE(touch);
-    object_property_add_child(OBJECT(s), "touch", OBJECT(touch));
-    i2c_slave_realize_and_unref(touch, s->soc.i2c[s->board.touch_i2c].controller.bus, &error_fatal);
+    s->touch = listenai_board_touch_new(&s->board, OBJECT(s), DEVICE(&s->soc),
+                                        s->soc.i2c[s->board.touch_i2c].controller.bus);
     if (s->board.configured && !s->camera) {
         s->soc.i2c[s->board.touch_i2c].controller.route_valid = touch_route;
         s->soc.i2c[s->board.touch_i2c].controller.route_opaque = s;
     }
-    qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
-                                qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", s->board.touch_irq));
+
 }
 
 static void finish(void *opaque)
@@ -1794,7 +1790,9 @@ static void desktop_init(ArcsMachine *s)
     }
     object_property_add_str(OBJECT(s), "x-lisa-snapshot", desktop_snapshot, NULL);
     object_property_add_bool(OBJECT(s), "x-lisa-function-pressed", desktop_button_get, desktop_button_set);
-    if (s->touch) { cst328_add_input(OBJECT(s), s->touch, "x-lisa-touch"); }
+    if (s->touch) {
+        listenai_board_touch_input(&s->board, OBJECT(s), s->touch);
+    }
     for (unsigned i = 0; i < s->board.button_count; i++) {
         g_autofree char *name = g_strdup_printf("x-lisa-button-%u", i);
         s->board.buttons[i].owner = s;

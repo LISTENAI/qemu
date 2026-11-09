@@ -6,6 +6,7 @@
 #include "hw/i2c/listenai_extio.h"
 #include "hw/core/split-irq.h"
 #include "hw/qdev-properties.h"
+#include "hw/display/sitronix_lcd.h"
 #include "qapi/error.h"
 #include "qobject/qjson.h"
 #include "qobject/qnum.h"
@@ -21,7 +22,8 @@ static G_NORETURN void invalid(const char *field)
 
 static unsigned i2c_route(unsigned scl, unsigned sda)
 {
-    if ((scl == 39 && sda == 38) || (scl == 23 && sda == 22)) { return 0; }
+    if ((scl == 39 && sda == 38) || (scl == 23 && sda == 22) ||
+        (scl == 20 && sda == 21)) { return 0; }
     if (scl == 33 && sda == 32) { return 1; }
     invalid("I2C physical pad route");
 }
@@ -55,6 +57,12 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
     listenai_board_load(b, path, chip, 28, 10);
     qobject_unref(root);
     if (b->nor_cs1 && b->nor_cs1_pad != 11) { invalid("SPIB CS1 pad route"); }
+    if (b->lcd_qspi) {
+        if (!arcs_qspi_pad_valid(0, b->lcd_sck)) { invalid("video QSPI clock route"); }
+        for (unsigned i = 0; i < 4; i++) {
+            if (!arcs_qspi_pad_valid(i + 1, b->lcd_data[i])) { invalid("video QSPI data route"); }
+        }
+    }
     if (b->camera) {
         b->camera_i2c = i2c_route(b->camera_pads[LISTENAI_CAM_SCL], b->camera_pads[LISTENAI_CAM_SDA]);
         static const unsigned dvp[] = {26, 12, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20};
@@ -64,8 +72,8 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
     }
     if (b->touch) { b->touch_i2c = i2c_route(b->touch_scl, b->touch_sda); }
     if (b->expander) { b->extio_i2c = i2c_route(b->extio_scl, b->extio_sda); }
-    if (b->ls8500) { b->ls8500_i2c = i2c_route(b->ls8500_scl, b->ls8500_sda); }
     if (b->typec) { b->typec_i2c = i2c_route(b->typec_scl, b->typec_sda); }
+    if (b->ls8500) { b->ls8500_i2c = i2c_route(b->ls8500_scl, b->ls8500_sda); }
     if (b->fs1815) { b->fs1815_i2c = i2c_route(b->fs1815_scl, b->fs1815_sda); }
     unsigned scl[] = {b->camera_pads[LISTENAI_CAM_SCL], b->touch_scl, b->extio_scl, b->typec_scl, b->fs1815_scl, b->ls8500_scl};
     unsigned sda[] = {b->camera_pads[LISTENAI_CAM_SDA], b->touch_sda, b->extio_sda, b->typec_sda, b->fs1815_sda, b->ls8500_sda};
@@ -86,8 +94,32 @@ static bool spi_selected(void *opaque, unsigned signal, unsigned pad)
     return arcs_spi_pad_selected(opaque, signal, pad);
 }
 
+static SSIBus *qspi_panel_bus(void *opaque)
+{
+    ListenaiBoard *b = opaque;
+    ArcsSoC *soc = ARCS_SOC(b->lcd_route_opaque);
+    ListenaiSPI *spi = &soc->qspi_lcd;
+    unsigned lanes = 1u << ((spi->regs[0x20 / 4] >> 22) & 3);
+    assert(lanes == 1 || lanes == 4);
+    bool connected = arcs_qspi_pad_selected(soc, 0, b->lcd_sck);
+    for (unsigned i = 0; i < lanes; i++) {
+        connected &= arcs_qspi_pad_selected(soc, i + 1, b->lcd_data[i]);
+    }
+    if (!connected) { return spi->bus; }
+    sitronix_lcd_qspi_lanes(b->panel_device, lanes);
+    return b->panel_bus;
+}
+
 void arcs_board_attach_spi(ListenaiBoard *b, ArcsSoC *soc, DeviceState *panel)
 {
+    if (b->lcd_qspi) {
+        b->panel_bus = ssi_create_bus(DEVICE(soc), "board-lcd-qspi");
+        ssi_realize_and_unref(panel, b->panel_bus, &error_fatal);
+        b->lcd_route_opaque = soc;
+        soc->qspi_lcd.board_bus = qspi_panel_bus;
+        soc->qspi_lcd.board_opaque = b;
+        return;
+    }
     ListenaiSPI *controllers[3];
     void *opaque[3];
     for (unsigned i = 0; i < 3; i++) {

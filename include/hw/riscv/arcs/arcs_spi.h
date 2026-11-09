@@ -11,6 +11,9 @@ typedef struct ArcsSPI {
     int selected_pad[4];
     bool dma_request[2];
 } ArcsSPI;
+// QSPI signals: 0 = clock, 1..4 = IO0..IO3.
+bool arcs_qspi_pad_valid(unsigned signal, unsigned pad);
+bool arcs_qspi_pad_selected(ArcsSoC *soc, unsigned signal, unsigned pad);
 void arcs_qspi_init(ArcsSoC *soc);
 void arcs_qspi_clock_changed(ArcsSoC *soc);
 void arcs_spi_init(ArcsSoC *soc);

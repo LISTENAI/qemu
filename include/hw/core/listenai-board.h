@@ -20,6 +20,8 @@ typedef struct ListenaiBoard {
     ListenaiSignalTrace signal_trace;
     bool configured, panel, epaper, camera, sd, amplifier, touch, keypad;
     unsigned touch_scl, touch_sda, touch_irq, touch_i2c;
+    bool touch_sc919;
+    unsigned touch_reset;
     unsigned keypad_channel, keypad_supply_uv, keypad_pull_up_ohms;
     bool sd_detect, sd_external_detect, sd_detect_active, expander;
     unsigned sd_detect_endpoint;
@@ -44,6 +46,9 @@ typedef struct ListenaiBoard {
     uint64_t pull_mask, pull_levels;
     uint32_t extio_pull_mask, extio_pull_levels;
     unsigned lcd_sck, lcd_sdi, lcd_cs, lcd_dc, lcd_reset, lcd_te;
+    bool lcd_qspi;
+    unsigned lcd_data[4];
+    void *lcd_route_opaque;
     unsigned lcd_width, lcd_height, lcd_x, lcd_y, lcd_rotation;
     bool lcd_inverted, backlight_active, amplifier_active;
     unsigned backlight_pad, amplifier_pad;
@@ -105,4 +110,7 @@ void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *
 void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus);
 void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc);
 void listenai_board_rotaries_drive(ListenaiBoard *b);
+DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
+                                     DeviceState *soc, I2CBus *bus);
+void listenai_board_touch_input(ListenaiBoard *b, Object *owner, DeviceState *touch);
 #endif

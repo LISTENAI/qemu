@@ -8,8 +8,7 @@
 #include "hw/core/listenai-board.h"
 #include "hw/core/listenai-board-inputs.h"
 #include "hw/i2c/listenai_extio.h"
-#include "hw/display/st7789.h"
-#include "hw/i2c/cst328.h"
+#include "hw/display/sitronix_lcd.h"
 #include "hw/irq.h"
 #include "ui/lisa_display.h"
 #include "qobject/qjson.h"
@@ -36,7 +35,7 @@ static void backlight(void *opaque, int unused, int level)
     unsigned pad = s->components.backlight_pad;
     if (pad >= 64) {
         double duty = listenai_extio_duty(s->components.extio, pad - 64);
-        st7789_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
+        sitronix_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
         return;
     }
     uint32_t driven, levels;
@@ -45,7 +44,7 @@ static void backlight(void *opaque, int unused, int level)
     if (pad == 14 && listenai_pinmux_function(&s->soc->pinmux, pad, 11)) {
         duty = venusa_gpt_duty(&s->soc->gpt, 0);
     }
-    st7789_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
+    sitronix_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
 }
 
 static bool extio_route(void *opaque)
@@ -99,12 +98,11 @@ static void touch_connect(VenusABoard *s)
     if (b->touch_scl != 34 || b->touch_sda != 33) {
         error_report("Unsupported VenusA touch I2C route"); exit(1);
     }
-    DeviceState *dev = DEVICE(i2c_slave_new(TYPE_CST328, 0x1d));
-    object_property_add_child(OBJECT(s), "touch", OBJECT(dev));
-    i2c_slave_realize_and_unref(I2C_SLAVE(dev), s->soc->i2c[1].bus, &error_fatal);
-    qdev_connect_gpio_out_named(dev, "int", 0,
-        qdev_get_gpio_in_named(DEVICE(s->soc), "pad-in", b->touch_irq));
-    cst328_add_input(OBJECT(s), dev, "x-lisa-touch");
+    if (b->touch_sc919) {
+        error_report("SC919 touch is not supported on VenusA"); exit(1);
+    }
+    DeviceState *dev = listenai_board_touch_new(b, OBJECT(s), DEVICE(s->soc), s->soc->i2c[1].bus);
+    listenai_board_touch_input(b, OBJECT(s), dev);
     if (!b->camera) {
         s->soc->i2c[1].route_valid = touch_route;
         s->soc->i2c[1].route_opaque = s;
@@ -194,6 +192,9 @@ static void venusa_board_init(MachineState *machine)
     b->nor_bytes[0] = LISTENAI_NOR_SIZE;
     const char *path = getenv("LISEM_QEMU_BOARD");
     if (path) { listenai_board_load(b, path, "venusa", 32, 22); }
+    if (b->lcd_qspi) {
+        error_report("QSPI display routing is unavailable on VenusA"); exit(1);
+    }
     if (!strcmp(object_get_typename(OBJECT(machine)), TYPE_VENUSA_BOARD) && !b->configured) {
         error_report("venusa-board requires a checked board assembly file"); exit(1);
     }

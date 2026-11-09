@@ -6,6 +6,25 @@
 #include "hw/qdev-properties.h"
 #include "qapi/error.h"
 
+/* ARCS PinMux function 30, ordered as clock, IO0, IO1, IO2, IO3.
+ * Pad alternatives are chip capabilities, independent of the attached device. */
+static const uint64_t pin_routes[] = {
+    UINT64_C(0x800420810), UINT64_C(0x8200808088), UINT64_C(0x4101104044),
+    UINT64_C(0x1002041201), UINT64_C(0x404010100),
+};
+
+bool arcs_qspi_pad_valid(unsigned signal, unsigned pad)
+{
+    return signal < ARRAY_SIZE(pin_routes) && pad < 64 &&
+           (pin_routes[signal] & (UINT64_C(1) << pad));
+}
+
+bool arcs_qspi_pad_selected(ArcsSoC *soc, unsigned signal, unsigned pad)
+{
+    return arcs_qspi_pad_valid(signal, pad) &&
+           arcs_pinmux_function(&soc->pinmux[0], pad, 30);
+}
+
 static void fault(void *opaque, hwaddr address, unsigned size, bool write, uint64_t value)
 {
     arcs_soc_fail(opaque, address, size, write, value);
