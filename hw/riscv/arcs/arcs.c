@@ -507,7 +507,7 @@ static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
 static void pcm_output(void *opaque, unsigned rate, int sample)
 {
     ArcsMachine *s = opaque;
-    if (s->output_rate && rate != s->output_rate) { audio_error(s, "output rate changed during capture"); }
+    if (s->pcm_output && s->output_rate && rate != s->output_rate) { audio_error(s, "output rate changed during capture"); }
     if (s->pcm_output && s->pcm_output->len == 32000000) { audio_error(s, "capture capacity reached"); }
     s->output_rate = rate;
     int16_t value = MAX(INT16_MIN, MIN(INT16_MAX, sample));
@@ -519,15 +519,10 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
                        pa_enabled(s) ? value : 0);
     if (s->host_audio.stream) {
         LisaAudioStream *p = s->host_audio.stream;
-        if (rate != LISA_AUDIO_RATE) {
-            lisa_audio_store(&p->guest_error, LISA_AUDIO_FORMAT);
-            audio_error(s, "host speaker requires 16 kHz DAC");
-        }
         lisa_host_audio_epoch(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-        /* Mini's PA enable is GPIO A1, active high. Raw DAC capture below
-         * remains unchanged; the board amplifier only gates host playback. */
+        /* Board gain and host conversion do not alter raw DAC capture. */
         if (lisa_audio_load(&p->host_error) || lisa_audio_load(&p->guest_error) ||
-            !lisa_audio_dac(p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), value, pa_enabled(s))) {
+            !lisa_host_audio_output(&s->host_audio, s->output_last_ns, rate, value, pa_enabled(s))) {
             audio_transport_error(s);
         }
     }
@@ -1099,6 +1094,7 @@ static void machine_reset(MachineState *machine, ResetType type)
     s->input_frames = s->nonzero_samples = s->output_samples = 0; s->output_rate = 0;
     s->output_last_ns = s->output_nonzero_ns = s->output_pa_samples = s->output_peak = 0;
     s->speaker_feedback = (PCMFeedback){0};
+    lisa_host_audio_output_reset(&s->host_audio);
     if (s->pcm_output) { g_byte_array_set_size(s->pcm_output, 0); }
     if (s->wifi_capture) { reset_radio(s); }
     if (s->access_points[0].response) {

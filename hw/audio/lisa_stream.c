@@ -68,6 +68,64 @@ void lisa_host_audio_epoch(LisaHostAudio *s, uint64_t ns)
     lisa_audio_store(&p->epoch_ready, 1);
 }
 
+/* 97-tap Blackman-windowed sinc, 7 kHz cutoff at 48 kHz, Q2.30.
+ * Unity DC gain; causal group delay is 1 ms. This is a host presentation
+ * filter, independent of the chip's APC SRC and raw diagnostic captures. */
+static const int32_t output_fir[97] = {
+    0, -2228, -11136, -10224, 24542, 78829, 84176, -22049,
+    -199698, -282403, -102493, 306594, 630833, 474885, -246940, -1067851,
+    -1202454, -216082, 1386319, 2287991, 1350686, -1203994, -3523057, -3340393,
+    0, 4401911, 6122291, 2763060, -4102428, -9224888, -7448561, 1554677,
+    11654553, 14044468, 4446157, -11831185, -22031976, -15252074, 7407375, 30395575,
+    33040202, 5844917, -37802131, -64852191, -41536521, 42913271, 163910172, 270675051,
+    313170668, 270675051, 163910172, 42913271, -41536521, -64852191, -37802131, 5844917,
+    33040202, 30395575, 7407375, -15252074, -22031976, -11831185, 4446157, 14044468,
+    11654553, 1554677, -7448561, -9224888, -4102428, 2763060, 6122291, 4401911,
+    0, -3340393, -3523057, -1203994, 1350686, 2287991, 1386319, -216082,
+    -1202454, -1067851, -246940, 474885, 630833, 306594, -102493, -282403,
+    -199698, -22049, 84176, 78829, 24542, -10224, -11136, -2228,
+    0
+};
+
+void lisa_host_audio_output_reset(LisaHostAudio *s)
+{
+    s->output_rate = s->output_index = s->output_phase = 0;
+    s->output_ns = 0;
+    memset(s->output_history, 0, sizeof(s->output_history));
+}
+
+bool lisa_host_audio_output(LisaHostAudio *s, uint64_t ns, unsigned rate,
+                            int16_t value, bool enabled)
+{
+    LisaAudioStream *p = s->stream;
+    if (!p) { return true; }
+    if (rate != LISA_AUDIO_RATE && rate != 48000) {
+        lisa_audio_store(&p->guest_error, LISA_AUDIO_FORMAT);
+        return false;
+    }
+    /* A stopped/restarted DAC must not replay the previous filter tail. */
+    if (rate != s->output_rate || ns <= s->output_ns ||
+        ns - s->output_ns > (1000000000ULL + rate - 1) / rate) {
+        lisa_host_audio_output_reset(s);
+    }
+    s->output_rate = rate;
+    s->output_ns = ns;
+    if (rate == LISA_AUDIO_RATE) {
+        return lisa_audio_dac(p, ns, value, enabled);
+    }
+    s->output_history[s->output_index] = enabled ? value : 0;
+    s->output_index = (s->output_index + 1) % 97;
+    if (++s->output_phase < 3) { return true; }
+    s->output_phase = 0;
+    int64_t sum = 0;
+    for (unsigned i = 0; i < 97; i++) {
+        sum += (int64_t)output_fir[i] *
+            s->output_history[(s->output_index + 96 - i) % 97];
+    }
+    int64_t rounded = (sum + (1LL << 29)) >> 30;
+    return lisa_audio_dac(p, ns, MAX(INT16_MIN, MIN(INT16_MAX, rounded)), enabled);
+}
+
 void lisa_host_audio_finish(LisaHostAudio *s, uint64_t ns)
 {
     if (!s->stream) { return; }
