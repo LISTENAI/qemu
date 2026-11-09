@@ -81,44 +81,53 @@ static void service(void *opaque)
         ArcsAudioChannel *c = &s->channel[ch];
         if (!ready(s, c)) { continue; }
         unsigned burst = c->mode == 2 ? 8 : 1u << ((c->control >> (c->mode == 0 ? 14 : 16)) & 3);
-        /* Admission accepts a whole burst, even when the FIFO request drops
-         * after its first item. End of block always yields before reloading. */
-        for (unsigned item = 0; item < burst && c->busy; item++) {
-            uint8_t data[4];
-            if (!data_address(c->source, c->width, false) ||
-                !data_address(c->destination, c->width, true)) {
-                arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
-            }
-            if (c->source >= 0x45001000 && c->source < 0x45001800) {
-                if (c->width != 4 || c->mode != 0 || burst != 8 || (c->control >> 28) != 5) {
+        /* A level request admits consecutive bursts until the peripheral
+         * withdraws it. The service quantum is arbitration latency, not an
+         * inserted delay after every burst. Bound work and always yield at a
+         * block boundary so cancellation and completion remain observable. */
+        for (unsigned grant = 0; grant < (c->mode == 2 ? 1 : 16) && ready(s, c); grant++) {
+            bool block_ended = false;
+            /* Admission accepts a whole burst, even when the FIFO request drops
+             * after its first item. End of block always yields before reloading. */
+            for (unsigned item = 0; item < burst && c->busy; item++) {
+                uint8_t data[4];
+                if (!data_address(c->source, c->width, false) ||
+                    !data_address(c->destination, c->width, true)) {
                     arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
                 }
-                stl_le_p(data, arcs_dvp_dma_read(s->soc));
-            } else if (address_space_read(&address_space_memory, c->source,
-                    MEMTXATTRS_UNSPECIFIED, data, c->width) != MEMTX_OK) {
-                arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
+                if (c->source >= 0x45001000 && c->source < 0x45001800) {
+                    if (c->width != 4 || c->mode != 0 || burst != 8 || (c->control >> 28) != 5) {
+                        arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
+                    }
+                    stl_le_p(data, arcs_dvp_dma_read(s->soc));
+                } else if (address_space_read(&address_space_memory, c->source,
+                        MEMTXATTRS_UNSPECIFIED, data, c->width) != MEMTX_OK) {
+                    arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
+                }
+                if (address_space_write(&address_space_memory, c->destination,
+                        MEMTXATTRS_UNSPECIFIED, data, c->width) != MEMTX_OK) {
+                    arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
+                }
+                if (!(c->control & 0x200)) { c->source += c->width; }
+                if (!(c->control & 0x400)) { c->destination += c->width; }
+                c->remaining--; s->bytes += c->width;
+                if (!c->half_sent && c->remaining <= c->total / 2) {
+                    if (!(c->control & 0x200000)) { s->pending |= 1u << (ch + 6); }
+                    c->half_sent = true;
+                }
+                if (!c->remaining) {
+                    c->completed_slot = c->slot;
+                    if (!(c->control & 0x100000)) { s->pending |= 1u << ch; }
+                    s->blocks++;
+                    if ((c->control & 0x2000) && !c->stop_after_block) {
+                        if (c->control & 0x1800) { c->slot ^= 1; }
+                        load_block(s, ch);
+                    } else { c->busy = false; }
+                    block_ended = true;
+                    break;
+                }
             }
-            if (address_space_write(&address_space_memory, c->destination,
-                    MEMTXATTRS_UNSPECIFIED, data, c->width) != MEMTX_OK) {
-                arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
-            }
-            if (!(c->control & 0x200)) { c->source += c->width; }
-            if (!(c->control & 0x400)) { c->destination += c->width; }
-            c->remaining--; s->bytes += c->width;
-            if (!c->half_sent && c->remaining <= c->total / 2) {
-                if (!(c->control & 0x200000)) { s->pending |= 1u << (ch + 6); }
-                c->half_sent = true;
-            }
-            if (!c->remaining) {
-                c->completed_slot = c->slot;
-                if (!(c->control & 0x100000)) { s->pending |= 1u << ch; }
-                s->blocks++;
-                if ((c->control & 0x2000) && !c->stop_after_block) {
-                    if (c->control & 0x1800) { c->slot ^= 1; }
-                    load_block(s, ch);
-                } else { c->busy = false; }
-                break;
-            }
+            if (block_ended) { break; }
         }
     }
     s->servicing = false; dma_irq(s); schedule(s, deadline);
