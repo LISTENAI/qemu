@@ -1217,6 +1217,42 @@ const RISCVDecoder decoder_table[] = {
 
 const size_t decoder_table_size = ARRAY_SIZE(decoder_table);
 
+/* Nuclei NMSIS 1.6 SIMD 8/16-bit multiply: RV32 even/odd destination
+ * pairs hold the full products. Both input words must survive rd aliases.
+ * Encodings: https://doc.nucleisys.com/tools/nucleivision/ */
+static bool nuclei_packed_multiply(DisasContext *ctx, uint32_t opcode)
+{
+    if (ctx->xl != MXL_RV32 || (opcode & 0xe400707f) != 0xa000007f) {
+        return false;
+    }
+    unsigned width = opcode & (1u << 27) ? 8 : 16;
+    unsigned cross = !!(opcode & (1u << 25));
+    bool is_unsigned = opcode & (1u << 28);
+    unsigned rd = extract32(opcode, 7, 5) & ~1u;
+    TCGv a = get_gpr(ctx, extract32(opcode, 15, 5), EXT_NONE);
+    TCGv b = get_gpr(ctx, extract32(opcode, 20, 5), EXT_NONE);
+    TCGv result[2] = { tcg_temp_new(), tcg_temp_new() };
+    tcg_gen_movi_tl(result[0], 0);
+    tcg_gen_movi_tl(result[1], 0);
+    for (unsigned i = 0; i < 32 / width; i++) {
+        TCGv x = tcg_temp_new(), y = tcg_temp_new();
+        if (is_unsigned) {
+            tcg_gen_extract_tl(x, a, i * width, width);
+            tcg_gen_extract_tl(y, b, (i ^ cross) * width, width);
+        } else {
+            tcg_gen_sextract_tl(x, a, i * width, width);
+            tcg_gen_sextract_tl(y, b, (i ^ cross) * width, width);
+        }
+        tcg_gen_mul_tl(x, x, y);
+        unsigned half = i * width / 16, shift = (i * width * 2) % 32;
+        tcg_gen_deposit_tl(result[half], result[half], x, shift, width * 2);
+    }
+    gen_set_gpr(ctx, rd, result[0]);
+    gen_set_gpr(ctx, rd + 1, result[1]);
+    ctx->cur_insn_len = 4;
+    return true;
+}
+
 static void decode_opc(CPURISCVState *env, DisasContext *ctx)
 {
     uint32_t opcode;
@@ -1273,6 +1309,18 @@ static void decode_opc(CPURISCVState *env, DisasContext *ctx)
             if (opcode & (1u << 25)) { tcg_gen_sub_tl(result, old, result); }
             else { tcg_gen_add_tl(result, old, result); }
             gen_set_gpr(ctx, rd, result);
+            return;
+        }
+        if (env->arcs_dsp && nuclei_packed_multiply(ctx, opcode)) {
+            return;
+        }
+        if (env->arcs_dsp && ctx->xl == MXL_RV32 &&
+            ((opcode & 0xfe00707f) == 0x1000707f ||
+             (opcode & 0xfe00707f) == 0x5600707f ||
+             (opcode & 0xfe00707f) == 0x8400107f ||
+             (opcode & 0xff00707f) == 0x8400007f)) {
+            gen_helper_nuclei_dsp(tcg_env, tcg_constant_i32(opcode));
+            ctx->cur_insn_len = 4;
             return;
         }
         if (env->nuclei_state && (opcode & 0xfff0707f) == 0x7ed01073) {

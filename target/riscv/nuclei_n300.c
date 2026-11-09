@@ -18,6 +18,53 @@ static NucleiN300State *state(CPURISCVState *env)
     return env->nuclei_state;
 }
 
+static uint64_t dsp_pair(CPURISCVState *env, unsigned reg)
+{
+    reg &= ~1u;
+    return (uint64_t)(uint32_t)env->gpr[reg + 1] << 32 |
+           (reg ? (uint32_t)env->gpr[reg] : 0);
+}
+
+/* NMSIS Core 1.6, DKADD16 / DKSLRA16 / SCLIP16 / SMAR64.
+ * Capture all operands before writing the destination pair; OV is sticky. */
+void HELPER(nuclei_dsp)(CPURISCVState *env, uint32_t opcode)
+{
+    unsigned rd = extract32(opcode, 7, 5), r1 = extract32(opcode, 15, 5);
+    unsigned r2 = extract32(opcode, 20, 5);
+    uint32_t op = opcode & 0xfe00707f;
+    uint64_t a = dsp_pair(env, r1), b = dsp_pair(env, r2), result = 0;
+    int shift = sextract32(r2 ? env->gpr[r2] : 0, 0, 5);
+    bool clip = (opcode & 0xff00707f) == 0x8400007f;
+    if (op == 0x8400107f) {
+        int64_t x = (int32_t)(r1 ? env->gpr[r1] : 0);
+        int64_t y = (int32_t)(r2 ? env->gpr[r2] : 0);
+        result = dsp_pair(env, rd) + (uint64_t)(x * y);
+    } else {
+        if (clip) { a = r1 ? (uint32_t)env->gpr[r1] : 0; }
+        for (unsigned i = 0; i < (clip ? 2 : 4); i++) {
+            int64_t value = sextract64(a, 16 * i, 16);
+            int64_t limit = 1LL << (clip ? (r2 & 15) : 15);
+            if (op == 0x1000707f) {
+                value += sextract64(b, 16 * i, 16);
+            } else if (op == 0x5600707f) {
+                value = shift < 0 ? value >> MIN(-shift, 15) : value * (1LL << shift);
+            } else {
+                assert(clip);
+            }
+            int64_t saturated = MAX(-limit, MIN(limit - 1, value));
+            if (value != saturated) { state(env)->dsp_overflow = true; }
+            result |= (uint64_t)(uint16_t)saturated << (16 * i);
+        }
+    }
+    if (clip) {
+        if (rd) { env->gpr[rd] = (uint32_t)result; }
+    } else {
+        rd &= ~1u;
+        if (rd) { env->gpr[rd] = (uint32_t)result; }
+        env->gpr[rd + 1] = result >> 32;
+    }
+}
+
 static unsigned level(NucleiN300State *s, unsigned irq)
 {
     unsigned bits = MIN((s->config >> 1) & 15, 8);
@@ -177,7 +224,8 @@ target_ulong helper_arcs_jalmnxti(CPURISCVState *env, target_ulong rd,
 
 static RISCVException predicate(CPURISCVState *env, int csr)
 {
-    return env->nuclei_state ? RISCV_EXCP_NONE : RISCV_EXCP_ILLEGAL_INST;
+    return env->nuclei_state && (csr != 0x801 || env->arcs_dsp)
+        ? RISCV_EXCP_NONE : RISCV_EXCP_ILLEGAL_INST;
 }
 
 static RISCVException op_mnxti(CPURISCVState *env, int csr,
@@ -217,6 +265,7 @@ static RISCVException read_custom(CPURISCVState *env, int csr, target_ulong *val
 {
     NucleiN300State *s = state(env);
     switch (csr) {
+    case 0x801: *value = s->dsp_overflow; break;
     case 0x307: *value = s->mtvt; break;
     case 0x346: *value = (uint32_t)s->level << 24; break;
     case 0x347: *value = s->threshold; break;
@@ -237,6 +286,7 @@ static RISCVException write_custom(CPURISCVState *env, int csr, target_ulong val
 {
     NucleiN300State *s = state(env);
     switch (csr) {
+    case 0x801: s->dsp_overflow = value & 1; break;
     case 0x307: s->mtvt = value & ~63u; break;
     case 0x346: s->level = value >> 24; update(env); break;
     case 0x347: s->threshold = value; update(env); break;
@@ -313,7 +363,7 @@ void nuclei_n300_init(RISCVCPU *cpu, bool dsp, unsigned irq_count,
     cpu->env.arcs_dsp = dsp;
     if (!installed) {
         static const int csrs[] = {
-            0x307, 0x346, 0x347, 0x7c4, 0x7c6, 0x7c7, 0x7c8, 0x7c9,
+            0x801, 0x307, 0x346, 0x347, 0x7c4, 0x7c6, 0x7c7, 0x7c8, 0x7c9,
             0x7ca, 0x7cb, 0x7cc, 0x7d0, 0x7eb, 0x7ec, 0x7ee, 0x7ef,
             0x7f3, 0x7f4, 0x7f5, 0x7f6, 0x7f7, 0x810, 0x811, 0xfc0, 0xfc1, 0xfc2,
         };

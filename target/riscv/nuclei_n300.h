@@ -12,6 +12,7 @@ typedef struct NucleiN300State {
     int best, acknowledged;
     uint8_t irq[256][4];
     bool line[256];
+    bool dsp_overflow;
     uint64_t exceptions, interrupts;
 } NucleiN300State;
 
