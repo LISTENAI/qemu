@@ -42,6 +42,12 @@ typedef struct ListenaiBoard {
     unsigned camera_pads[16], camera_i2c;
     unsigned button_count;
     ListenaiBoardButton buttons[LISTENAI_BOARD_BUTTONS];
+    unsigned rotary_count;
+    struct {
+        char *id;
+        unsigned a, b, edges_per_detent;
+        DeviceState *device;
+    } rotaries[4];
     SSIBus *panel_bus;
     DeviceState *panel_device;
     char *panel_id, *panel_controller_id, *backlight_id;
@@ -79,4 +85,6 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b);
 QDict *listenai_board_display_snapshot(ListenaiBoard *b);
 void listenai_board_display_observer_init(ListenaiBoard *b, Object *owner);
 void listenai_board_cleanup(ListenaiBoard *b);
+void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc);
+void listenai_board_rotaries_drive(ListenaiBoard *b);
 #endif

@@ -174,6 +174,7 @@ static void board_reset(void *opaque)
     VenusABoard *s = opaque;
     ListenaiBoard *b = &s->components;
     listenai_board_pulls_apply(b, DEVICE(s->soc));
+    listenai_board_rotaries_drive(b);
     for (unsigned i = 0; i < b->button_count; i++) {
         listenai_board_gpio_input(b, DEVICE(s->soc), b->buttons[i].pad,
                                   b->buttons[i].pressed ? b->buttons[i].pressed_level : b->buttons[i].released_level);
@@ -230,6 +231,7 @@ static void venusa_board_init(MachineState *machine)
     listenai_board_sd_wire(b, DEVICE(board->soc), board->soc->sd.host);
     panel_connect(board);
     listenai_board_display_observer_init(b, OBJECT(board));
+    listenai_board_rotaries_init(b, OBJECT(board), DEVICE(board->soc));
     touch_connect(board);
     board->camera = venusa_board_camera_connect(board->soc, OBJECT(board), b);
     for (unsigned i = 0; i < b->button_count; i++) {

@@ -4,6 +4,7 @@
 #include "hw/core/listenai-board.h"
 #include "hw/block/listenai_nor.h"
 #include "hw/irq.h"
+#include "hw/input/quadrature.h"
 #include "hw/display/st7789.h"
 #include "hw/i2c/listenai_extio.h"
 #include "hw/i2c/husb320.h"
@@ -226,6 +227,23 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         button->released_level = number(p, "released_level", 1);
         if (button->pressed_level == button->released_level) { invalid("button polarity"); }
     }
+    QList *rotaries = qdict_get_qlist(dict, "rotaries");
+    if (rotaries) {
+        if (qlist_size(rotaries) > ARRAY_SIZE(b->rotaries)) { invalid("rotaries"); }
+        QLIST_FOREACH_ENTRY(rotaries, entry) {
+            QDict *p = qobject_to(QDict, qlist_entry_obj(entry));
+            const char *id = p ? qdict_get_try_str(p, "id") : NULL;
+            if (!id || !*id || strlen(id) > 64) { invalid("rotary ID"); }
+            typeof(b->rotaries[0]) *r = &b->rotaries[b->rotary_count++];
+            r->id = g_strdup(id);
+            r->a = pad(p, "A", pa_pads, pb_pads);
+            r->b = pad(p, "B", pa_pads, pb_pads);
+            r->edges_per_detent = number(p, "edges_per_detent", 4);
+            if (r->a == r->b || (r->edges_per_detent != 2 && r->edges_per_detent != 4)) {
+                invalid("rotary geometry");
+            }
+        }
+    }
     qobject_unref(root);
 }
 
@@ -276,6 +294,7 @@ void listenai_board_cleanup(ListenaiBoard *b)
 {
     listenai_signal_trace_destroy(&b->signal_trace);
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
+    for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
     g_free(b->extio_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
 }
@@ -414,6 +433,10 @@ void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endp
 QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
 {
     QDict *devices = qdict_new();
+    for (unsigned i = 0; i < b->rotary_count; i++) {
+        qdict_put_obj(devices, b->rotaries[i].id,
+                      QOBJECT(quadrature_snapshot(b->rotaries[i].device)));
+    }
     if (b->extio) {
         QDict *device = qdict_new(), *pads = qdict_new();
         for (unsigned i = 0; i < 4; i++) {
@@ -427,6 +450,62 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
         qdict_put_obj(devices, b->extio_id, QOBJECT(device));
     }
     return devices;
+}
+
+static void rotary_get(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    ListenaiBoard *b = opaque;
+    QDict *result = qdict_new();
+    for (unsigned i = 0; i < b->rotary_count; i++) {
+        qdict_put_obj(result, b->rotaries[i].id,
+                      QOBJECT(quadrature_snapshot(b->rotaries[i].device)));
+    }
+    char *value = g_string_free(qobject_to_json(QOBJECT(result)), false);
+    visit_type_str(v, name, &value, errp);
+    g_free(value); qobject_unref(result);
+}
+
+static void rotary_set(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp)
+{
+    ListenaiBoard *b = opaque;
+    char *value = NULL;
+    if (!visit_type_str(v, name, &value, errp)) { return; }
+    QObject *root = qobject_from_json(value, errp);
+    QDict *command = qobject_to(QDict, root);
+    const char *id = command ? qdict_get_try_str(command, "rotary") : NULL;
+    if (root) {
+        bool found = false;
+        for (unsigned i = 0; id && i < b->rotary_count; i++) {
+            if (!strcmp(id, b->rotaries[i].id)) {
+                quadrature_command(b->rotaries[i].device, command, errp);
+                found = true; break;
+            }
+        }
+        if (!found) { error_setg(errp, "Unknown rotary encoder"); }
+    }
+    qobject_unref(root); g_free(value);
+}
+
+void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc)
+{
+    for (unsigned i = 0; i < b->rotary_count; i++) {
+        typeof(b->rotaries[0]) *r = &b->rotaries[i];
+        r->device = qdev_new(TYPE_QUADRATURE);
+        g_autofree char *name = g_strdup_printf("rotary-%u", i);
+        object_property_add_child(owner, name, OBJECT(r->device));
+        qdev_prop_set_uint32(r->device, "edges-per-detent", r->edges_per_detent);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(r->device), &error_fatal);
+        qdev_connect_gpio_out(r->device, 0, qdev_get_gpio_in_named(soc, "pad-in", r->a));
+        qdev_connect_gpio_out(r->device, 1, qdev_get_gpio_in_named(soc, "pad-in", r->b));
+    }
+    object_property_add(owner, "x-lisem-rotary", "str", rotary_get, rotary_set, NULL, b);
+}
+
+void listenai_board_rotaries_drive(ListenaiBoard *b)
+{
+    for (unsigned i = 0; i < b->rotary_count; i++) {
+        quadrature_drive(b->rotaries[i].device);
+    }
 }
 
 void listenai_board_sd_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sd_host)

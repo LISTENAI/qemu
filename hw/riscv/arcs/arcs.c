@@ -1115,6 +1115,7 @@ static void machine_reset(MachineState *machine, ResetType type)
     if (s->ble_input) { timer_del(s->ble_input); s->ble_input_status = "idle"; }
     /* Board inputs are applied after every chip has finished resetting. */
     listenai_board_pulls_apply(&s->board, DEVICE(&s->soc));
+    listenai_board_rotaries_drive(&s->board);
     signals_apply(s);
     timer_mod(s->deadline, s->budget);
     if (s->power_button) { power_button_update(s); }
@@ -1220,6 +1221,7 @@ static void machine_init(MachineState *machine)
     listenai_board_sd_wire(&s->board, DEVICE(&s->soc), s->soc.sd.host);
     connect_panel(s);
     listenai_board_display_observer_init(&s->board, OBJECT(s));
+    listenai_board_rotaries_init(&s->board, OBJECT(s), DEVICE(&s->soc));
     connect_camera(s);
     if (s->board.touch) { connect_touch(s); }
     connect_pcm(s);
