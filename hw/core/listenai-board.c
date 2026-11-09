@@ -9,6 +9,8 @@
 #include "hw/display/st7789.h"
 #include "hw/i2c/listenai_extio.h"
 #include "hw/i2c/husb320.h"
+#include "hw/i2c/fs1815.h"
+#include "hw/i2c/ls8500.h"
 #include "hw/sd/sdhci.h"
 #include "hw/core/split-irq.h"
 #include "hw/qdev-properties.h"
@@ -122,6 +124,17 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         b->ls8500_scl = pad(p, "SCL", pa_pads, pb_pads);
         b->ls8500_sda = pad(p, "SDA", pa_pads, pb_pads);
         b->ls8500_irq = pad(p, "INT", pa_pads, pb_pads);
+    }
+    b->fs1815 = qdict_haskey(dict, "fs1815");
+    if (b->fs1815) {
+        if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) { invalid("FS1815 chip adapter"); }
+        QDict *p = qdict_get_qdict(dict, "fs1815");
+        const char *id = qdict_get_try_str(p, "id");
+        if (!id || !*id) { invalid("FS1815 device ID"); }
+        b->fs1815_id = g_strdup(id);
+        b->fs1815_scl = pad(p, "SCL", pa_pads, pb_pads);
+        b->fs1815_sda = pad(p, "SDA", pa_pads, pb_pads);
+        if (qdict_haskey(dict, "amplifier")) { invalid("duplicate amplifier"); }
     }
     b->typec = qdict_haskey(dict, "typec");
     if (b->typec) {
@@ -326,6 +339,7 @@ void listenai_board_cleanup(ListenaiBoard *b)
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
     for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
     for (unsigned i = 0; i < b->pwm_led_count; i++) { g_free(b->pwm_leds[i].id); }
+    g_free(b->fs1815_id);
     g_free(b->ls8500_id);
     g_free(b->extio_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
@@ -481,7 +495,11 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
         }
         qdict_put_obj(devices, b->pwm_leds[i].id, QOBJECT(device));
     }
-
+    if (b->fs1815_device) {
+        QDict *device = qdict_new();
+        qdict_put_bool(device, "enabled", fs1815_enabled(b->fs1815_device));
+        qdict_put_obj(devices, b->fs1815_id, QOBJECT(device));
+    }
     for (unsigned i = 0; i < b->rotary_count; i++) {
         qdict_put_obj(devices, b->rotaries[i].id,
                       QOBJECT(quadrature_snapshot(b->rotaries[i].device)));
@@ -594,3 +612,10 @@ void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *
                                qdev_get_gpio_in_named(soc, "pad-in", b->ls8500_irq));
 }
 
+void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus)
+{
+    I2CSlave *dev = i2c_slave_new(TYPE_FS1815, 0x34);
+    b->fs1815_device = DEVICE(dev);
+    object_property_add_child(owner, "fs1815", OBJECT(dev));
+    i2c_slave_realize_and_unref(dev, bus, &error_fatal);
+}

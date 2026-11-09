@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* ARCS Mini board: external storage, wiring and bounded bring-up harness. */
 #include "qemu/osdep.h"
+#include "hw/i2c/fs1815.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
@@ -448,6 +449,7 @@ static char *ble_central_get(Object *obj, Error **errp)
 
 static bool pa_enabled(ArcsMachine *s)
 {
+    if (s->board.fs1815_device) { return fs1815_enabled(s->board.fs1815_device); }
     if (!s->board.amplifier) { return false; }
     uint32_t driven, levels;
     unsigned pin = s->board.amplifier_pad;
@@ -515,14 +517,16 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
     if (value) { s->output_nonzero_ns = s->output_last_ns; }
     s->output_peak = MAX(s->output_peak, abs((int)value));
     if (pa_enabled(s)) { s->output_pa_samples++; }
+    int16_t speaker = s->board.fs1815_device ?
+        fs1815_amplify(s->board.fs1815_device, value) : value;
     pcm_feedback_write(&s->speaker_feedback, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), rate,
-                       pa_enabled(s) ? value : 0);
+                       pa_enabled(s) ? speaker : 0);
     if (s->host_audio.stream) {
         LisaAudioStream *p = s->host_audio.stream;
         lisa_host_audio_epoch(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         /* Board gain and host conversion do not alter raw DAC capture. */
         if (lisa_audio_load(&p->host_error) || lisa_audio_load(&p->guest_error) ||
-            !lisa_host_audio_output(&s->host_audio, s->output_last_ns, rate, value, pa_enabled(s))) {
+            !lisa_host_audio_output(&s->host_audio, s->output_last_ns, rate, speaker, pa_enabled(s))) {
             audio_transport_error(s);
         }
     }
@@ -846,6 +850,13 @@ static bool ls8500_route(void *opaque)
     ArcsMachine *s = opaque;
     return arcs_pinmux_function(&s->soc.pinmux[0], s->board.ls8500_scl, 8) &&
            arcs_pinmux_function(&s->soc.pinmux[0], s->board.ls8500_sda, 8);
+}
+
+static bool fs1815_route(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    return arcs_pinmux_function(&s->soc.pinmux[0], s->board.fs1815_scl, 8) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], s->board.fs1815_sda, 8);
 }
 
 static bool typec_route(void *opaque)
@@ -1233,6 +1244,12 @@ static void machine_init(MachineState *machine)
         unsigned bus = s->board.ls8500_i2c;
         listenai_board_attach_ls8500(&s->board, OBJECT(s), DEVICE(&s->soc), s->soc.i2c[bus].controller.bus);
         s->soc.i2c[bus].controller.route_valid = ls8500_route;
+        s->soc.i2c[bus].controller.route_opaque = s;
+    }
+    if (s->board.fs1815) {
+        unsigned bus = s->board.fs1815_i2c;
+        listenai_board_attach_fs1815(&s->board, OBJECT(s), s->soc.i2c[bus].controller.bus);
+        s->soc.i2c[bus].controller.route_valid = fs1815_route;
         s->soc.i2c[bus].controller.route_opaque = s;
     }
     connect_pcm(s);

@@ -33,6 +33,10 @@ typedef struct ListenaiBoard {
     char *ls8500_id;
     unsigned ls8500_scl, ls8500_sda, ls8500_irq, ls8500_i2c;
     DeviceState *ls8500_device;
+    bool fs1815;
+    char *fs1815_id;
+    unsigned fs1815_scl, fs1815_sda, fs1815_i2c;
+    DeviceState *fs1815_device;
     unsigned psram_bytes;
     uint32_t nor_bytes[2];
     bool nor_cs1;
@@ -94,6 +98,7 @@ QDict *listenai_board_display_snapshot(ListenaiBoard *b);
 void listenai_board_display_observer_init(ListenaiBoard *b, Object *owner);
 void listenai_board_cleanup(ListenaiBoard *b);
 void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus);
+void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus);
 void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc);
 void listenai_board_rotaries_drive(ListenaiBoard *b);
 #endif
