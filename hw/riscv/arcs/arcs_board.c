@@ -107,6 +107,21 @@ bool arcs_board_camera_route(ListenaiBoard *b, ArcsSoC *soc)
            arcs_pinmux_function(&soc->pinmux[0], b->camera_pads[LISTENAI_CAM_SDA], 8);
 }
 
+double arcs_board_output_duty(void *opaque, unsigned pin)
+{
+    ArcsSoC *soc = opaque;
+    if (arcs_pinmux_function(&soc->pinmux[0], pin, 12)) {
+        if (pin == 0) { return arcs_gpt_duty(&soc->gpt, 0); }
+        if (pin == 1 || pin == 21) { return arcs_gpt_duty(&soc->gpt, 1); }
+        arcs_soc_fail(soc, 0x47500000 + 4 * pin, 4, false,
+                      listenai_pinmux_config(&soc->pinmux[0], pin));
+    }
+    uint32_t driven, levels;
+    arcs_gpio_outputs_snapshot(&soc->gpio[pin / 32], &driven, &levels);
+    if (!(driven & (1u << (pin % 32)))) { return -1; }
+    return !!(levels & (1u << (pin % 32)));
+}
+
 double arcs_board_backlight(ListenaiBoard *b, ArcsSoC *soc)
 {
     unsigned pin = b->backlight_pad;
@@ -114,24 +129,8 @@ double arcs_board_backlight(ListenaiBoard *b, ArcsSoC *soc)
         double duty = listenai_extio_duty(b->extio, pin - 64);
         return b->backlight_active ? duty : 1 - duty;
     }
-    uint32_t driven, levels;
-    arcs_gpio_outputs_snapshot(&soc->gpio[pin / 32], &driven, &levels);
-    bool pwm = arcs_pinmux_function(&soc->pinmux[0], pin, 12);
-    double duty;
-    if (pwm) {
-        unsigned channel;
-        if (pin == 21) { channel = 1; }
-        else if (pin == 0) { channel = 0; }
-        else {
-            arcs_soc_fail(soc, 0x47500000 + 4 * pin, 4, false,
-                          listenai_pinmux_config(&soc->pinmux[0], pin));
-            return 0;
-        }
-        duty = arcs_gpt_duty(&soc->gpt, channel);
-    } else {
-        if (!(driven & (1u << (pin % 32)))) { return 0; }
-        duty = !!(levels & (1u << (pin % 32)));
-    }
+    double duty = arcs_board_output_duty(soc, pin);
+    if (duty < 0) { return 0; }
     return b->backlight_active ? duty : 1.0 - duty;
 }
 

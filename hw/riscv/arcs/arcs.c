@@ -1217,6 +1217,8 @@ static void machine_init(MachineState *machine)
     listenai_board_sd_wire(&s->board, DEVICE(&s->soc), s->soc.sd.host);
     connect_panel(s);
     listenai_board_display_observer_init(&s->board, OBJECT(s));
+    s->board.output_duty = arcs_board_output_duty;
+    s->board.output_opaque = &s->soc;
     listenai_board_rotaries_init(&s->board, OBJECT(s), DEVICE(&s->soc));
     connect_camera(s);
     if (s->board.touch) { connect_touch(s); }

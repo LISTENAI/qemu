@@ -42,6 +42,10 @@ typedef struct ListenaiBoard {
     unsigned camera_pads[16], camera_i2c;
     unsigned button_count;
     ListenaiBoardButton buttons[LISTENAI_BOARD_BUTTONS];
+    unsigned pwm_led_count;
+    struct { char *id; unsigned pad; bool active; } pwm_leds[8];
+    double (*output_duty)(void *, unsigned);
+    void *output_opaque;
     unsigned rotary_count;
     struct {
         char *id;

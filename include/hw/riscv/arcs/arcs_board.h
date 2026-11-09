@@ -8,6 +8,7 @@
 void arcs_board_load(ListenaiBoard *b, bool evb);
 void arcs_board_attach_spi(ListenaiBoard *b, ArcsSoC *soc, DeviceState *panel);
 bool arcs_board_camera_route(ListenaiBoard *b, ArcsSoC *soc);
+double arcs_board_output_duty(void *opaque, unsigned pin);
 double arcs_board_backlight(ListenaiBoard *b, ArcsSoC *soc);
 void arcs_board_connect_pad(ArcsSoC *soc, unsigned pad, qemu_irq input);
 #endif

@@ -183,6 +183,24 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             pad(pins, names[i], pa_pads, pb_pads);
         }
     }
+    if (qdict_haskey(dict, "pwm_leds")) {
+        if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) { invalid("PWM LED chip adapter"); }
+        QList *list = qdict_get_qlist(dict, "pwm_leds");
+        const QListEntry *entry;
+        QLIST_FOREACH_ENTRY(list, entry) {
+            QDict *p = qobject_to(QDict, qlist_entry_obj(entry));
+            const char *id = p ? qdict_get_try_str(p, "id") : NULL;
+            if (!id || !*id || b->pwm_led_count == 8) { invalid("PWM LED identity/count"); }
+            unsigned pin = pad(p, "pad", pa_pads, pb_pads);
+            if (pin != 0 && pin != 1 && pin != 21) { invalid("PWM LED pad route"); }
+            for (unsigned i = 0; i < b->pwm_led_count; i++) {
+                if (!strcmp(id, b->pwm_leds[i].id)) { invalid("duplicate PWM LED"); }
+            }
+            unsigned i = b->pwm_led_count++;
+            b->pwm_leds[i].id = g_strdup(id); b->pwm_leds[i].pad = pin;
+            b->pwm_leds[i].active = number(p, "active_level", 1);
+        }
+    }
     b->touch = qdict_haskey(dict, "touch");
     if (b->touch) {
         QDict *p = qdict_get_qdict(dict, "touch");
@@ -295,6 +313,7 @@ void listenai_board_cleanup(ListenaiBoard *b)
     listenai_signal_trace_destroy(&b->signal_trace);
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
     for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
+    for (unsigned i = 0; i < b->pwm_led_count; i++) { g_free(b->pwm_leds[i].id); }
     g_free(b->extio_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
 }
@@ -433,6 +452,19 @@ void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endp
 QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
 {
     QDict *devices = qdict_new();
+    for (unsigned i = 0; i < b->pwm_led_count; i++) {
+        double duty = b->output_duty ? b->output_duty(b->output_opaque, b->pwm_leds[i].pad) : -1;
+        QDict *device = qdict_new();
+        qdict_put_bool(device, "driven", duty >= 0);
+        if (duty >= 0) {
+            double effective = b->pwm_leds[i].active ? duty : 1 - duty;
+            qdict_put_obj(device, "drive_duty", QOBJECT(qnum_from_double(duty)));
+            qdict_put_obj(device, "effective_duty", QOBJECT(qnum_from_double(effective)));
+            qdict_put_bool(device, "enabled", effective > 0);
+        }
+        qdict_put_obj(devices, b->pwm_leds[i].id, QOBJECT(device));
+    }
+
     for (unsigned i = 0; i < b->rotary_count; i++) {
         qdict_put_obj(devices, b->rotaries[i].id,
                       QOBJECT(quadrature_snapshot(b->rotaries[i].device)));
