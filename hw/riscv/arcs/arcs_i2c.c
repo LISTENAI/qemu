@@ -31,7 +31,7 @@ void arcs_i2c_reset(ArcsSoC *soc, unsigned index)
 void arcs_i2c_init(ArcsSoC *soc)
 {
     static const ListenaiI2CProfile profile = {
-        .fifo_depth = 8, .configuration = 1,
+        .fifo_depth = 8, .configuration = 2,
     };
     for (unsigned i = 0; i < 2; i++) {
         ArcsI2C *s = &soc->i2c[i];

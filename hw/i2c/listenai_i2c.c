@@ -209,6 +209,7 @@ void listenai_i2c_init(ListenaiI2C *s, DeviceState *owner, const char *name,
     assert(callbacks.fail && callbacks.irq && callbacks.clock);
     assert(profile && profile->fifo_depth >= 2 && profile->fifo_depth <= sizeof(s->fifo) &&
            !(profile->fifo_depth & (profile->fifo_depth - 1)));
+    assert(profile->fifo_depth == (2u << (profile->configuration & 3)));
     s->profile = *profile;
     s->base = base;
     s->callbacks = callbacks;
