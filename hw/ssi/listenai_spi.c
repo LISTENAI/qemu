@@ -32,7 +32,7 @@ static void signals(ListenaiSPI *s)
 {
     uint32_t control = s->regs[0x30 / 4];
     qemu_set_irq(s->cs,
-                 control & (1u << 21) ? !!(control & (1u << 22)) : !s->active);
+                 !s->lcd && (control & (1u << 21)) ? !!(control & (1u << 22)) : !s->active);
     for (unsigned pin = 0; pin < 4; pin++) {
         bool slave = s->regs[0x10 / 4] & 4;
         bool output = slave ? pin == LISTENAI_SPI_MISO && s->selected :
@@ -40,7 +40,7 @@ static void signals(ListenaiSPI *s)
         qemu_set_irq(s->pin_enable[pin], output);
     }
     qemu_set_irq(s->dma[0], (control & 8) && s->rx_count);
-    qemu_set_irq(s->dma[1], (control & 16) && s->count < s->hardware.tx_depth);
+    qemu_set_irq(s->dma[1], (control & 16) && s->count + (s->lcd ? 1 : 0) < s->hardware.tx_depth);
     qemu_set_irq(s->irq, !!(spi_pending(s) & s->regs[0x38 / 4]));
 }
 
@@ -89,8 +89,10 @@ static void schedule(ListenaiSPI *s)
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (!s->phase) {
         unsigned frames = s->regs[0x10 / 4] & 0x80 ? MIN(s->remaining, 4) : 1;
+        if (s->lcd) { frames = MIN(s->remaining, s->fifo_bytes[s->head]); }
         unsigned divider = s->regs[0x40 / 4] & 255;
-        unsigned cycles = (s->serial ? 1 : s->bits * frames) *
+        unsigned lanes = s->lcd ? 1u << ((s->regs[0x20 / 4] >> 22) & 3) : 1;
+        unsigned cycles = (s->serial ? 1 : (s->lcd ? 8 : s->bits) * frames / lanes) *
                           (divider == 255 ? 1 : 2 * (divider + 1));
         s->work =
             int128_add(s->work, multiply(cycles, SPI_CLOCK_SCALE * 1000000000 /
@@ -377,7 +379,7 @@ static void drain(void *opaque)
     }
     bool merge = s->regs[0x10 / 4] & 0x80;
     bool lsb = s->regs[0x10 / 4] & 8;
-    if (merge && s->bits != 8) {
+    if (!s->lcd && merge && s->bits != 8) {
         fail(s, 0x10, s->regs[0x10 / 4]);
     }
     if (s->route_valid && !s->route_valid(s->route_opaque)) {
@@ -389,7 +391,16 @@ static void drain(void *opaque)
         s->count--;
     }
     uint32_t received = 0;
-    for (unsigned i = 0; i < (merge ? 4 : 1) && s->remaining; i++) {
+    if (s->lcd) {
+        unsigned bytes = s->fifo_bytes[(s->head + s->hardware.tx_depth - 1) % s->hardware.tx_depth];
+        for (unsigned i = 0; i < bytes && s->remaining; i++) {
+            unsigned shift = lsb ? 8 * i : 8 * (bytes - 1 - i);
+            SSIBus *bus = s->board_bus ? s->board_bus(s->board_opaque) : s->bus;
+            uint8_t byte = word >> shift;
+            ssi_transfer(bus, lsb ? reverse(byte) : byte);
+            s->remaining--; s->frames++;
+        }
+    } else for (unsigned i = 0; i < (merge ? 4 : 1) && s->remaining; i++) {
         uint32_t frame = merge ? (word >> (8 * i)) & 255 : word;
         uint32_t result = 0;
         for (unsigned b = 0; b < s->bits / 8; b++) {
@@ -490,6 +501,11 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
             (value & 0x1ffff) | (s->regs[off / 4] & ~value & 0x60000);
         break;
     case 0x2c:
+        if (s->lcd) {
+            unsigned bits = ((s->regs[0x10 / 4] >> 8) & 31) + 1;
+            if ((bits != 8 && bits != 16 && bits != 32) || size * 8 < bits) { fail(s, off, value); }
+            s->fifo_bytes[(s->head + s->count) % s->hardware.tx_depth] = bits / 8;
+        }
         if (s->count == s->hardware.tx_depth) {
             fail(s, off, value);
         }
@@ -541,11 +557,25 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
     case 0x3c:
         s->pending &= ~value;
         break;
+    case 0x68:
+        if (s->lcd) { s->regs[off / 4] = value; }
+        break;
     case 0x24: {
         uint32_t format = s->regs[0x10 / 4];
         s->bits = ((format >> 8) & 31) + 1;
         uint32_t transfer = s->regs[0x20 / 4] & 0x6fc00000;
         s->mode = (transfer >> 24) & 15;
+        if (s->lcd) {
+            unsigned lanes = (transfer >> 22) & 3;
+            if (s->active || (format & ~0x1f8bu) || s->mode != 1 ||
+                (lanes != 0 && lanes != 2) || (transfer & 0x60000000) ||
+                (s->regs[0x30 / 4] & 0x600000)) { fail(s, off, value); }
+            s->remaining = (uint64_t)s->regs[0x68 / 4] + 1;
+            s->serial = false; s->active = true;
+            s->pending &= ~16u;
+            s->regs[off / 4] = value;
+            break;
+        }
         if (s->active || (format & 0x14) ||
             (s->bits != 8 && s->bits != 16 && s->bits != 32) ||
             (transfer & ~0x03000000u) || s->mode > 2 ||
@@ -578,7 +608,6 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
     case 0:
     case 0x34:
     case 0x64:
-    case 0x68:
     case 0x7c:
         return;
     default:
@@ -731,8 +760,22 @@ static const TypeInfo spi_type = {
     .class_init = spi_class_init,
 };
 
+static void lcd_init(Object *obj)
+{
+    ListenaiSPI *s = LISTENAI_SPI(obj);
+    s->lcd = true;
+    memory_region_set_size(&s->io, 0x800);
+}
+
+static const TypeInfo lcd_type = {
+    .name = TYPE_LISTENAI_QSPI_LCD,
+    .parent = TYPE_LISTENAI_SPI,
+    .instance_init = lcd_init,
+};
+
 static void spi_register_types(void)
 {
     type_register_static(&spi_type);
+    type_register_static(&lcd_type);
 }
 type_init(spi_register_types)

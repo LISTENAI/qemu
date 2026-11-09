@@ -12,6 +12,7 @@ typedef struct ListenAINOR {
     MemoryRegion rom;
     hwaddr address;
     FILE *backing;
+    uint32_t size;
     BlockBackend *block;
     uint8_t status[3];
     bool wel, asleep, reset_enabled, four_byte;
@@ -19,8 +20,11 @@ typedef struct ListenAINOR {
 
 void listenai_nor_init(ListenAINOR *chip, Object *owner, const char *name,
                        hwaddr address, const char *image, bool persist);
+void listenai_nor_init_capacity(ListenAINOR *chip, Object *owner, const char *name,
+                                hwaddr address, const char *image, bool persist,
+                                uint32_t size);
 void listenai_nor_init_block(ListenAINOR *chip, Object *owner, const char *name,
-                            hwaddr address, BlockBackend *block);
+                            hwaddr address, BlockBackend *block, uint32_t size);
 /* A NULL chip models an unselected bus, returning erased bytes on MISO.
  * False means an unsupported command or protected programming operation;
  * the controller must report it rather than fabricate completion. */

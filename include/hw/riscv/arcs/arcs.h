@@ -57,6 +57,7 @@ struct ArcsSoC {
     ArcsOTP otp;
     ArcsDMA dma;
     ArcsSPI spi[3];
+    ListenaiSPI qspi_lcd;
     ArcsGPT gpt;
     ArcsLUNA luna;
     ArcsADC adc;

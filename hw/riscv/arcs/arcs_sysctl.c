@@ -59,12 +59,12 @@ static void remap_update(ArcsSoC *soc)
             MemoryRegion *alias = &s->remap[kind][region];
             uint64_t address = physical + ((uint64_t)offsets[region] << 12);
             bool enabled = kind == target && address >= device_base &&
-                           address - device_base < 16 * MiB;
+                           address - device_base < (target ? soc->flash.chips[0]->size : 16 * MiB);
             memory_region_set_enabled(alias, false);
             if (enabled) {
                 uint64_t offset = address - device_base;
                 memory_region_set_alias_offset(alias, offset);
-                memory_region_set_size(alias, 16 * MiB - offset);
+                memory_region_set_size(alias, (target ? soc->flash.chips[0]->size : 16 * MiB) - offset);
                 memory_region_set_enabled(alias, true);
             }
         }
@@ -237,6 +237,7 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         }
     }
     for (unsigned i = 0; i < 3; i++) { arcs_spi_clock_changed(io->soc, i); }
+    arcs_qspi_clock_changed(io->soc);
     arcs_hsu_hclk_changed(io->soc);
     if (camera_hz && camera_hz != arcs_hclk_hz(io->soc)) {
         error_report("ARCS DVP cannot change HCLK during active pixel capture");
@@ -262,11 +263,12 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     ArcsConfigIO *io = opaque;
     if (size != 4 ||
         (off != 0 && off != 8 && off != 12 && off != 16 && off != 0x1c) ||
-        (off == 0 && (value & 0x3d19))) {
+        (off == 0 && (value & 0x3519))) {
         arcs_soc_fail(io->soc, io->base + off, size, true, value);
     }
     /* Reject reset targets whose peripheral model is not connected. */
     if (off == 0) {
+        if (value & 0x800) { listenai_spi_reset(&io->soc->qspi_lcd); }
         if (value & 0x4000) { arcs_jpeg_reset(io->soc); }
         if (value & 2) { arcs_gpdma_reset(io->soc); arcs_dma2d_reset(io->soc); }
         if (value & 4) { arcs_hsu_reset(io->soc); arcs_aes_reset(io->soc); }
@@ -287,6 +289,7 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (off == 8 || off == 0x1c) {
         arcs_dvp_clock(io->soc, (io->soc->sysctl.ap_regs[2] & 0x208000) == 0x208000);
     }
+    if (off == 8 || off == 12 || off == 0x1c) { arcs_qspi_clock_changed(io->soc); }
     if (off == 8 || off == 12) {
         arcs_jpeg_clock(io->soc, (io->soc->sysctl.ap_regs[2] & 0x8000) &&
                         (io->soc->sysctl.ap_regs[3] & 0x80000000));
@@ -342,6 +345,9 @@ static uint32_t aon_word(ArcsConfigIO *io, hwaddr off)
 {
     ArcsSysctl *s = &io->soc->sysctl;
     if (aon_storage(off)) { return s->aon_regs[off / 4]; }
+    /* Cold boot has no enabled wake source or wake event. Wake-source writes
+     * remain rejected until their sleep-domain routing is implemented. */
+    if (off == 0x10 || off == 0x24) { return s->aon_regs[off / 4]; }
     if (off == 0x68) { return 0; }
     if (off == 0xa4) {
         uint32_t mask = s->aon_regs[off / 4] & 1;
@@ -471,7 +477,7 @@ void arcs_sysctl_init(ArcsSoC *soc)
         for (unsigned region = 0; region < 4; region++) {
             g_autofree char *name = g_strdup_printf("arcs-remap-%u-%u", kind, region);
             MemoryRegion *alias = &s->remap[kind][region];
-            memory_region_init_alias(alias, OBJECT(soc), name, targets[kind], 0, 16 * MiB);
+            memory_region_init_alias(alias, OBJECT(soc), name, targets[kind], 0, kind ? soc->flash.chips[0]->size : 16 * MiB);
             memory_region_set_enabled(alias, false);
             memory_region_add_subregion_overlap(get_system_memory(), virtual_bases[region], alias, kind);
         }

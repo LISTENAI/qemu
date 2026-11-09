@@ -36,7 +36,7 @@ static void execute(ListenAISpiMem *s)
     uint8_t result[512] = { 0 };
     unsigned received;
     if (length > sizeof(s->rx) - s->rx_count ||
-        !listenai_nor_command(s->select(s->opaque, s->regs[0x28 / 4]), opcode, s->regs[0x28 / 4] & (LISTENAI_NOR_SIZE - 1),
+        !listenai_nor_command(s->select(s->opaque, s->regs[0x28 / 4]), opcode, s->regs[0x28 / 4],
                      data, count, result, length, &received)) {
         spimem_fault(s, 0x24, 4, true, opcode);
     }

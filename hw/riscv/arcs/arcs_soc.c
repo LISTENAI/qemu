@@ -285,6 +285,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_wifi_dma_init(s);
     arcs_bluetooth_init(s);
     arcs_audio_init(s);
+    arcs_qspi_init(s);
     arcs_dma2d_init(s);
     arcs_jpeg_init(s);
     arcs_dvp_init(s);

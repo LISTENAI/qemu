@@ -187,6 +187,7 @@ static void venusa_board_init(MachineState *machine)
 {
     VenusABoard *board = VENUSA_RD_BOARD(machine);
     ListenaiBoard *b = &board->components;
+    b->nor_bytes[0] = LISTENAI_NOR_SIZE;
     const char *path = getenv("LISEM_QEMU_BOARD");
     if (path) { listenai_board_load(b, path, "venusa", 32, 22); }
     if (!strcmp(object_get_typename(OBJECT(machine)), TYPE_VENUSA_BOARD) && !b->configured) {
@@ -203,6 +204,7 @@ static void venusa_board_init(MachineState *machine)
     }
     DriveInfo *flash = drive_get(IF_PFLASH, 0, 0);
     if (!flash) { error_report("VenusA requires a pflash image"); exit(1); }
+    qdev_prop_set_uint32(soc, "flash-bytes", b->nor_bytes[0]);
     qdev_prop_set_drive_err(soc, "flash", blk_by_legacy_dinfo(flash), &error_fatal);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(soc), &error_fatal);
     if (b->expander) {

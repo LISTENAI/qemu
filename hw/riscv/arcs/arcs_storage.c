@@ -9,6 +9,7 @@
 #include "qapi/error.h"
 
 #define FLASH_BASE 0x47600000
+#define FLASH_DELAY_BASE 0x47700000
 #define OTP_BASE 0x48600000
 
 void arcs_nor_init(ArcsNOR *chip, hwaddr address, const char *image, bool persist)
@@ -41,6 +42,9 @@ static ListenAINOR *selected_chip(void *opaque, uint32_t address)
         if (!(mode == 1 || (mode == 0 && in_range == (i == 0))) || !s->chips[i]) {
             continue;
         }
+        if (i == 1 && !arcs_pinmux_function(&s->soc->pinmux[0], 11, 1)) {
+            continue;
+        }
         if (selected) { arcs_soc_fail(s->soc, FLASH_BASE + 0x58, 4, true, config); }
         selected = s->chips[i];
     }
@@ -55,6 +59,29 @@ static bool flash_register(void *opaque, hwaddr off, bool write)
     case 0x50: case 0x54: case 0x58: case 0x80: return true;
     default: return false;
     }
+}
+
+static uint64_t flash_delay_read(void *opaque, hwaddr off, unsigned size)
+{
+    ArcsFlash *s = opaque;
+    if (size != 4 || (off != 0 && off != 4)) {
+        flash_fault(s, FLASH_DELAY_BASE + off, size, false, 0);
+    }
+    return s->delay_regs[off / 4];
+}
+
+static void flash_delay_write(void *opaque, hwaddr off, uint64_t value,
+                              unsigned size)
+{
+    ArcsFlash *s = opaque;
+    /* FLASH_DL CTRL/DLY: the digital SPIB model uses ideal fixed sampling.
+     * The ARCS dual-flash boot driver clears CTRL.DLY_EN (bit 17).
+     * Cycle calibration and analog lock observations remain unsupported. */
+    bool valid = size == 4 && ((off == 0 && !(value & ~0x37fffu) &&
+                               (!(value & 0x20000) || (value & 0x4000))) ||
+                              (off == 4 && !(value & ~0xffu)));
+    if (!valid) { flash_fault(s, FLASH_DELAY_BASE + off, size, true, value); }
+    s->delay_regs[off / 4] = value;
 }
 
 static uint32_t otp_word(ArcsOTP *s, hwaddr off)
@@ -100,6 +127,12 @@ fail:
     .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true }, \
 }
 static const MemoryRegionOps otp_ops = STORAGE_OPS(otp_read, otp_write);
+static const MemoryRegionOps flash_delay_ops = {
+    .read = flash_delay_read, .write = flash_delay_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 void arcs_storage_init(ArcsSoC *soc)
 {
@@ -109,6 +142,9 @@ void arcs_storage_init(ArcsSoC *soc)
     s->soc = o->soc = soc;
     listenai_spimem_init(&s->core, OBJECT(soc), "arcs-spib", FLASH_BASE,
                          selected_chip, flash_register, flash_irq, flash_fault, s);
+    memory_region_init_io(&s->delay_io, OBJECT(soc), &flash_delay_ops, s,
+                          "arcs-flash-delay", 0x1000);
+    memory_region_add_subregion(get_system_memory(), FLASH_DELAY_BASE, &s->delay_io);
     memory_region_init_io(&o->io, OBJECT(soc), &otp_ops, o, "arcs-otp", 0x1000);
     memory_region_add_subregion(get_system_memory(), OTP_BASE, &o->io);
     /* Stable simulated identity; no factory keys or cloud credentials. */
@@ -131,6 +167,8 @@ void arcs_flash_reset(ArcsSoC *soc)
 void arcs_storage_reset(ArcsSoC *soc)
 {
     arcs_flash_reset(soc);
+    soc->flash.delay_regs[0] = 0;
+    soc->flash.delay_regs[1] = 0;
     soc->otp.control = 0;
     soc->otp.timing = 0x10982611; soc->otp.divider = 2;
 }

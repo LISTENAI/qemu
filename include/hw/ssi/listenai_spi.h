@@ -29,6 +29,7 @@ typedef struct ListenaiSPIHardware {
 } ListenaiSPIHardware;
 
 #define TYPE_LISTENAI_SPI "listenai-spi"
+#define TYPE_LISTENAI_QSPI_LCD "listenai-qspi-lcd"
 OBJECT_DECLARE_SIMPLE_TYPE(ListenaiSPI, LISTENAI_SPI)
 
 struct ListenaiSPI {
@@ -45,6 +46,8 @@ struct ListenaiSPI {
     uint32_t regs[32], fifo[16], rx_fifo[16], pending;
     unsigned head, count, rx_head, rx_count, bits, mode;
     ListenaiSPIHardware hardware;
+    bool lcd;
+    unsigned fifo_bytes[16];
     bool serial, selected, pin_clock, pin_data, inflight, consumed;
     unsigned bit_index, half_edges, tx_left, rx_packed;
     uint32_t serial_tx, serial_rx, packed_tx, packed_rx;

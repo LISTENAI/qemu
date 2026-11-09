@@ -17,7 +17,7 @@ arcs_sources = files(
   'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c',
   'arcs_aon_wdt.c', 'arcs_dual_timer.c', 'arcs_bluetooth.c',
   '../../core/listenai-ble-central.c',
-  'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c',
+  'arcs_qspi.c', 'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c',
   'arcs_wifi_ap.c', 'arcs_wifi_security.c', 'arcs_hsu.c',
   'arcs_aes.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c',
 )

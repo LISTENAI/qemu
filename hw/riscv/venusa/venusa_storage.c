@@ -46,7 +46,7 @@ void venusa_storage_init(VenusASoC *s)
                     UINT64_C(0x00002f7727200080), true, blk_by_name("sdcard"),
                     qemu_allocate_irq(sd_irq, s, 0), flash_fault, s);
     listenai_sd_enable_unadvertised_sdma(&s->sd);
-    listenai_nor_init_block(&s->nor, OBJECT(s), "venusa-nor", 0x30000000, s->flash);
+    listenai_nor_init_block(&s->nor, OBJECT(s), "venusa-nor", 0x30000000, s->flash, s->flash_bytes);
     listenai_spimem_init(&s->flash_ctrl, OBJECT(s), "venusa-spib", 0x44200000,
                         select_flash, valid_register, flash_irq, flash_fault, s);
 }

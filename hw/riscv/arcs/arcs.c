@@ -44,7 +44,7 @@ struct ArcsMachine {
     ArcsSoC soc;
     ListenaiBoard board;
     ListenAIXccela psram;
-    ArcsNOR flash;
+    ArcsNOR flash, flash_cs1;
     DeviceState *screen;
     DeviceState *camera;
     DeviceState *touch;
@@ -1169,8 +1169,15 @@ static void machine_init(MachineState *machine)
     }
     arcs_xccela_init(&s->psram, s->board.psram_bytes);
     memory_region_add_subregion(get_system_memory(), 0x28000000, &s->psram.ram);
-    arcs_nor_init(&s->flash, 0x30000000, machine->firmware,
-                  getenv("ARCS_QEMU_FLASH_PERSIST") != NULL);
+    bool persist = getenv("ARCS_QEMU_FLASH_PERSIST") != NULL;
+    listenai_nor_init_capacity(&s->flash, NULL, "arcs-nor-cs0", 0x30000000,
+                               machine->firmware, persist, s->board.nor_bytes[0]);
+    if (s->board.nor_cs1) {
+        listenai_nor_init_capacity(&s->flash_cs1, NULL, "arcs-nor-cs1",
+                                   0x31000000,
+                                   getenv("ARCS_QEMU_FLASH_CS1_IMAGE"), persist,
+                                   s->board.nor_bytes[1]);
+    }
     object_initialize_child(OBJECT(machine), "soc", &s->soc, TYPE_ARCS_SOC);
     qdev_prop_set_uint64(DEVICE(&s->soc), "entry", entry);
     qdev_prop_set_uint32(DEVICE(&s->soc), "boot-hart", boot_hart);
@@ -1181,6 +1188,9 @@ static void machine_init(MachineState *machine)
     s->soc.report_opaque = s;
     s->soc.psram.chip = &s->psram;
     s->soc.flash.chips[0] = &s->flash;
+    if (s->board.nor_cs1) {
+        s->soc.flash.chips[1] = &s->flash_cs1;
+    }
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
     object_property_add_str(OBJECT(s), "x-lisa-signals", NULL, signals_set);
     object_property_add_bool(OBJECT(s), "x-arcs-boot-asserted", boot_pin_get, boot_pin_set);

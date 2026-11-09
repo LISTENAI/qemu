@@ -256,6 +256,7 @@ static void realize(DeviceState *dev, Error **errp)
 }
 
 static const Property properties[] = {
+    DEFINE_PROP_UINT32("flash-bytes", VenusASoC, flash_bytes, LISTENAI_NOR_SIZE),
     DEFINE_PROP_DRIVE("flash", VenusASoC, flash),
 };
 

@@ -85,6 +85,7 @@ struct VenusASoC {
     uint32_t board_inputs[2];
     uint8_t otp[64];
     BlockBackend *flash;
+    uint32_t flash_bytes;
     QEMUTimer *deadline;
     bool reported, follow_hclk;
     bool reset_preserve_aon;

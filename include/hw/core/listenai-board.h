@@ -30,6 +30,9 @@ typedef struct ListenaiBoard {
     unsigned typec_scl, typec_sda, typec_address, typec_i2c, typec_irq, typec_id_pin;
     DeviceState *typec_device;
     unsigned psram_bytes;
+    uint32_t nor_bytes[2];
+    bool nor_cs1;
+    unsigned nor_cs1_pad;
     uint64_t pull_mask, pull_levels;
     uint32_t extio_pull_mask, extio_pull_levels;
     unsigned lcd_sck, lcd_sdi, lcd_cs, lcd_dc, lcd_reset, lcd_te;

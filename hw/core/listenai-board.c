@@ -2,6 +2,7 @@
 /* Board components and connections, independent of the SoC address map. */
 #include "qemu/osdep.h"
 #include "hw/core/listenai-board.h"
+#include "hw/block/listenai_nor.h"
 #include "hw/irq.h"
 #include "hw/display/st7789.h"
 #include "hw/i2c/listenai_extio.h"
@@ -61,6 +62,7 @@ static unsigned gpio_endpoint(ListenaiBoard *b, QDict *dict, const char *field, 
 void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
                          unsigned pa_pads, unsigned pb_pads)
 {
+    b->nor_bytes[0] = LISTENAI_NOR_SIZE;
     g_autofree char *text = NULL;
     gsize length;
     if (!g_file_get_contents(path, &text, &length, NULL) || length > 65536) {
@@ -83,6 +85,31 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         if (b->extio_address != 0x6c && b->extio_address != 0x15) { invalid("extio address strap"); }
     }
     b->configured = true;
+    b->nor_cs1 = qdict_haskey(dict, "nor_cs1");
+    if (b->nor_cs1) {
+        QDict *p = qdict_get_qdict(dict, "nor_cs1");
+        b->nor_cs1_pad = pad(p, "CS", pa_pads, pb_pads);
+        if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) {
+            invalid("secondary NOR chip adapter");
+        }
+    }
+    if (b->nor_cs1) { b->nor_bytes[1] = LISTENAI_NOR_SIZE; }
+    if (qdict_haskey(dict, "nor")) {
+        QList *chips = qdict_get_qlist(dict, "nor");
+        const QListEntry *entry;
+        memset(b->nor_bytes, 0, sizeof(b->nor_bytes));
+        QLIST_FOREACH_ENTRY(chips, entry) {
+            QDict *p = qobject_to(QDict, qlist_entry_obj(entry));
+            unsigned cs = number(p, "chip_select", 1);
+            uint32_t size = number(p, "capacity_bytes", LISTENAI_NOR_SIZE);
+            if (b->nor_bytes[cs] || size < 65536 || (size & (size - 1)) ||
+                (cs && !strcmp(chip, "venusa"))) { invalid("NOR geometry"); }
+            b->nor_bytes[cs] = size;
+        }
+        if (!b->nor_bytes[0]) { invalid("missing primary NOR"); }
+        b->nor_cs1 = b->nor_bytes[1] != 0;
+        b->nor_cs1_pad = 11;
+    }
     b->typec = qdict_haskey(dict, "typec");
     if (b->typec) {
         QDict *p = qdict_get_qdict(dict, "typec");

@@ -11,6 +11,8 @@ typedef struct ArcsSPI {
     int selected_pad[4];
     bool dma_request[2];
 } ArcsSPI;
+void arcs_qspi_init(ArcsSoC *soc);
+void arcs_qspi_clock_changed(ArcsSoC *soc);
 void arcs_spi_init(ArcsSoC *soc);
 void arcs_spi_clock_changed(ArcsSoC *soc, unsigned index);
 void arcs_spi_update_dma(ArcsSoC *soc);

@@ -32,6 +32,7 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
         .panel = true, .camera = true, .sd = true, .amplifier = true,
         .sd_detect = evb, .touch = evb, .touch_scl = 23, .touch_sda = 22, .touch_irq = 24,
         .psram_bytes = 16 * 1024 * 1024,
+        .nor_bytes = {LISTENAI_NOR_SIZE, 0},
         .lcd_sck = evb ? 35 : 25, .lcd_sdi = evb ? 33 : 24,
         .lcd_cs = evb ? 37 : 22, .lcd_dc = evb ? 32 : 23,
         .lcd_reset = evb ? 1 : 41, .lcd_te = evb ? 40 : 27,
@@ -53,6 +54,7 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
     b->psram_bytes = !strcmp(chip, "ls2663") ? 8 * 1024 * 1024 : 16 * 1024 * 1024;
     listenai_board_load(b, path, chip, 28, 10);
     qobject_unref(root);
+    if (b->nor_cs1 && b->nor_cs1_pad != 11) { invalid("SPIB CS1 pad route"); }
     if (b->camera) {
         b->camera_i2c = i2c_route(b->camera_pads[LISTENAI_CAM_SCL], b->camera_pads[LISTENAI_CAM_SDA]);
         static const unsigned dvp[] = {26, 12, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20};
