@@ -369,11 +369,18 @@ static void apc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             }
             if ((off == 0x14 && (stored & 0x30000000) > 0x10000000) ||
                 (off == 0x18 &&
-                 ((stored & 0x30000000) > 0x10000000 || (stored & 0x600)))) {
+                 ((stored & 0x30000000) > 0x10000000 ||
+                  ((stored & 0x600) && (stored & 0x30000000) != 0x10000000)))) {
                 goto fail;
             }
         }
-        if (off == 0x18) { stored &= ~0x1000u; } /* SRC clear pulse; SRC remains unsupported. */
+        if (off == 0x18) {
+            if (value & 0x1000) {
+                memset(s->src_delay, 0, sizeof(s->src_delay));
+                memset(s->src_phase, 0, sizeof(s->src_phase));
+            }
+            stored &= ~0x1000u;
+        }
         s->regs[off / 4] = stored;
     } else if (off == 0xe4 || off == 0xec) {
         unsigned p = (off - 0xe4) / 8;
@@ -608,6 +615,8 @@ void arcs_apc_reset(ArcsSoC *soc)
     ArcsAPC *s = &soc->apc;
     memset(s->regs, 0, sizeof(s->regs)); memset(s->pending, 0, sizeof(s->pending));
     memset(s->previous, 0, sizeof(s->previous)); s->reads = s->nonzero = 0;
+    memset(s->src_delay, 0, sizeof(s->src_delay));
+    memset(s->src_phase, 0, sizeof(s->src_phase));
     s->regs[0x114 / 4] = 0xffffff; s->regs[0x118 / 4] = 0xfffff;
     for (unsigned ch = 0; ch < 8; ch++) { clear_channel(s, ch); }
     arcs_i2s_reset(soc);
@@ -658,6 +667,47 @@ static void codec_update(ArcsCodec *s)
     configure(&s->dac, dac ? rate(s, s->regs[15] & 15, false) : 0);
 }
 
+/* LS26 CSUM-25001-0025 v1.0, Fig. 26.3: four fixed S(24,23)
+ * biquads with S(12,10) coefficients and S(31,23) delay state.
+ * Mini2 impulse phases and independent random input confirm rounding ties
+ * away from zero, and decimation at input indices 0, N, 2N after SRC_CLR.
+ */
+static int64_t src_round(int64_t product)
+{
+    return (product + 512 - (product < 0)) >> 10;
+}
+
+static int32_t src_sat(int64_t value)
+{
+    return MAX(-8388608, MIN(8388607, value));
+}
+
+static bool src_sample(ArcsAPC *s, unsigned lane, int32_t input, int32_t *output)
+{
+    static const int coefficients[2][4][4] = {
+        { { -1627, -1794, 943, 3 }, { -1319, -1791, 866, 3 },
+          { 435, -1792, 795, 5 }, { -1702, -1811, 1000, 1 } },
+        { { -614, -1226, 879, 3 }, { 17, -1363, 733, 3 },
+          { 1550, -1507, 595, 3 }, { -811, -1173, 982, 1 } },
+    };
+    unsigned mode = !!(s->regs[6] & 0x800);
+    int32_t value = input;
+    for (unsigned stage = 0; stage < 4; stage++) {
+        const int *c = coefficients[mode][stage];
+        int64_t z1 = s->src_delay[lane][stage][0];
+        int64_t z2 = s->src_delay[lane][stage][1];
+        int64_t v = value - src_round(c[1] * z1) - src_round(c[2] * z2);
+        v = sextract64(v, 0, 31);
+        value = src_sat((v + src_round(c[0] * z1) + z2) >> c[3]);
+        s->src_delay[lane][stage][1] = z1;
+        s->src_delay[lane][stage][0] = v;
+    }
+    *output = src_sat(src_round((int64_t)value * (mode ? 1930 : 1544)));
+    bool deliver = s->src_phase[lane] == 0;
+    s->src_phase[lane] = (s->src_phase[lane] + 1) % (mode ? 3 : 6);
+    return deliver;
+}
+
 static void sample(void *opaque)
 {
     ArcsSampleClock *t = opaque;
@@ -694,7 +744,19 @@ static void sample(void *opaque)
             if ((apc->regs[6] & 0x30000000) == 0x10000000) {
                 int64_t normalized = (int64_t)values[ch] *
                                      (INT64_C(1) << (32 - sample_bits(apc, ch)));
-                receive_sample(apc, ch + 2, normalized >> (32 - sample_bits(apc, ch + 6)));
+                bool deliver = true;
+                if ((apc->regs[6] & (0x200u << ch)) && apc->clock &&
+                    (apc->regs[0] & 1)) {
+                    if (t->rate != 48000) {
+                        arcs_soc_fail(s->soc, APC_BASE + 0x18, 4, true, apc->regs[6]);
+                    }
+                    int32_t converted;
+                    deliver = src_sample(apc, ch, normalized >> 8, &converted);
+                    normalized = (int64_t)converted * 256;
+                }
+                if (deliver) {
+                    receive_sample(apc, ch + 2, normalized >> (32 - sample_bits(apc, ch + 6)));
+                }
             }
         }
         if (enabled(apc, 0)) {

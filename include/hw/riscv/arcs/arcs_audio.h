@@ -37,6 +37,8 @@ struct ArcsAPC {
     unsigned head[8], count[8];
     bool half_valid[8], right_next[4], clock;
     ArcsI2SPort serial[2];
+    int32_t src_delay[2][4][2];
+    unsigned src_phase[2];
     uint64_t reads, nonzero;
 };
 typedef struct ArcsCodec ArcsCodec;
