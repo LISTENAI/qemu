@@ -155,13 +155,13 @@ config VENUSA_RGB
 
 config ST7789
     bool
-    select SITRONIX_LCD
+    select SERIAL_LCD
 
 config SC919
     bool
-    select SITRONIX_LCD
+    select SERIAL_LCD
 
-config SITRONIX_LCD
+config SERIAL_LCD
     bool
     select SSI
 

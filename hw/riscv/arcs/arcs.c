@@ -11,7 +11,7 @@
 #include "hw/i2c/listenai_extio.h"
 #include "hw/riscv/arcs/arcs_wifi_ap.h"
 #include "hw/riscv/arcs/arcs_network.h"
-#include "hw/display/sitronix_lcd.h"
+#include "hw/display/serial_lcd.h"
 #include "hw/i2c/gc0328.h"
 #include "ui/lisa_display.h"
 #include "hw/audio/lisa_stream.h"
@@ -805,7 +805,7 @@ static void backlight(void *opaque)
 {
     ArcsMachine *s = opaque;
     if (s->screen && !s->board.epaper) {
-        sitronix_lcd_backlight(s->screen, arcs_board_backlight(&s->board, &s->soc));
+        serial_lcd_backlight(s->screen, arcs_board_backlight(&s->board, &s->soc));
     }
 }
 

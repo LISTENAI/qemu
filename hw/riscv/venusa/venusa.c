@@ -8,7 +8,7 @@
 #include "hw/core/listenai-board.h"
 #include "hw/core/listenai-board-inputs.h"
 #include "hw/i2c/listenai_extio.h"
-#include "hw/display/sitronix_lcd.h"
+#include "hw/display/serial_lcd.h"
 #include "hw/irq.h"
 #include "ui/lisa_display.h"
 #include "qobject/qjson.h"
@@ -35,7 +35,7 @@ static void backlight(void *opaque, int unused, int level)
     unsigned pad = s->components.backlight_pad;
     if (pad >= 64) {
         double duty = listenai_extio_duty(s->components.extio, pad - 64);
-        sitronix_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
+        serial_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
         return;
     }
     uint32_t driven, levels;
@@ -44,7 +44,7 @@ static void backlight(void *opaque, int unused, int level)
     if (pad == 14 && listenai_pinmux_function(&s->soc->pinmux, pad, 11)) {
         duty = venusa_gpt_duty(&s->soc->gpt, 0);
     }
-    sitronix_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
+    serial_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
 }
 
 static bool extio_route(void *opaque)

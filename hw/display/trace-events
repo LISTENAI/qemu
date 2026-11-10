@@ -228,3 +228,9 @@ apple_gfx_iosfc_unmap_memory(void *a, void *b, void *c, void *d, void *e, void *
 apple_gfx_iosfc_unmap_memory_region(void* mem, void *region) "unmapping @ %p from memory region %p"
 apple_gfx_iosfc_raise_irq(uint32_t vector) "vector=0x%x"
 
+
+# serial_lcd.c
+serial_lcd_command(const char *model, uint8_t command) "%s command=0x%02x"
+serial_lcd_window(uint8_t command, unsigned first, unsigned last) "command=0x%02x start=%u end=%u"
+serial_lcd_scan(int64_t time_ns, bool blanking, uint64_t pixels) "time_ns=%" PRId64 " blanking=%d pixels=%" PRIu64
+serial_lcd_transaction(int64_t time_ns, uint8_t command, uint64_t pixels) "time_ns=%" PRId64 " command=0x%02x pixels=%" PRIu64

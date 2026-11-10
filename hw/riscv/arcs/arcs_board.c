@@ -6,7 +6,7 @@
 #include "hw/i2c/listenai_extio.h"
 #include "hw/core/split-irq.h"
 #include "hw/qdev-properties.h"
-#include "hw/display/sitronix_lcd.h"
+#include "hw/display/serial_lcd.h"
 #include "qapi/error.h"
 #include "qobject/qjson.h"
 #include "qobject/qnum.h"
@@ -106,7 +106,7 @@ static SSIBus *qspi_panel_bus(void *opaque)
         connected &= arcs_qspi_pad_selected(soc, i + 1, b->lcd_data[i]);
     }
     if (!connected) { return spi->bus; }
-    sitronix_lcd_qspi_lanes(b->panel_device, lanes);
+    serial_lcd_qspi_lanes(b->panel_device, lanes);
     return b->panel_bus;
 }
 

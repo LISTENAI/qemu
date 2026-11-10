@@ -5,7 +5,7 @@
 #include "hw/block/listenai_nor.h"
 #include "hw/irq.h"
 #include "hw/input/quadrature.h"
-#include "hw/display/sitronix_lcd.h"
+#include "hw/display/serial_lcd.h"
 #include "hw/display/jd79651c.h"
 #include "hw/i2c/listenai_extio.h"
 #include "hw/i2c/husb320.h"
@@ -156,12 +156,13 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (b->panel) {
         QDict *p = qdict_get_qdict(dict, "panel");
         const char *controller = qdict_get_try_str(p, "model");
-        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_SC919) && strcmp(controller, TYPE_JD79651C)) {
+        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_SC919) && strcmp(controller, TYPE_AXS15231E) && strcmp(controller, TYPE_JD79651C)) {
             invalid("display controller model");
         }
         b->epaper = controller && !strcmp(controller, TYPE_JD79651C);
         b->panel_otp_luts = g_strdup(qdict_get_try_str(p, "otp_luts"));
-        b->lcd_qspi = controller && !strcmp(controller, "sc919");
+        b->lcd_axs = controller && !strcmp(controller, TYPE_AXS15231E);
+        b->lcd_qspi = b->lcd_axs || (controller && !strcmp(controller, "sc919"));
         b->panel_id = g_strdup(qdict_get_try_str(p, "id"));
         b->panel_controller_id = g_strdup(qdict_get_try_str(p, "controller_id"));
         b->backlight_id = g_strdup(qdict_get_try_str(p, "backlight_id"));
@@ -184,13 +185,13 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         }
         b->lcd_cs = gpio_endpoint(b, pins, "CS", pa_pads, pb_pads);
         b->lcd_reset = gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads); b->lcd_te = b->epaper ? gpio_endpoint(b, pins, "BUSY", pa_pads, pb_pads) : pad(pins, "TE", pa_pads, pb_pads);
-        b->lcd_width = number(p, "width", 240);
-        b->lcd_height = number(p, "height", 320);
-        b->lcd_x = number(p, "x_offset", 239); b->lcd_y = number(p, "y_offset", 319);
+        b->lcd_width = number(p, "width", b->lcd_axs ? 180 : 240);
+        b->lcd_height = number(p, "height", b->lcd_axs ? 720 : 320);
+        b->lcd_x = number(p, "x_offset", b->lcd_axs ? 179 : 239); b->lcd_y = number(p, "y_offset", b->lcd_axs ? 719 : 319);
         b->lcd_rotation = number(p, "rotation", 270);
         if (!b->lcd_width || !b->lcd_height || b->lcd_rotation % 90 ||
-            b->lcd_x + b->lcd_width > (b->epaper ? 176 : 240) ||
-            b->lcd_y + b->lcd_height > (b->epaper ? 296 : 320)) {
+            b->lcd_x + b->lcd_width > (b->epaper ? 176 : b->lcd_axs ? 180 : 240) ||
+            b->lcd_y + b->lcd_height > (b->epaper ? 296 : b->lcd_axs ? 720 : 320)) {
             invalid("panel viewport");
         }
         if (b->epaper) {
@@ -388,7 +389,7 @@ QDict *listenai_board_display_snapshot(ListenaiBoard *b)
         qdict_put_str(result, "reason", "Display device IDs or model are unavailable");
     } else if (b->panel) {
         QDict *panel = b->epaper ? jd79651c_display_state(b->panel_device)
-                                 : sitronix_lcd_display_state(b->panel_device);
+                                 : serial_lcd_display_state(b->panel_device);
         QDict *light = qdict_new();
         qdict_put_bool(panel, "available", true);
         qdict_put_str(panel, "controller_id", b->panel_controller_id);
@@ -451,7 +452,7 @@ void listenai_board_attach_typec(ListenaiBoard *b, Object *owner, DeviceState *s
 
 DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
 {
-    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : (b->lcd_qspi ? TYPE_SC919 : TYPE_ST7789));
+    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : (b->lcd_axs ? TYPE_AXS15231E : b->lcd_qspi ? TYPE_SC919 : TYPE_ST7789));
     b->panel_device = panel;
     object_property_add_child(owner, "screen", OBJECT(panel));
     qdev_prop_set_uint32(panel, "width", b->lcd_width);
@@ -642,7 +643,7 @@ void listenai_board_pulls_apply(ListenaiBoard *b, DeviceState *soc)
     /* Peripheral reset can precede the receiving GPIO controller's reset. */
     if (b->panel_device) {
         if (b->epaper) { jd79651c_redrive(b->panel_device); }
-        else { sitronix_lcd_redrive(b->panel_device); }
+        else { serial_lcd_redrive(b->panel_device); }
     }
 }
 
@@ -650,19 +651,19 @@ void listenai_board_panel_failure_callback(ListenaiBoard *b,
     void (*fn)(void *, const char *), void *opaque)
 {
     if (b->epaper) { jd79651c_failure_callback(b->panel_device, fn, opaque); }
-    else { sitronix_lcd_failure_callback(b->panel_device, fn, opaque); }
+    else { serial_lcd_failure_callback(b->panel_device, fn, opaque); }
 }
 
 void listenai_board_panel_report(ListenaiBoard *b, FILE *stream)
 {
     if (b->epaper) { jd79651c_report(b->panel_device, stream); }
-    else { sitronix_lcd_report(b->panel_device, stream); }
+    else { serial_lcd_report(b->panel_device, stream); }
 }
 
 void listenai_board_panel_save(ListenaiBoard *b, const char *path)
 {
     if (b->epaper) { jd79651c_save(b->panel_device, path); }
-    else { sitronix_lcd_save(b->panel_device, path); }
+    else { serial_lcd_save(b->panel_device, path); }
 }
 
 DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
