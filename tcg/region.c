@@ -49,6 +49,14 @@
 struct tcg_region_tree {
     QemuMutex lock;
     QTree *tree;
+    /*
+     * MMIO replay repeatedly resolves the same host return addresses. Keep
+     * successful lookups under the tree lock and invalidate on tree changes.
+     */
+    struct {
+        uintptr_t pc;
+        TranslationBlock *tb;
+    } lookup[64];
     /* padding to avoid false sharing is computed at run-time */
 };
 
@@ -188,6 +196,7 @@ static void tcg_region_trees_init(void)
 
         qemu_mutex_init(&rt->lock);
         rt->tree = q_tree_new_full(tb_tc_cmp, NULL, NULL, tb_destroy);
+        memset(rt->lookup, 0, sizeof(rt->lookup));
     }
 }
 
@@ -226,6 +235,7 @@ void tcg_tb_insert(TranslationBlock *tb)
 
     g_assert(rt != NULL);
     qemu_mutex_lock(&rt->lock);
+    memset(rt->lookup, 0, sizeof(rt->lookup));
     q_tree_insert(rt->tree, &tb->tc, tb);
     qemu_mutex_unlock(&rt->lock);
 }
@@ -236,6 +246,7 @@ void tcg_tb_remove(TranslationBlock *tb)
 
     g_assert(rt != NULL);
     qemu_mutex_lock(&rt->lock);
+    memset(rt->lookup, 0, sizeof(rt->lookup));
     q_tree_remove(rt->tree, &tb->tc);
     qemu_mutex_unlock(&rt->lock);
 }
@@ -250,13 +261,21 @@ TranslationBlock *tcg_tb_lookup(uintptr_t tc_ptr)
     struct tcg_region_tree *rt = tc_ptr_to_region_tree((void *)tc_ptr);
     TranslationBlock *tb;
     struct tb_tc s = { .ptr = (void *)tc_ptr };
+    unsigned index;
 
     if (rt == NULL) {
         return NULL;
     }
 
     qemu_mutex_lock(&rt->lock);
-    tb = q_tree_lookup(rt->tree, &s);
+    index = ((tc_ptr >> 2) ^ (tc_ptr >> 11)) % ARRAY_SIZE(rt->lookup);
+    if (rt->lookup[index].tb && rt->lookup[index].pc == tc_ptr) {
+        tb = rt->lookup[index].tb;
+    } else {
+        tb = q_tree_lookup(rt->tree, &s);
+        rt->lookup[index].pc = tc_ptr;
+        rt->lookup[index].tb = tb;
+    }
     qemu_mutex_unlock(&rt->lock);
     return tb;
 }
@@ -320,6 +339,7 @@ static void tcg_region_tree_reset_all(void)
         struct tcg_region_tree *rt = region_trees + i * tree_size;
 
         /* Increment the refcount first so that destroy acts as a reset */
+        memset(rt->lookup, 0, sizeof(rt->lookup));
         q_tree_ref(rt->tree);
         q_tree_destroy(rt->tree);
     }
