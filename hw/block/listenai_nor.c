@@ -96,6 +96,31 @@ static void nor_write(ListenAINOR *chip, uint32_t off, const uint8_t *data, unsi
     }
 }
 
+/* W25Q status-register array protection (WPS=0). BP selects a range,
+ * TB its end, SEC sector granularity, and CMP the complement. Commands
+ * touching a protected byte are ignored, including whole-chip erases. */
+static int nor_protected(ListenAINOR *chip, uint32_t start, uint32_t length)
+{
+    unsigned bp = (chip->status[0] >> 2) & 7;
+    bool sectors = chip->status[0] & 0x40;
+    if ((chip->status[2] & 4) || (sectors && bp == 6)) {
+        return -1; /* Individual locks and reserved SEC/BP are unsupported. */
+    }
+    uint32_t size = !bp ? 0 : bp == 7 ? chip->size : sectors
+        ? 4096u << MIN(bp - 1, 3)
+        : MIN(chip->size, MAX(65536u, chip->size / 64) << (bp - 1));
+    bool bottom = chip->status[0] & 0x20;
+    if (chip->status[1] & 0x40) {
+        size = chip->size - size;
+        bottom = !bottom;
+    }
+    if (!size) {
+        return 0;
+    }
+    uint32_t first = bottom ? 0 : chip->size - size;
+    return start < first + size && start + length > first;
+}
+
 bool listenai_nor_command(ListenAINOR *chip, uint8_t op, uint32_t address,
                         const uint8_t *tx, unsigned count, uint8_t *rx,
                         unsigned length, unsigned *received)
@@ -156,9 +181,11 @@ bool listenai_nor_command(ListenAINOR *chip, uint8_t op, uint32_t address,
         break;
     case 0x02: case 0x32:
         if (chip->wel) {
-            if (chip->status[0] & 0x7c) { return false; }
             uint8_t page[256];
             uint32_t start = address & ~255u;
+            int protection = nor_protected(chip, start, sizeof(page));
+            if (protection < 0) { return false; }
+            if (protection) { chip->wel = false; break; }
             memcpy(page, bytes + start, sizeof(page));
             for (unsigned i = 0; i < count; i++) { page[(address + i) & 255] &= tx[i]; }
             nor_write(chip, start, page, sizeof(page));
@@ -167,9 +194,11 @@ bool listenai_nor_command(ListenAINOR *chip, uint8_t op, uint32_t address,
         break;
     case 0x20: case 0x52: case 0xd8: case 0x60: case 0xc7:
         if (chip->wel) {
-            if (chip->status[0] & 0x7c) { return false; }
             unsigned size = op == 0x20 ? 4096 : op == 0x52 ? 32768 :
                             op == 0xd8 ? 65536 : chip->size;
+            int protection = nor_protected(chip, address & ~(size - 1), size);
+            if (protection < 0) { return false; }
+            if (protection) { chip->wel = false; break; }
             g_autofree uint8_t *erased = g_malloc(size);
             memset(erased, 0xff, size);
             nor_write(chip, address & ~(size - 1), erased, size);
