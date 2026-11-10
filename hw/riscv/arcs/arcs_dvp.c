@@ -85,8 +85,10 @@ static void schedule_pixels(ArcsDVP *s)
     /* Keep original insertion order for a word exactly one DMA service
      * interval after its predecessor (including an inter-line gap). */
     uint64_t period = s->frame.byte_clocks * 4 * 1000000000;
-    if ((period / s->frame.hz <= ARCS_GPDMA_SERVICE_NS && DIV_ROUND_UP(period, s->frame.hz) >= ARCS_GPDMA_SERVICE_NS) ||
-        s->deadline - s->word_armed_at == ARCS_GPDMA_SERVICE_NS) { skip = 0; }
+    int64_t service_ns = arcs_gpdma_service_ns(s->soc);
+    if ((period / s->frame.hz <= service_ns &&
+         DIV_ROUND_UP(period, s->frame.hz) >= service_ns) ||
+        s->deadline - s->word_armed_at == service_ns) { skip = 0; }
     int64_t target = word_deadline(s, s->x + skip * 4, s->y);
     if (!timer_pending(s->event) || timer_expire_time_ns(s->event) != target) {
         timer_mod(s->event, target);
@@ -127,7 +129,7 @@ void arcs_dvp_sync(ArcsSoC *soc)
     bool dma_due = soc->gpdma.deadline == now &&
         (soc->gpdma.servicing || timer_pending(soc->gpdma.event));
     if (s->phase == PIXELS && s->deadline == now &&
-        !(dma_due && s->word_armed_at > now - ARCS_GPDMA_SERVICE_NS)) { arrive_word(s); }
+        !(dma_due && s->word_armed_at > now - arcs_gpdma_service_ns(s->soc))) { arrive_word(s); }
     signals(s);
     if (s->phase == END) { timer_mod(s->event, s->deadline); }
     else { schedule_pixels(s); }

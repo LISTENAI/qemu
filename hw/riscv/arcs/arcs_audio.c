@@ -24,12 +24,22 @@ static bool ready(ArcsGPDMA *s, ArcsAudioChannel *c)
     return c->busy && (c->mode == 2 || s->requests[c->control >> 28]);
 }
 
+int64_t arcs_gpdma_service_ns(ArcsSoC *soc)
+{
+    uint64_t numerator, denominator;
+    arcs_hclk_ratio(soc, &numerator, &denominator);
+    /* Estimated arbitration quantum: 24 HCLK cycles. Keep it in bus-clock
+     * units so fast peripheral handshakes are not throttled to XTAL speed.
+     * This functional model does not model AHB contention cycle by cycle. */
+    return DIV_ROUND_UP(24 * UINT64_C(1000000000) * denominator, numerator);
+}
+
 static void schedule(ArcsGPDMA *s, int64_t now)
 {
     if (s->servicing || timer_pending(s->event)) { return; }
     for (unsigned i = 0; i < 6; i++) {
         if (ready(s, &s->channel[i])) {
-            s->deadline = now + ARCS_GPDMA_SERVICE_NS; timer_mod(s->event, s->deadline); return;
+            s->deadline = now + arcs_gpdma_service_ns(s->soc); timer_mod(s->event, s->deadline); return;
         }
     }
 }

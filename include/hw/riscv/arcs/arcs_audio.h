@@ -67,6 +67,7 @@ void arcs_i2s_pad_input(ArcsSoC *soc, unsigned pad, bool level);
 void arcs_i2s_reset(ArcsSoC *soc);
 void arcs_i2s_clock(ArcsSoC *soc);
 void arcs_audio_init(ArcsSoC *soc);
+int64_t arcs_gpdma_service_ns(ArcsSoC *soc);
 void arcs_gpdma_reset(ArcsSoC *soc);
 void arcs_apc_reset(ArcsSoC *soc);
 void arcs_codec_reset(ArcsSoC *soc);

@@ -40,7 +40,10 @@ static uint64_t clock_rate(void *opaque)
     if (cfg & 0x100000) {
         if (!(pll[2] & 1)) { return 0; }
         if (pll[6] & 0x100) { arcs_soc_fail(soc, 0x46100018, 4, false, pll[6]); }
-        hz = hz * (pll[6] & 255) / 12;
+        /* QSPI0/1 select the Flash post-divider, unlike peripheral SPI.
+         * This is the clock selected by HAL_CRM_GetQspi1ClkConfig. */
+        static const unsigned dividers[] = {6, 8, 10, 12};
+        hz = hz * (pll[6] & 255) / dividers[(pll[3] >> 9) & 3];
     }
     unsigned n = (cfg >> 26) & 7, m = (cfg >> 22) & 15;
     if (!n || !m) { arcs_soc_fail(soc, 0x4580000c, 4, false, cfg); }
