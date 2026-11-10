@@ -201,7 +201,9 @@ static void prepare_frame(BF3901State *s) {
         xs = r[0xda];
         xe = r[0xdb];
         ys = r[0xdc] | ((r[0xde] & 1) << 8);
-        ye = r[0xdd] | ((r[0xde] & 0x20) << 3);
+        /* The serial sensor uses bit 4 for Y_END[8], consistent with the
+         * 328-row reset window (DD=0x48, DE=0x10). */
+        ye = r[0xdd] | ((r[0xde] & 0x10) << 4);
     }
     if (xe <= xs || ye <= ys || xe > 248 || ye > 328) {
         fail("array window");
