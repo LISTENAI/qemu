@@ -9,6 +9,7 @@
 #include "hw/irq.h"
 #include "system/block-backend.h"
 #include "qapi/error.h"
+#include "../trace.h"
 
 static bool adc_valid(hwaddr off, unsigned size)
 {
@@ -43,15 +44,19 @@ static uint64_t adc_read(void *opaque, hwaddr off, unsigned size)
     if (off >= 0xb0) {
         unsigned ch = (off - 0xb0) / 4;
         if (s->count[ch]) {
-            value = s->fifo[ch][s->head[ch]];
+            s->read_data[ch] = s->fifo[ch][s->head[ch]];
             s->head[ch] = (s->head[ch] + 1) % 16; s->count[ch]--;
         }
+        /* Empty reads retain the data register; they do not create samples
+         * or change the FIFO's empty indication. */
+        value = s->read_data[ch];
         adc_irq(s);
     } else if (off >= 0xa0) {
         for (unsigned i = 0; i < 4; i++) { value |= s->count[off - 0xa0 + i] << (8 * i); }
     } else if (off >= 0x84 && off <= 0x8c) {
         value = s->regs[(off - 12) / 4] & ~s->regs[(off - 36) / 4];
     } else { value = s->regs[off / 4]; }
+    trace_arcs_gpadc_access(false, off + shift / 8, value >> shift);
     return value >> shift;
 }
 
@@ -74,6 +79,7 @@ static void adc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsADC *s = opaque;
     if (!adc_valid(off, size)) { goto fail; }
+    trace_arcs_gpadc_access(true, off, value);
     unsigned shift = (off & 3) * 8;
     uint32_t aligned = off & ~3u;
     uint32_t val = value << shift;
@@ -88,11 +94,14 @@ static void adc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (val & 1) {
             unsigned count = MAX(1, val >> 24);
             for (unsigned i = 0; i < 16; i++) {
-                if ((s->regs[4] & (1u << i)) && s->count[i] + count > 16) { goto fail; }
-            }
-            for (unsigned i = 0; i < 16; i++) {
                 if (!(s->regs[4] & (1u << i))) { continue; }
                 for (unsigned n = 0; n < count; n++) {
+                    /* LS26 GPADC ADC_IRSR2 latches overflow per channel.
+                     * A full FIFO rejects the new sample, not the MMIO write. */
+                    if (s->count[i] == 16) {
+                        s->regs[0x80 / 4] |= 1u << i;
+                        continue;
+                    }
                     s->fifo[i][(s->head[i] + s->count[i]++) % 16] = adc_sample(s, i);
                 }
             }
@@ -157,6 +166,9 @@ void arcs_adc_reset(ArcsSoC *soc)
     ArcsADC *s = &soc->adc;
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->head, 0, sizeof(s->head)); memset(s->count, 0, sizeof(s->count));
+    memset(s->read_data, 0, sizeof(s->read_data));
+    /* ADC_CTRL1 resets with VIN / 3 and efuse calibration selected. */
+    s->regs[0x04 / 4] = 0x0c;
     s->regs[0x60 / 4] = s->regs[0x64 / 4] = s->regs[0x68 / 4] = UINT32_MAX;
     adc_irq(s); /* External analog codes survive a peripheral reset. */
 }
