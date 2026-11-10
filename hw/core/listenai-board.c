@@ -91,6 +91,16 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         b->extio_address = number(p, "address", 0x7f);
         if (b->extio_address != 0x6c && b->extio_address != 0x15) { invalid("extio address strap"); }
     }
+    if (qdict_haskey(dict, "hold_reset")) {
+        if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) {
+            invalid("reset chip adapter");
+        }
+        QDict *p = qdict_get_qdict(dict, "hold_reset");
+        b->reset_key_pad = pad(p, "KEY", pa_pads, pb_pads);
+        b->reset_hold_ms = number(p, "hold_ms", 60000);
+        if (!b->reset_hold_ms) { invalid("hold_ms"); }
+        b->reset_active_low = boolean(p, "active_low");
+    }
     b->configured = true;
     b->nor_cs1 = qdict_haskey(dict, "nor_cs1");
     if (b->nor_cs1) {
@@ -316,6 +326,13 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         button->released_level = number(p, "released_level", 1);
         if (button->pressed_level == button->released_level) { invalid("button polarity"); }
     }
+    if (b->reset_hold_ms) {
+        bool connected = false;
+        for (unsigned i = 0; i < b->button_count; i++) {
+            connected |= !b->buttons[i].analog && b->buttons[i].pad == b->reset_key_pad;
+        }
+        if (!connected) { invalid("reset key button"); }
+    }
     QList *rotaries = qdict_get_qlist(dict, "rotaries");
     if (rotaries) {
         if (qlist_size(rotaries) > ARRAY_SIZE(b->rotaries)) { invalid("rotaries"); }
@@ -530,6 +547,18 @@ void listenai_board_connect_gpio(ListenaiBoard *b, DeviceState *soc, unsigned en
 
 void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endpoint, bool level)
 {
+    if (b->hold_reset && endpoint == b->reset_key_pad) {
+        /* Chip reset reapplies pulls before held buttons. The external circuit
+         * observes the physical contact, not those transient routing updates. */
+        for (unsigned i = 0; i < b->button_count; i++) {
+            ListenaiBoardButton *key = &b->buttons[i];
+            if (!key->analog && key->pad == endpoint) {
+                qemu_set_irq(qdev_get_gpio_in(b->hold_reset, 0),
+                             key->pressed ? key->pressed_level : key->released_level);
+                break;
+            }
+        }
+    }
     assert(endpoint < 64 || b->extio);
     qemu_set_irq(endpoint < 64 ? qdev_get_gpio_in_named(soc, "pad-in", endpoint) :
                  qdev_get_gpio_in_named(b->extio, "pin-in", endpoint - 64), level);
@@ -725,4 +754,16 @@ void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus)
     b->fs1815_device = DEVICE(dev);
     object_property_add_child(owner, "fs1815", OBJECT(dev));
     i2c_slave_realize_and_unref(dev, bus, &error_fatal);
+}
+
+void listenai_board_reset_init(ListenaiBoard *b, Object *owner, qemu_irq reset)
+{
+    if (!b->reset_hold_ms) { return; }
+    DeviceState *dev = qdev_new("listenai-hold-reset");
+    object_property_add_child(owner, "hold-reset", OBJECT(dev));
+    qdev_prop_set_uint32(dev, "hold-ms", b->reset_hold_ms);
+    qdev_prop_set_bit(dev, "active-low", b->reset_active_low);
+    qdev_realize_and_unref(dev, NULL, &error_fatal);
+    qdev_connect_gpio_out(dev, 0, reset);
+    b->hold_reset = dev;
 }

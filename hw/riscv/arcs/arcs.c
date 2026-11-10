@@ -1261,6 +1261,8 @@ static void machine_init(MachineState *machine)
         s->soc.flash.chips[1] = &s->flash_cs1;
     }
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
+    listenai_board_reset_init(&s->board, OBJECT(s),
+                             qdev_get_gpio_in_named(DEVICE(&s->soc), "reset-n", 0));
     object_property_add_str(OBJECT(s), "x-lisa-signals", NULL, signals_set);
     object_property_add_bool(OBJECT(s), "x-arcs-boot-asserted", boot_pin_get, boot_pin_set);
     const char *boot_release = getenv("ARCS_QEMU_BOOT_RELEASE_NS");

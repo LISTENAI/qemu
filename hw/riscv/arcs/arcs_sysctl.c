@@ -31,6 +31,16 @@ static void request_chip_reset(ArcsSoC *soc, uint32_t status, bool aon_wdt)
     qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
 }
 
+static void pad_reset(void *opaque, int line, int level)
+{
+    ArcsSoC *soc = opaque;
+    if (level) { return; }
+    /* LS26 SYSRST_STATUS: POR and nRESET both set por_status. */
+    soc->sysctl.reset_status = 1;
+    soc->sysctl.warm_reset = false;
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+}
+
 static bool common_register(hwaddr offset)
 {
     switch (offset) {
@@ -475,6 +485,7 @@ static const MemoryRegionOps ap_ops = CONFIG_OPS(ap_read, ap_write);
 
 void arcs_sysctl_init(ArcsSoC *soc)
 {
+    qdev_init_gpio_in_named(DEVICE(soc), pad_reset, "reset-n", 1);
     ArcsSysctl *s = &soc->sysctl;
     static const hwaddr virtual_bases[] = {0x08000000, 0x10000000, 0x18000000, 0x1c000000};
     MemoryRegion *targets[] = {&soc->psram.chip->ram, &soc->flash.chips[0]->rom};

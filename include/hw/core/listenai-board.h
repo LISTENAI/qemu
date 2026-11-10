@@ -18,6 +18,9 @@ typedef struct ListenaiBoardButton {
 
 typedef struct ListenaiBoard {
     ListenaiSignalTrace signal_trace;
+    DeviceState *hold_reset;
+    unsigned reset_key_pad, reset_hold_ms;
+    bool reset_active_low;
     bool configured, panel, epaper, camera, sd, amplifier, touch, keypad;
     unsigned touch_scl, touch_sda, touch_irq, touch_i2c;
     bool touch_sc919, touch_axs;
@@ -110,6 +113,7 @@ void listenai_board_display_observer_init(ListenaiBoard *b, Object *owner);
 void listenai_board_cleanup(ListenaiBoard *b);
 void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus);
 void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus);
+void listenai_board_reset_init(ListenaiBoard *b, Object *owner, qemu_irq reset);
 void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc);
 void listenai_board_rotaries_drive(ListenaiBoard *b);
 DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
