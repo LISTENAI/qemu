@@ -23,7 +23,7 @@ typedef struct ArcsHSU {
     Int128 hmac_work, hmac_rate;
     int64_t hmac_updated;
     bool clock, busy, done;
-    uint32_t sha_source, sha_length, sha_control;
+    uint32_t sha_source, sha_length, sha_control, aes_destination;
     ArcsSHAState sha, pending_sha;
     uint32_t digest[16], pending_digest[16];
     bool sha_done, pending_is_sha, pending_hmac;

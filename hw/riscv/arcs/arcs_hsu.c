@@ -253,6 +253,7 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
     case 8: return (s->done ? 0x10 : 0) | (s->sha_done ? (s->sha.hmac ? 0x10000 : 0x1000) : 0);
     case 0x20: return s->sha_source;
     case 0x24: return s->sha_length;
+    case 0x74: return s->aes_destination;
     case 0xc: case 0x7c: case 0x8c: return 0;
     case 0x78: return s->control;
     case 0x80: return s->source;
@@ -269,7 +270,8 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsHSU *s = opaque;
     g_autofree uint8_t *bytes = NULL;
-    if (size != 4) { goto fail; }
+    if (size != 4 || (s->soc->aes.busy && s->soc->aes.dma &&
+        (off == 4 || off == 0x20 || off == 0x74 || off == 0x78))) { goto fail; }
     switch (off) {
     case 4: {
         unsigned mode = (value >> 8) & 31;
@@ -330,6 +332,7 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
         s->sha_control = value & ~1u; return;
     }
     case 0x20: s->sha_source = value; return;
+    case 0x74: s->aes_destination = value; return;
     case 0x24:
         if (value > 65535) { goto fail; }
         s->sha_length = value; return;
@@ -392,7 +395,7 @@ void arcs_hsu_reset(ArcsSoC *soc)
     s->pending_result = s->pending_length = 0;
     s->completed = s->bytes = s->remaining = 0;
     s->busy = s->done = false; /* Upstream gate survives local reset. */
-    s->sha_source = s->sha_length = s->sha_control = 0;
+    s->sha_source = s->sha_length = s->sha_control = s->aes_destination = 0;
     memset(&s->sha, 0, sizeof(s->sha));
     memset(&s->pending_sha, 0, sizeof(s->pending_sha));
     memset(s->digest, 0, sizeof(s->digest));

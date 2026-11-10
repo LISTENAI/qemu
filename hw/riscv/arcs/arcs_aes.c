@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* AES PIO, one prefetched block per segment. DMA/key-slot modes are rejected. */
+/* AES PIO and HSU memory transfers. Key-slot modes are rejected. */
 #include "qemu/osdep.h"
 #include "hw/riscv/arcs/arcs.h"
 #include "qemu/bswap.h"
 #include "system/address-spaces.h"
 #define BASE 0x44000000
+#define DMA_EN (1u << 30)
 #define R(s, off) ((s)->regs[(off) / 4])
 
 static void xor_block(uint8_t *out, const uint8_t *a, const uint8_t *b)
@@ -48,17 +49,36 @@ static void register_bytes(ArcsAES *s, unsigned offset, uint8_t *out, unsigned s
     for (unsigned i = 0; i < size; i += 4) { stl_le_p(out + i, R(s, offset + i)); }
 }
 
+/* Restrict DMA to mapped memory, never invoke peripheral MMIO as payload.
+ * Translation respects the installed RAM size and read-only ROM mappings. */
+static bool dma_memory(uint32_t address, unsigned length, bool write)
+{
+    hwaddr offset, available = length;
+    MemoryRegion *mr = address_space_translate(&address_space_memory, address,
+                                               &offset, &available, write,
+                                               MEMTXATTRS_UNSPECIFIED);
+    return length && (uint64_t)address + length <= UINT64_C(0x100000000) &&
+           available >= length && memory_region_is_ram(mr) &&
+           (!write || !memory_region_is_rom(mr));
+}
+
 static void complete(void *opaque)
 {
     ArcsAES *s = opaque;
     uint32_t config = R(s, 0), segment = R(s, 0xc);
-    unsigned mode = (config >> 4) & 15, length = segment & 65535;
-    unsigned aad = segment >> 16;
-    bool encrypt = config & 8, last = config & 2;
+    unsigned mode = (config >> 4) & 15, total = segment & 65535;
+    unsigned length = MIN(16, total - s->processed);
+    unsigned aad = segment >> 16 ? length : 0;
+    bool encrypt = config & 8, last = (config & 2) && s->processed + length == total;
     uint8_t input[16] = {0}, output[16] = {0}, temporary[16];
     assert(s->busy && s->clock);
-    memcpy(input, s->input, length);
-    if (config & 4) {
+    if (s->dma) {
+        if (address_space_read(&address_space_memory, s->dma_source + s->processed,
+                              MEMTXATTRS_UNSPECIFIED, input, length) != MEMTX_OK) {
+            arcs_soc_fail(s->soc, BASE, 4, true, config);
+        }
+    } else { memcpy(input, s->input, length); }
+    if ((config & 4) && !s->processed) {
         uint8_t key[32];
         unsigned key_bytes = 16 + 8 * ((config >> 12) & 3);
         register_bytes(s, 0x20, key, key_bytes);
@@ -127,18 +147,33 @@ static void complete(void *opaque)
         s->mac_valid = true;
     }
     if (last) { s->active = false; }
+    if (s->dma && !aad &&
+        address_space_write(&address_space_memory, s->dma_destination + s->processed,
+                            MEMTXATTRS_UNSPECIFIED, output, length) != MEMTX_OK) {
+        arcs_soc_fail(s->soc, BASE, 4, true, config);
+    }
+    s->processed += length;
+    if (s->processed < total) {
+        /* Functional block latency; not a silicon cycle calibration. */
+        s->remaining = 1000;
+        timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining);
+        return;
+    }
+    s->ingress_done = s->egress_done = s->dma;
     s->input_used = 0;
     memcpy(s->output, output, 16);
-    s->output_used = aad ? 0 : ROUND_UP(length, 4);
+    s->output_used = aad || s->dma ? 0 : ROUND_UP(length, 4);
     s->output_pos = 0;
     s->busy = false; s->done = true; s->remaining = 0;
+    R(s, 0) &= ~1u;
+    arcs_soc_irq(s->soc, 21, true);
 }
 
 void arcs_aes_clock(ArcsSoC *soc, bool enabled)
 {
     ArcsAES *s = &soc->aes;
     if (s->clock == enabled) { return; }
-    if (s->busy) {
+    if (s->busy && s->remaining) {
         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         if (enabled) { timer_mod(s->event, now + s->remaining); }
         else { s->remaining = MAX(1, timer_expire_time_ns(s->event) - now); timer_del(s->event); }
@@ -151,39 +186,66 @@ static bool start(ArcsAES *s, uint32_t value)
     unsigned mode = (value >> 4) & 15, key_size = (value >> 12) & 3;
     unsigned length = R(s, 0xc) & 65535, aad = R(s, 0xc) >> 16;
     bool begin = value & 4, last = value & 2;
+    bool dma = R(s, 0x94) & DMA_EN;
+    ArcsHSU *hsu = &s->soc->hsu;
     unsigned seen_data = begin ? 0 : s->data_seen, seen_aad = begin ? 0 : s->aad_seen;
     if (s->busy || !s->clock || s->output_pos != s->output_used ||
         (value & ~0x3fffu) || key_size > 2 || R(s, 0x14) != 1 ||
         (mode != 0 && mode != 1 && mode != 2 && mode != 3 && mode != 5) ||
         R(s, 4) != (begin ? 1 : 0) || (begin && s->active) ||
         (!begin && (!s->active || (value & ~7u) != s->message_config)) ||
-        length > 16 || (aad && aad != length) ||
-        R(s, 0x90) != ROUND_UP(length, 4) || s->input_used != ROUND_UP(length, 4) ||
-        R(s, 0x98) != (aad ? 0 : length) || R(s, 0x94) != 2 || R(s, 0x9c) != 2 ||
+        (!dma && length > 16) || (aad && aad != length) ||
+        R(s, 0x90) != ROUND_UP(length, 4) || s->input_used > ROUND_UP(length, 4) ||
+        R(s, 0x98) != (aad ? 0 : length) ||
+        (R(s, 0x94) & ~(DMA_EN | 0x3fu)) || (R(s, 0x9c) & ~(DMA_EN | 0x3fu)) ||
+        dma != !!(R(s, 0x9c) & DMA_EN) ||
+        (dma && (s->input_used || !hsu->clock || hsu->busy ||
+                 ((hsu->sha_control >> 8) & 31) != 19 ||
+                 (R(s, 0x94) & 7) > 2 || (R(s, 0x9c) & 7) > 2 ||
+                 !length || length % 16 ||
+                 !dma_memory(hsu->sha_source, length, false) ||
+                 (!aad && !dma_memory(hsu->aes_destination, length, true)))) ||
         (aad && (mode != 3 && mode != 5)) || (aad && seen_data) ||
         (!aad && seen_aad != R(s, 0x10) && (mode == 3 || mode == 5)) ||
-        ((mode == 0 || mode == 1) && length != 16) ||
-        (!last && length != 16 && !(aad && seen_aad + aad == R(s, 0x10))) ||
-        (mode == 3 && aad && length != 16) ||
+        ((mode == 0 || mode == 1) && (!length || length % 16)) ||
+        (!last && (!length || length % 16) &&
+         !(aad && seen_aad + aad == R(s, 0x10))) ||
+        (mode == 3 && aad && length % 16) ||
         seen_aad + aad > R(s, 0x10) || seen_data + (aad ? 0 : length) > R(s, 8) ||
         (last && (seen_aad + aad != R(s, 0x10) ||
-                  seen_data + (aad ? 0 : length) != R(s, 8)))) { return false; }
+                  seen_data + (aad ? 0 : length) != R(s, 8)))) {
+        return false;
+    }
     if (begin && mode == 3) {
         unsigned q = (R(s, 0x50) & 7) + 1;
         if (q < 2 || q > 8 || length != 16 || aad != 16) { return false; }
     }
     R(s, 0) = value;
     s->done = s->mac_valid = false;
-    s->busy = true; s->remaining = 1000;
-    timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining);
+    arcs_soc_irq(s->soc, 21, false);
+    s->busy = true; s->remaining = 0;
+    s->processed = 0; s->dma = dma;
+    s->dma_source = hsu->sha_source;
+    s->dma_destination = hsu->aes_destination;
+    s->ingress_done = s->egress_done = false;
+    /* GO can precede the PIO payload. An incomplete input has no completion
+     * event; its final word starts the same processing interval as prefill. */
+    if (dma || s->input_used == ROUND_UP(length, 4)) {
+        s->remaining = 1000;
+        timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining);
+    }
     return true;
 }
 
 static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 {
     ArcsAES *s = opaque;
-    if (size != 4 || off & 3 || off > 0xa0) { goto fail; }
+    if (size != 4 || off & 3 || off > 0xa8) { goto fail; }
     if (off == 0xa0) { return s->done | (s->mac_valid ? 2 : 0); }
+    if (off == 0xa4 || off == 0xa8) {
+        bool *done = off == 0xa4 ? &s->ingress_done : &s->egress_done;
+        bool value = *done; *done = false; return value;
+    }
     if (off == 0x88) {
         if (s->busy || s->output_pos == s->output_used) { goto fail; }
         uint32_t value = ldl_le_p(s->output + s->output_pos);
@@ -200,14 +262,24 @@ fail:
 static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsAES *s = opaque;
-    if (size != 4 || off & 3 || off > 0xa0 || s->busy) { goto fail; }
+    if (size != 4 || off & 3 || off > 0xa0) { goto fail; }
     if (off == 0x80) {
-        if (s->input_used == 16) { goto fail; }
-        stl_le_p(s->input + s->input_used, value); s->input_used += 4; return;
+        if (s->input_used == 16 || (s->busy && s->dma) || (s->busy &&
+            (s->remaining || s->input_used >= R(s, 0x90)))) { goto fail; }
+        stl_le_p(s->input + s->input_used, value); s->input_used += 4;
+        if (s->busy && s->input_used == R(s, 0x90)) {
+            s->remaining = 1000;
+            if (s->clock) {
+                timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining);
+            }
+        }
+        return;
     }
+    if (s->busy) { goto fail; }
     if (off == 0xa0) {
         if (value) { goto fail; }
-        /* Read-only completion bits are cleared by GO, not by a zero write. */
+        /* A zero status write acknowledges the completion interrupt. */
+        arcs_soc_irq(s->soc, 21, false);
         return;
     }
     if (off == 0) {
@@ -221,7 +293,7 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (value & ~0x0fffffffu) { goto fail; }
     } else if (off == 0xc || off == 0x90 || off == 0x98 || off == 0x94 || off == 0x9c ||
                (off >= 0x20 && off <= 0x3c) || (off >= 0x50 && off <= 0x6c)) {
-        /* START validates the PIO segment and its exact byte counts. */
+        /* GO validates the transfer mode and exact byte counts. */
     } else { goto fail; }
     R(s, off) = value; return;
 fail:
@@ -248,7 +320,11 @@ void arcs_aes_reset(ArcsSoC *soc)
     memset(&s->decrypt_key, 0, sizeof(s->decrypt_key));
     s->input_used = s->output_used = s->output_pos = 0;
     s->message_config = s->data_seen = s->aad_seen = 0;
-    s->active = s->busy = s->done = s->mac_valid = false; s->remaining = 0;
+    s->dma = s->ingress_done = s->egress_done = false;
+    s->dma_source = s->dma_destination = s->processed = 0;
+    s->active = s->busy = s->done = s->mac_valid = false;
+    s->remaining = 0;
+    arcs_soc_irq(s->soc, 21, false);
 }
 
 void arcs_aes_init(ArcsSoC *soc)

@@ -15,7 +15,10 @@ typedef struct ArcsAES {
     AES_KEY encrypt_key, decrypt_key;
     uint8_t chain[16], counter[16], tag_mask[16], hash_key[16];
     uint32_t message_config, data_seen, aad_seen;
-    bool active, clock, busy, done, mac_valid;
+    bool active, clock, busy, done, mac_valid, dma;
+    uint32_t dma_source, dma_destination;
+    unsigned processed;
+    bool ingress_done, egress_done;
     int64_t remaining;
 } ArcsAES;
 void arcs_aes_init(ArcsSoC *soc);
