@@ -24,6 +24,7 @@ typedef struct SerialLCDState {
     uint32_t width, height, x_offset, y_offset, rotation;
     unsigned x_start, x_end, y_start, y_end, x, y, count, format;
     int pixel_high;
+    bool boot_te;
     bool panel_inverted, inverted, sleeping, on, tear, reset_released, data_mode, dirty;
     double backlight;
     uint64_t pixels;
@@ -126,14 +127,16 @@ static void scan(void *opaque)
     timer_mod(s->scan, s->scan_start);
 }
 
-static void reset_controller(SerialLCDState *s)
+static void reset_controller(SerialLCDState *s, bool boot)
 {
     s->count = 0; memset(s->analog_count, 0, sizeof(s->analog_count));
     s->analog[0xc6][0] = 15;
     s->analog[0xb3][0] = 15;
     s->command2 = false;
     s->analog[0xb2][0] = s->analog[0xb2][1] = 12;
-    s->sleeping = true; s->on = s->tear = s->inverted = false;
+    s->sleeping = true; s->on = s->inverted = false;
+    /* Module Flash/OTP startup configuration; DCS software reset bypasses it. */
+    s->tear = boot && s->boot_te;
     s->madctl = s->command = 0; s->format = s->axs15231e ? 5 : 6; s->pixel_high = -1;
     s->x_start = s->y_start = s->x = s->y = 0; s->x_end = s->ram_width - 1; s->y_end = s->ram_height - 1;
     s->dirty = true; qemu_set_irq(s->te, 0); schedule(s);
@@ -158,7 +161,7 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
         }
         switch (data) {
         case 0: case 0x13: break;
-        case 1: reset_controller(s); break;
+        case 1: reset_controller(s, false); break;
         case 0x10: s->dirty = true; s->sleeping = true; break;
         case 0x11: s->dirty = true; s->sleeping = false; break;
         case 0x20: s->inverted = false; break;
@@ -380,11 +383,11 @@ static void input(void *opaque, int pin, int level)
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
             if (asserted) { s->reset_start = now; }
             else if (now - s->reset_start >= 10000) {
-                reset_controller(s); s->packet_count = 0;
+                reset_controller(s, true); s->packet_count = 0;
                 s->ready_ns = now + (s->axs15231e ? 10000000 : 5000000);
                 s->sleep_ready_ns = s->axs15231e ? s->ready_ns : now + 120000000;
             }
-        } else if (asserted) { reset_controller(s); }
+        } else if (asserted) { reset_controller(s, true); }
         s->dirty = true; schedule(s);
     }
 }
@@ -443,7 +446,7 @@ static void reset(DeviceState *dev)
     SerialLCDState *s = SERIAL_LCD(dev);
     s->packet_count = 0;
     s->ready_ns = s->sleep_ready_ns = 0;
-    reset_controller(s); memset(s->gram, 0, sizeof(s->gram)); s->pixels = 0;
+    reset_controller(s, true); memset(s->gram, 0, sizeof(s->gram)); s->pixels = 0;
     memset(s->scanned, 0, sizeof(s->scanned));
     memset(s->presented, 0, sizeof(s->presented));
     memset(s->scanned_flags, 0, sizeof(s->scanned_flags));
@@ -465,6 +468,9 @@ static void realize(SSIPeripheral *dev, Error **errp)
         s->rotation > 270 || s->rotation % 90) {
         error_setg(errp, "Invalid Serial LCD viewport or mounting rotation"); return;
     }
+    if (s->boot_te && !s->axs15231e) {
+        error_setg(errp, "Boot TE configuration requires AXS15231E"); return;
+    }
     s->scan = timer_new_ns(QEMU_CLOCK_VIRTUAL, scan, s);
     s->reset_released = true;
     qdev_init_gpio_in(DEVICE(s), input, 2);
@@ -480,6 +486,7 @@ static const Property properties[] = {
     DEFINE_PROP_UINT32("x-offset", SerialLCDState, x_offset, 0),
     DEFINE_PROP_UINT32("y-offset", SerialLCDState, y_offset, 0),
     DEFINE_PROP_UINT32("rotation", SerialLCDState, rotation, 0),
+    DEFINE_PROP_BOOL("boot-te", SerialLCDState, boot_te, false),
     DEFINE_PROP_BOOL("panel-inverted", SerialLCDState, panel_inverted, false),
 };
 

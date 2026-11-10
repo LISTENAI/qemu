@@ -12,6 +12,7 @@
 #include "hw/i2c/fs1815.h"
 #include "hw/i2c/cst328.h"
 #include "hw/i2c/sc919_touch.h"
+#include "hw/i2c/axs15231e_touch.h"
 #include "hw/i2c/ls8500.h"
 #include "hw/sd/sdhci.h"
 #include "hw/core/split-irq.h"
@@ -162,6 +163,8 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         b->epaper = controller && !strcmp(controller, TYPE_JD79651C);
         b->panel_otp_luts = g_strdup(qdict_get_try_str(p, "otp_luts"));
         b->lcd_axs = controller && !strcmp(controller, TYPE_AXS15231E);
+        b->lcd_boot_te = qdict_haskey(p, "boot_te") && boolean(p, "boot_te");
+        if (qdict_haskey(p, "boot_te") && !b->lcd_axs) { invalid("boot_te requires AXS15231E"); }
         b->lcd_qspi = b->lcd_axs || (controller && !strcmp(controller, "sc919"));
         b->panel_id = g_strdup(qdict_get_try_str(p, "id"));
         b->panel_controller_id = g_strdup(qdict_get_try_str(p, "controller_id"));
@@ -263,9 +266,15 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (b->touch) {
         QDict *p = qdict_get_qdict(dict, "touch");
         const char *model = qdict_get_try_str(p, "model");
-        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1")) { invalid("touch model"); }
+        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1") && strcmp(model, TYPE_AXS15231E_TOUCH)) { invalid("touch model"); }
         b->touch_sc919 = model && !strcmp(model, "sc919-touch-v1");
-        if (b->touch_sc919) { b->touch_reset = pad(p, "RESET", pa_pads, pb_pads); }
+        b->touch_axs = model && !strcmp(model, TYPE_AXS15231E_TOUCH);
+        if (b->touch_axs) {
+            b->touch_width = number(p, "width", 4096);
+            b->touch_height = number(p, "height", 4096);
+            if (!b->touch_width || !b->touch_height) { invalid("touch dimensions"); }
+        }
+        if (b->touch_sc919 || b->touch_axs) { b->touch_reset = pad(p, "RESET", pa_pads, pb_pads); }
         b->touch_scl = pad(p, "SCL", pa_pads, pb_pads);
         b->touch_sda = pad(p, "SDA", pa_pads, pb_pads);
         b->touch_irq = pad(p, "INT", pa_pads, pb_pads);
@@ -461,6 +470,7 @@ DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
     DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : (b->lcd_axs ? TYPE_AXS15231E : b->lcd_qspi ? TYPE_SC919 : TYPE_ST7789));
     b->panel_device = panel;
     object_property_add_child(owner, "screen", OBJECT(panel));
+    if (b->lcd_axs) { qdev_prop_set_bit(panel, "boot-te", b->lcd_boot_te); }
     qdev_prop_set_uint32(panel, "width", b->lcd_width);
     qdev_prop_set_uint32(panel, "height", b->lcd_height);
     qdev_prop_set_uint32(panel, "x-offset", b->lcd_x);
@@ -675,13 +685,17 @@ void listenai_board_panel_save(ListenaiBoard *b, const char *path)
 DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
                                      DeviceState *soc, I2CBus *bus)
 {
-    I2CSlave *touch = i2c_slave_new(b->touch_sc919 ? TYPE_SC919_TOUCH : TYPE_CST328,
-                                   b->touch_sc919 ? 0x28 : 0x1d);
+    I2CSlave *touch = i2c_slave_new(b->touch_axs ? TYPE_AXS15231E_TOUCH : b->touch_sc919 ? TYPE_SC919_TOUCH : TYPE_CST328,
+                                   b->touch_axs ? 0x3b : b->touch_sc919 ? 0x28 : 0x1d);
+    if (b->touch_axs) {
+        qdev_prop_set_uint32(DEVICE(touch), "width", b->touch_width);
+        qdev_prop_set_uint32(DEVICE(touch), "height", b->touch_height);
+    }
     object_property_add_child(owner, "touch", OBJECT(touch));
     i2c_slave_realize_and_unref(touch, bus, &error_fatal);
     qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
                                 qdev_get_gpio_in_named(soc, "pad-in", b->touch_irq));
-    if (b->touch_sc919) {
+    if (b->touch_sc919 || b->touch_axs) {
         listenai_board_connect_pad(soc, b->touch_reset,
                                   qdev_get_gpio_in_named(DEVICE(touch), "reset", 0));
     }
@@ -690,7 +704,8 @@ DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
 
 void listenai_board_touch_input(ListenaiBoard *b, Object *owner, DeviceState *touch)
 {
-    if (b->touch_sc919) { sc919_touch_add_input(owner, touch, "x-lisa-touch"); }
+    if (b->touch_axs) { axs15231e_touch_add_input(owner, touch, "x-lisa-touch"); }
+    else if (b->touch_sc919) { sc919_touch_add_input(owner, touch, "x-lisa-touch"); }
     else { cst328_add_input(owner, touch, "x-lisa-touch"); }
 }
 

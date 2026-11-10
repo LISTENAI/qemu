@@ -20,7 +20,8 @@ typedef struct ListenaiBoard {
     ListenaiSignalTrace signal_trace;
     bool configured, panel, epaper, camera, sd, amplifier, touch, keypad;
     unsigned touch_scl, touch_sda, touch_irq, touch_i2c;
-    bool touch_sc919;
+    bool touch_sc919, touch_axs;
+    unsigned touch_width, touch_height;
     unsigned touch_reset;
     unsigned keypad_channel, keypad_supply_uv, keypad_pull_up_ohms;
     bool sd_detect, sd_external_detect, sd_detect_active, expander;
@@ -46,7 +47,7 @@ typedef struct ListenaiBoard {
     uint64_t pull_mask, pull_levels;
     uint32_t extio_pull_mask, extio_pull_levels;
     unsigned lcd_sck, lcd_sdi, lcd_cs, lcd_dc, lcd_reset, lcd_te;
-    bool lcd_qspi, lcd_axs;
+    bool lcd_qspi, lcd_axs, lcd_boot_te;
     bool camera_bf3901;
     unsigned lcd_data[4];
     void *lcd_route_opaque;
