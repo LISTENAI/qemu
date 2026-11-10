@@ -190,6 +190,7 @@ static void reset(DeviceState *dev)
     arcs_codec_reset(s);
     arcs_hsu_reset(s);
     arcs_aes_reset(s);
+    arcs_ecc_reset(s);
     arcs_trng_reset(s);
     arcs_jpeg_reset(s);
     arcs_jpeg_clock(s, false);
@@ -291,6 +292,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_dvp_init(s);
     arcs_hsu_init(s);
     arcs_aes_init(s);
+    arcs_ecc_init(s);
     arcs_trng_init(s);
     arcs_sysctl_init(s);
 }
@@ -318,6 +320,7 @@ static void finalize(Object *obj)
         listenai_i2s_destroy(&s->apc.serial[p].engine);
     }
     arcs_usb_finalize(s);
+    arcs_ecc_finalize(s);
 }
 
 static const TypeInfo soc_type = {

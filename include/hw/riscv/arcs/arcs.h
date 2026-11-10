@@ -25,6 +25,7 @@
 #include "hw/riscv/arcs/arcs_audio.h"
 #include "hw/riscv/arcs/arcs_hsu.h"
 #include "hw/riscv/arcs/arcs_aes.h"
+#include "hw/riscv/arcs/arcs_ecc.h"
 #include "hw/riscv/arcs/arcs_trng.h"
 #include "hw/riscv/arcs/arcs_jpeg.h"
 #include "hw/riscv/arcs/arcs_dma2d.h"
@@ -75,6 +76,7 @@ struct ArcsSoC {
     ArcsCodec codec;
     ArcsHSU hsu;
     ArcsAES aes;
+    ArcsECC ecc;
     ArcsTRNG trng;
     ArcsJPEG jpeg;
     MemoryRegion mailbox_io;

@@ -19,7 +19,8 @@ arcs_sources = files(
   '../../core/listenai-ble-central.c',
   'arcs_qspi.c', 'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c',
   'arcs_wifi_ap.c', 'arcs_wifi_security.c', 'arcs_hsu.c',
-  'arcs_aes.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c',
+  'arcs_aes.c', 'arcs_ecc.c', 'arcs_ecc_math.c', 'arcs_trng.c',
+  'arcs_network.c', 'arcs_jpeg.c',
 )
 arcs_assets = declare_dependency(
   sources: [rom_header],

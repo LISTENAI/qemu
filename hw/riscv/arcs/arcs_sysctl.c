@@ -271,7 +271,11 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (value & 0x800) { listenai_spi_reset(&io->soc->qspi_lcd); }
         if (value & 0x4000) { arcs_jpeg_reset(io->soc); }
         if (value & 2) { arcs_gpdma_reset(io->soc); arcs_dma2d_reset(io->soc); }
-        if (value & 4) { arcs_hsu_reset(io->soc); arcs_aes_reset(io->soc); }
+        if (value & 4) {
+            arcs_hsu_reset(io->soc);
+            arcs_aes_reset(io->soc);
+            arcs_ecc_reset(io->soc);
+        }
         if (value & 0x20) {
             arcs_i2s_reset(io->soc);
         }
@@ -283,6 +287,7 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         arcs_codec_clocks(io->soc, value);
         arcs_hsu_clock(io->soc, value & 0x2000);
         arcs_aes_clock(io->soc, value & 0x2000);
+        arcs_ecc_clock(io->soc, value & 0x2000);
     }
     io->soc->sysctl.ap_regs[off / 4] = off == 0 ? value & 0x1f0000 : value;
     if (off == 8) { arcs_dma2d_clock(io->soc, value & 0x4000); }
@@ -573,6 +578,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     arcs_codec_clocks(soc, 0);
     arcs_hsu_clock(soc, false);
     arcs_aes_clock(soc, false);
+    arcs_ecc_clock(soc, false);
     arcs_trng_clock(soc, false);
     arcs_codec_power(soc, false);
 }
