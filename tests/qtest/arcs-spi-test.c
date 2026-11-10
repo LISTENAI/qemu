@@ -168,10 +168,13 @@ static void dma_receive(void)
     qtest_writel(q, DMA + 0x3a0, 0x101);
     qtest_writel(q, 0x46000094,
                  1u << 12); /* Request6 no longer selects SPI1. */
-    qtest_writel(q, SLAVE + 0x30, 8);
+    qtest_writel(q, SLAVE + 0x30, 8 | (2 << 8));
     byte(q, 0x96);
     g_assert_cmphex(qtest_readl(q, RAM), ==, 0xaaaa5555);
     qtest_writel(q, 0x46000094, 0);
+    /* A mapped request remains withheld below the RX watermark. */
+    g_assert_cmphex(qtest_readl(q, RAM), ==, 0xaaaa5555);
+    qtest_writel(q, SLAVE + 0x30, 8 | (1 << 8));
     g_assert_cmphex(qtest_readl(q, RAM), ==, 0x96);
     g_assert_cmphex(qtest_readl(q, RAM + 4), ==, 0xaaaa5555);
     g_assert_cmphex(qtest_readl(q, DMA + 8), ==, RAM + 4);

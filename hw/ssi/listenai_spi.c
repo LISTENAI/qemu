@@ -39,8 +39,14 @@ static void signals(ListenaiSPI *s)
                               pin != LISTENAI_SPI_MISO;
         qemu_set_irq(s->pin_enable[pin], output);
     }
-    qemu_set_irq(s->dma[0], (control & 8) && s->rx_count);
-    qemu_set_irq(s->dma[1], (control & 16) && s->count + (s->lcd ? 1 : 0) < s->hardware.tx_depth);
+    /* LS26 user manual, CTRL: DMA uses the same FIFO watermarks as IRQ.
+     * Requesting on every free slot completes a TX DMA block before the
+     * programmed low-water condition and leaves an unintended FIFO tail. */
+    qemu_set_irq(s->dma[0], (control & 8) && s->rx_count &&
+                 s->rx_count >= ((control >> 8) & 31));
+    qemu_set_irq(s->dma[1], (control & 16) &&
+                 s->count < s->hardware.tx_depth &&
+                 s->count <= ((control >> 16) & 31));
     qemu_set_irq(s->irq, !!(spi_pending(s) & s->regs[0x38 / 4]));
 }
 

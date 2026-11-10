@@ -8,7 +8,7 @@ typedef void (*ListenAIDMAFault)(void *opaque, hwaddr address, unsigned size,
                                bool write, uint64_t value);
 typedef struct ListenAIDMATransfer {
     uint32_t remaining, descriptor;
-    unsigned width, source_mode, dest_mode, request;
+    unsigned width, source_mode, dest_mode, request, burst;
     bool active, receive;
 } ListenAIDMATransfer;
 typedef struct ListenAIDMA {
@@ -16,6 +16,7 @@ typedef struct ListenAIDMA {
     uint32_t regs[0x3b4 / 4];
     ListenAIDMATransfer channel[8];
     bool requests[16], servicing, transferring;
+    bool burst_requests[16];
     bool descriptor_writeback;
     hwaddr address;
     unsigned channel_count;
@@ -30,4 +31,5 @@ void listenai_dma_init(ListenAIDMA *s, Object *owner, const char *name,
                        ListenAIDMAIRQ irq, ListenAIDMAFault fault, void *opaque);
 void listenai_dma_reset(ListenAIDMA *s);
 void listenai_dma_request(ListenAIDMA *s, unsigned request, bool level);
+void listenai_dma_burst_request(ListenAIDMA *s, unsigned request, bool level);
 #endif

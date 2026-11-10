@@ -68,12 +68,19 @@ static void service(ListenAIDMA *s)
         while (t->active) {
             while (t->remaining && s->requests[t->request] &&
                    !(R(off + 0x40) & 0x100)) {
-                uint32_t value = bus_read(s, R(off), t->width);
-                R(off) = advance(R(off), t->width, t->source_mode);
-                t->remaining--;
-                bus_write(s, R(off + 8), t->width, value);
-                R(off + 8) = advance(R(off + 8), t->width, t->dest_mode);
-                R(off + 0x1c)++;
+                /* A burst request admits MSIZE transfers. Its FIFO watermark
+                 * may deassert after the first beat without cancelling the
+                 * admitted burst. Single requests retain one-beat pacing. */
+                unsigned items = MIN(t->remaining,
+                    s->burst_requests[t->request] ? t->burst : 1);
+                for (unsigned i = 0; i < items; i++) {
+                    uint32_t value = bus_read(s, R(off), t->width);
+                    R(off) = advance(R(off), t->width, t->source_mode);
+                    t->remaining--;
+                    bus_write(s, R(off + 8), t->width, value);
+                    R(off + 8) = advance(R(off + 8), t->width, t->dest_mode);
+                    R(off + 0x1c)++;
+                }
             }
             if (t->remaining) { break; }
             t->active = false;
@@ -127,6 +134,7 @@ static void transfer(ListenAIDMA *s, unsigned ch)
         uint32_t count = R(off + 0x1c) & 0xfffff;
         if (type == 1 || type == 2) {
             bool receive = type == 2;
+            unsigned msize = (control >> (receive ? 14 : 11)) & 7;
             if (sw != dw || (receive ? sm : dm) != 2 ||
                 !count || (control & 0x60000) ||
                 ((control & 0x18000000) && (control & 0x18000000) != 0x18000000) ||
@@ -138,6 +146,7 @@ static void transfer(ListenAIDMA *s, unsigned ch)
                 .descriptor = descriptor,
                 .source_mode = sm, .dest_mode = dm,
                 .request = (R(off + 0x44) >> (receive ? 7 : 11)) & 15,
+                .burst = msize ? 1u << (msize + 1) : 1,
             };
             R(off + 0x1c) = 0;
             s->transferring = false; service(s); return;
@@ -220,6 +229,15 @@ static void dma_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 void listenai_dma_request(ListenAIDMA *s, unsigned number, bool level)
 {
     assert(number < G_N_ELEMENTS(s->requests));
+    s->burst_requests[number] = false;
+    s->requests[number] = level;
+    service(s);
+}
+
+void listenai_dma_burst_request(ListenAIDMA *s, unsigned number, bool level)
+{
+    assert(number < G_N_ELEMENTS(s->requests));
+    s->burst_requests[number] = true;
     s->requests[number] = level;
     service(s);
 }

@@ -65,7 +65,8 @@ void arcs_qspi_clock_changed(ArcsSoC *soc)
     ListenaiSPI *s = &soc->qspi_lcd;
     if (!s->service) { return; }
     listenai_spi_clock_changed(s);
-    dma(soc, 0, (s->regs[0x30 / 4] & 16) && s->count + 1 < s->hardware.tx_depth);
+    dma(soc, 0, (s->regs[0x30 / 4] & 16) &&
+        s->count < s->hardware.tx_depth && s->count <= ((s->regs[0x30 / 4] >> 16) & 31));
 }
 
 void arcs_qspi_init(ArcsSoC *soc)

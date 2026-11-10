@@ -175,10 +175,10 @@ void venusa_spi_dma_update(VenusASoC *s)
         VenusASPI *p = &s->spi[i];
         unsigned rx = 6 + 2 * i, tx = rx + 1;
         if (!(mux & (1u << rx))) {
-            listenai_dma_request(&s->dma, rx, p->rx_request);
+            listenai_dma_burst_request(&s->dma, rx, p->rx_request);
         }
         if (!(mux & (1u << tx))) {
-            listenai_dma_request(&s->dma, tx, p->tx_request);
+            listenai_dma_burst_request(&s->dma, tx, p->tx_request);
         }
     }
 }

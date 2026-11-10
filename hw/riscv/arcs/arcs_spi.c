@@ -244,7 +244,7 @@ void arcs_spi_update_dma(ArcsSoC *soc)
         for (unsigned direction = 0; direction < 2; direction++) {
             unsigned request = dma_requests[i][direction];
             /* These request slots select SPI at mux value zero. */
-            listenai_dma_request(&soc->dma, request,
+            listenai_dma_burst_request(&soc->dma, request,
                                  ((mux >> (2 * request)) & 3) == 0 &&
                                      s->dma_request[direction]);
         }
