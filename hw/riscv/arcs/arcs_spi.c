@@ -66,6 +66,12 @@ static bool pin_selected(ArcsSPI *s, unsigned pin, unsigned pad)
            arcs_pinmux_function(&s->soc->pinmux[0], pad, 5 + s->index);
 }
 
+bool arcs_spi_pad_valid(unsigned index, unsigned pin, unsigned pad)
+{
+    return index < 3 && pin < 4 && pad < 64 &&
+           (pin_routes[index][pin] & (UINT64_C(1) << pad));
+}
+
 bool arcs_spi_pad_selected(ArcsSPI *s, unsigned pin, unsigned pad)
 {
     return pad < 64 && pin < 4 && pin_selected(s, pin, pad);
@@ -141,18 +147,19 @@ static bool pins_connected(void *opaque)
     return false;
 }
 
-static bool required_pin(unsigned pin, unsigned mode)
+static bool required_pin(ArcsSPI *s, unsigned pin, unsigned mode)
 {
-    return pin == LISTENAI_SPI_CLOCK || pin == LISTENAI_SPI_CS ||
+    return pin == LISTENAI_SPI_CLOCK || (pin == LISTENAI_SPI_CS && !(s->device.regs[0x30 / 4] & (1u << 21))) ||
            (pin == LISTENAI_SPI_MOSI && mode != 1);
 }
 
-static bool capture_route(ArcsSPI *s)
+static bool capture_route(void *opaque)
 {
+    ArcsSPI *s = opaque;
     unsigned mode = (s->device.regs[0x20 / 4] >> 24) & 15;
     for (unsigned pin = 0; pin < 4; pin++) {
         s->selected_pad[pin] = -1;
-        if (!required_pin(pin, mode)) {
+        if (!required_pin(s, pin, mode)) {
             continue;
         }
         s->selected_pad[pin] = input_pad(s, pin);
@@ -195,7 +202,7 @@ void arcs_spi_pins_changed(ArcsSoC *soc)
         }
         for (unsigned pin = 0; pin < 4; pin++) {
             int pad = s->selected_pad[pin];
-            if (required_pin(pin, p->mode) &&
+            if (required_pin(s, pin, p->mode) &&
                 (pad < 0 || !pin_selected(s, pin, pad))) {
                 arcs_soc_fail(
                     soc, 0x47500000 + 4 * MAX(pad, 0), 4, true,
@@ -301,6 +308,7 @@ void arcs_spi_init(ArcsSoC *soc)
             .dma_active = spi_dma_active,
             .clock_rate = spi_clock,
             .pins_connected = pins_connected,
+            .slave_route = capture_route,
         };
         s->device.base = 0x47000000 + i * 0x100000;
         snprintf(name, sizeof(name), "arcs-spi%u", i);

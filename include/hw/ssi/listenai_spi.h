@@ -20,6 +20,7 @@ typedef struct ListenaiSPICallbacks {
     uint64_t (*clock_rate)(void *opaque);
     /* Select a concrete digital route; observation alone must not select it. */
     bool (*pins_connected)(void *opaque);
+    bool (*slave_route)(void *opaque);
 } ListenaiSPICallbacks;
 
 /* Synthesized IP properties, independent of board routing. */
@@ -48,7 +49,7 @@ struct ListenaiSPI {
     ListenaiSPIHardware hardware;
     bool lcd;
     unsigned fifo_bytes[16];
-    bool serial, selected, pin_clock, pin_data, inflight, consumed;
+    bool serial, selected, pin_clock, pin_data, pin_cs, inflight, consumed;
     unsigned bit_index, half_edges, tx_left, rx_packed;
     uint32_t serial_tx, serial_rx, packed_tx, packed_rx;
     uint64_t remaining, frames;

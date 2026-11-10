@@ -136,6 +136,31 @@ static void fifo_and_cancel(void)
     qtest_quit(q);
 }
 
+static void software_cs(void)
+{
+    QTestState *q = start();
+    bitbang_start(q);
+    gpio_drive(q, true, false, false);
+    qtest_writel(q, SLAVE + 0x30, (1u << 21) | (1u << 22));
+    qtest_writel(q, MUX + 22 * 4, 0); /* No external CS route. */
+    qtest_writel(q, SLAVE + 0x20, 0);
+    qtest_writel(q, SLAVE + 0x3c, 0x1f);
+    qtest_writel(q, SLAVE + 0x30, 1u << 21);
+    byte(q, 0x69);
+    qtest_writel(q, SLAVE + 0x20, 0x02000000);
+    byte(q, 0x96);
+    g_assert_cmpuint(qtest_readl(q, SLAVE + 0x64), ==, 2);
+    g_assert_cmpuint(qtest_readl(q, SLAVE + 0x68), ==, 1);
+    g_assert_cmpuint(qtest_readl(q, SLAVE + 0x2c), ==, 0x69);
+    g_assert_cmpuint(qtest_readl(q, SLAVE + 0x2c), ==, 0x96);
+    g_assert_cmphex(qtest_readl(q, SLAVE + 0x3c) & 16, ==, 0);
+    qtest_writel(q, SLAVE + 0x30, (1u << 21) | (1u << 22));
+    g_assert_cmphex(qtest_readl(q, SLAVE + 0x3c) & 16, ==, 16);
+    byte(q, 0xff); /* Clocks cannot receive while register CS is high. */
+    g_assert_cmpuint(qtest_readl(q, SLAVE + 0x64), ==, 2);
+    qtest_quit(q);
+}
+
 static void pad_clock(void)
 {
     QTestState *q = qtest_init("-machine arcs-mini");
@@ -569,6 +594,7 @@ int main(int argc, char **argv)
                         duplex);
     qtest_add_func("arcs-spi/fifo-cancel", fifo_and_cancel);
     qtest_add_func("arcs-spi/pad-clock", pad_clock);
+    qtest_add_func("arcs-spi/software-cs", software_cs);
     qtest_add_func("arcs-spi/rx-dma-mux", dma_receive);
     for (unsigned i = 0; i < 3; i++) {
         g_autofree char *name = g_strdup_printf("arcs-spi/hardware/%u", i);

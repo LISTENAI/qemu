@@ -295,8 +295,44 @@ static void serial_master_tick(ListenaiSPI *s)
     }
 }
 
+static void slave_select(ListenaiSPI *s, bool level)
+{
+    if (s->selected == !level) {
+        return;
+    }
+    s->selected = !level;
+    if (!clock_rate(s)) {
+        return;
+    }
+    if (level) {
+        if (s->active) {
+            serial_flush_rx(s);
+            s->active = false;
+            latch(s, 16);
+            serial_cancel(s);
+            signals(s);
+        }
+    } else {
+        if (s->callbacks.slave_route && !s->callbacks.slave_route(s->callbacks.opaque)) {
+            s->selected = false;
+            return;
+        }
+        serial_format(s);
+        serial_cancel(s);
+        s->regs[0x64 / 4] = s->regs[0x68 / 4] = 0;
+        s->active = s->serial = true;
+        s->pin_clock = !!(s->regs[0x10 / 4] & 2);
+        serial_prepare(s);
+        if (!(s->regs[0x10 / 4] & 1)) {
+            pin_drive(s, LISTENAI_SPI_MISO, serial_bit(s));
+        }
+        signals(s);
+    }
+}
+
 void listenai_spi_pin_input(ListenaiSPI *s, unsigned pin, bool level)
 {
+    if (pin == LISTENAI_SPI_CS) { s->pin_cs = level; }
     if (pin == LISTENAI_SPI_MISO && !is_slave(s)) {
         s->pin_data = level;
         return;
@@ -309,32 +345,8 @@ void listenai_spi_pin_input(ListenaiSPI *s, unsigned pin, bool level)
         return;
     }
     if (pin == LISTENAI_SPI_CS) {
-        if (s->selected == !level) {
-            return;
-        }
-        s->selected = !level;
-        if (!clock_rate(s)) {
-            return;
-        }
-        if (level) {
-            if (s->active) {
-                serial_flush_rx(s);
-                s->active = false;
-                latch(s, 16);
-                serial_cancel(s);
-                signals(s);
-            }
-        } else {
-            serial_format(s);
-            serial_cancel(s);
-            s->regs[0x64 / 4] = s->regs[0x68 / 4] = 0;
-            s->active = s->serial = true;
-            s->pin_clock = !!(s->regs[0x10 / 4] & 2);
-            serial_prepare(s);
-            if (!(s->regs[0x10 / 4] & 1)) {
-                pin_drive(s, LISTENAI_SPI_MISO, serial_bit(s));
-            }
-            signals(s);
+        if (!(s->regs[0x30 / 4] & (1u << 21))) {
+            slave_select(s, level);
         }
         return;
     }
@@ -491,13 +503,22 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
     if ((off & 3) || off > 0x7c) {
         fail(s, off, value);
     }
+    uint32_t previous = s->regs[off / 4];
     switch (off) {
     case 0x10:
-        if (s->serial && s->active && value != s->regs[off / 4]) {
+        if (s->serial && s->active && value != s->regs[off / 4] &&
+            (!is_slave(s) || !(s->regs[0x30 / 4] & (1u << 21)) ||
+             s->consumed || s->bit_index ||
+             s->regs[0x64 / 4] || s->regs[0x68 / 4])) {
             fail(s, off, value);
         }
-        /* Slave data transfer is driven by external CS and SCLK. */
+        /* An asserted software CS may precede format setup. Until the first
+         * clock edge, no data has been sampled and setup remains writable. */
         s->regs[off / 4] = value;
+        if (s->serial && s->active && value != previous) {
+            serial_format(s); serial_prepare(s);
+            s->pin_clock = !!(value & 2);
+        }
         if (!(value & 4)) {
             pin_drive(s, LISTENAI_SPI_CLOCK, !!(value & 2));
         }
@@ -526,10 +547,17 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
         }
         break;
     case 0x20:
-        if (s->serial && s->active && value != s->regs[off / 4]) {
+        if (s->serial && s->active &&
+            ((value ^ previous) & (is_slave(s) ? 0x60c00000 : 0x6fc00000))) {
             fail(s, off, value);
         }
         s->regs[off / 4] = value;
+        if (s->serial && s->active && is_slave(s)) {
+            /* Read/write direction may change while software CS is held.
+             * Keep the shift register and sampled bits; counts in TRANSCTRL
+             * do not delimit a slave transaction. */
+            serial_format(s);
+        }
         break;
     case 0x30:
         if (s->serial && s->active && (value & 6) && !(value & 1)) {
@@ -549,6 +577,10 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
             s->rx_head = s->rx_count = 0;
         }
         s->regs[off / 4] = value & ~7u;
+        if (!s->lcd && is_slave(s) && ((previous | value) & (1u << 21))) {
+            if (value & 1) { s->selected = false; }
+            slave_select(s, value & (1u << 21) ? !!(value & (1u << 22)) : s->pin_cs);
+        }
         break;
     case 0x40:
         if (s->active && s->regs[off / 4] != value) {
@@ -664,6 +696,7 @@ static void spi_reset_state(ListenaiSPI *s)
     s->remaining = s->frames = 0;
     s->active = s->phase = s->serial = s->selected = false;
     s->pin_clock = s->pin_data = false;
+    s->pin_cs = true;
     s->work = int128_zero();
     serial_cancel(s);
     timer_del(s->service);

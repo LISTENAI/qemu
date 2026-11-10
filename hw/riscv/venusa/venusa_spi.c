@@ -116,6 +116,26 @@ static void chip_select(void *opaque, int unused, int level)
     }
 }
 
+static bool required_pin(ListenaiSPI *p, unsigned pin)
+{
+    unsigned mode = (p->regs[0x20 / 4] >> 24) & 15;
+    return pin == LISTENAI_SPI_CLOCK ||
+           (pin == LISTENAI_SPI_CS && !(p->regs[0x30 / 4] & (1u << 21))) ||
+           (pin == LISTENAI_SPI_MOSI && mode != 1);
+}
+
+static bool capture_route(void *opaque)
+{
+    VenusASPI *p = opaque;
+    for (unsigned pin = 0; pin < 4; pin++) {
+        if (required_pin(&p->device, pin) &&
+            !venusa_spi_pad_selected(p, pin, pins[p->index][pin])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void venusa_spi_pins_changed(VenusASoC *s)
 {
     for (unsigned i = 0; i < 2; i++) {
@@ -124,8 +144,7 @@ void venusa_spi_pins_changed(VenusASoC *s)
             continue;
         }
         for (unsigned pin = 0; pin < 4; pin++) {
-            if ((pin == LISTENAI_SPI_MOSI && p->mode == 1) ||
-                pin == LISTENAI_SPI_MISO) {
+            if (!required_pin(p, pin)) {
                 continue;
             }
             if (!listenai_pinmux_function(&s->pinmux, pins[i][pin], 5 + i)) {
@@ -147,21 +166,6 @@ void venusa_spi_pad_input(VenusASoC *s, unsigned pad, bool level)
             if (pad == pins[i][pin] &&
                 listenai_pinmux_function(&s->pinmux, pad, 5 + i)) {
                 ListenaiSPI *p = &s->spi[i].device;
-                if (pin == LISTENAI_SPI_CS && !level &&
-                    (p->regs[0x10 / 4] & 4)) {
-                    unsigned mode = (p->regs[0x20 / 4] >> 24) & 15;
-                    for (unsigned required = 0; required < 4; required++) {
-                        if ((required == LISTENAI_SPI_MOSI && mode == 1) ||
-                            required == LISTENAI_SPI_MISO) {
-                            continue;
-                        }
-                        if (!listenai_pinmux_function(
-                                &s->pinmux, pins[i][required], 5 + i)) {
-                            /* No input pad route at CS assertion. */
-                            return;
-                        }
-                    }
-                }
                 listenai_spi_pin_input(p, pin, level);
             }
         }
@@ -253,6 +257,7 @@ void venusa_spi_init(VenusASoC *s)
             .dma_active = dma_active,
             .clock_rate = spi_clock,
             .pins_connected = pins_connected,
+            .slave_route = capture_route,
         };
         p->device.base = 0x43e00000 + i * 0x100000;
         qdev_prop_set_string(DEVICE(&p->device), "bus-name", name);
