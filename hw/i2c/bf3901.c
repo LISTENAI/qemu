@@ -22,12 +22,18 @@ struct BF3901State {
     unsigned width, height, x, y, bit;
     uint64_t rate, half_cycles, line_cycles, lead_cycles, frame_cycles,
         sync_end_cycles;
-    int64_t frame_start;
+    int64_t frame_start, next_ns;
+    bool syncing, direct;
+    unsigned (*batch_edges)(void *, bool);
+    void (*batch_pin)(void *, unsigned, bool);
+    void *batch_opaque;
     bool (*prepare)(void *, Error **);
     void *prepare_opaque;
 };
 
 static void update(BF3901State *s, bool interrupt);
+static void schedule(BF3901State *s);
+static void step(BF3901State *s);
 
 static void sensor_reset(DeviceState *dev) {
     BF3901State *s = BF3901(dev);
@@ -95,6 +101,7 @@ static int sensor_send(I2CSlave *dev, uint8_t value) {
         s->pointer = false;
         return 0;
     }
+    bf3901_sync(DEVICE(s));
     uint8_t reg = s->address++;
     uint8_t previous = s->regs[reg];
     trace_bf3901_register(true, reg, value);
@@ -119,6 +126,7 @@ static uint8_t sensor_recv(I2CSlave *dev) {
 void bf3901_set_clock(DeviceState *dev, uint64_t hz) {
     BF3901State *s = BF3901(dev);
     if (s->clock != hz) {
+        bf3901_sync(dev);
         s->clock = hz;
         update(s, true);
     }
@@ -145,15 +153,17 @@ static void update(BF3901State *s, bool interrupt) {
     }
     if (interrupt || !active(s) || !s->has_scene) {
         timer_del(s->event);
+        s->next_ns = -1;
         s->streaming = s->in_frame = false;
         s->sync_start_pending = s->sync_end_pending = false;
         qemu_set_irq(s->pins[0], !(s->regs[0x15] & 2));
         qemu_set_irq(s->pins[1], !!(s->regs[0x15] & 16));
         qemu_set_irq(s->pins[2], 0);
     }
-    if (active(s) && s->has_scene && !timer_pending(s->event)) {
-        timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
+    if (active(s) && s->has_scene && s->next_ns < 0) {
+        s->next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1;
     }
+    schedule(s);
 }
 
 bool bf3901_set_frame(DeviceState *dev, const uint8_t *rgb, size_t length,
@@ -163,6 +173,7 @@ bool bf3901_set_frame(DeviceState *dev, const uint8_t *rgb, size_t length,
         error_setg(errp, "BF3901 scene must be one 640x480 RGB888 frame");
         return false;
     }
+    bf3901_sync(dev);
     memcpy(s->rgb, rgb, length);
     s->has_scene = true;
     if (!s->streaming) {
@@ -173,6 +184,7 @@ bool bf3901_set_frame(DeviceState *dev, const uint8_t *rgb, size_t length,
 
 void bf3901_clear_frame(DeviceState *dev) {
     BF3901State *s = BF3901(dev);
+    bf3901_sync(dev);
     s->has_scene = false;
     update(s, true);
 }
@@ -265,13 +277,21 @@ static void prepare_frame(BF3901State *s) {
     }
 }
 
-static void emit_bit(BF3901State *s) {
-    unsigned shift = s->lsb ? s->bit : 7 - s->bit;
-    qemu_set_irq(s->pins[2], (s->frame[s->y * s->width + s->x] >> shift) & 1);
+static void emit_pin(BF3901State *s, unsigned pin, bool level)
+{
+    if (s->direct) {
+        s->batch_pin(s->batch_opaque, pin, level);
+    } else {
+        qemu_set_irq(s->pins[pin], level);
+    }
 }
 
-static void tick(void *opaque) {
-    BF3901State *s = opaque;
+static void emit_bit(BF3901State *s) {
+    unsigned shift = s->lsb ? s->bit : 7 - s->bit;
+    emit_pin(s, 2, (s->frame[s->y * s->width + s->x] >> shift) & 1);
+}
+
+static void step(BF3901State *s) {
     if (!active(s) || !s->has_scene) {
         update(s, true);
         return;
@@ -289,7 +309,7 @@ static void tick(void *opaque) {
             return;
         }
         prepare_frame(s);
-        s->frame_start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->frame_start = s->next_ns;
         s->streaming = s->in_frame = true;
         s->x = s->y = s->bit = 0;
         s->level = false;
@@ -297,31 +317,29 @@ static void tick(void *opaque) {
         qemu_set_irq(s->pins[0], s->vsync_high ^ s->sync_start_pending);
         qemu_set_irq(s->pins[1], s->falling);
         emit_bit(s);
-        timer_mod(
-            s->event,
-            deadline(s, s->lead_cycles +
-                            (s->sync_start_pending ? 0 : s->half_cycles)));
+        s->next_ns = deadline(s, s->lead_cycles +
+                            (s->sync_start_pending ? 0 : s->half_cycles));
         return;
     }
     if (s->sync_start_pending) {
         s->sync_start_pending = false;
         qemu_set_irq(s->pins[0], s->vsync_high);
-        timer_mod(s->event, deadline(s, s->lead_cycles + s->half_cycles));
+        s->next_ns = deadline(s, s->lead_cycles + s->half_cycles);
         return;
     }
     if (s->sync_end_pending) {
         s->sync_end_pending = false;
         qemu_set_irq(s->pins[0], !s->vsync_high);
-        timer_mod(s->event, deadline(s, s->frame_cycles));
+        s->next_ns = deadline(s, s->frame_cycles);
         return;
     }
     if (!s->in_frame) {
         s->streaming = false;
-        tick(s);
+        step(s);
         return;
     }
     s->level = !s->level;
-    qemu_set_irq(s->pins[1], s->level ^ s->falling);
+    emit_pin(s, 1, s->level ^ s->falling);
     if (!s->level) {
         if (++s->bit == 8) {
             s->bit = 0;
@@ -330,7 +348,7 @@ static void tick(void *opaque) {
                 if (++s->y == s->height) {
                     s->in_frame = false;
                     s->sync_end_pending = true;
-                    timer_mod(s->event, deadline(s, s->sync_end_cycles));
+                    s->next_ns = deadline(s, s->sync_end_cycles);
                     return;
                 }
             }
@@ -340,11 +358,80 @@ static void tick(void *opaque) {
     uint64_t at =
         s->lead_cycles + s->y * s->line_cycles +
         (s->x * 16 + s->bit * 2 + (s->level ? 2 : 1)) * s->half_cycles;
-    timer_mod(s->event, deadline(s, at));
+    s->next_ns = deadline(s, at);
+}
+
+/* Defer only edges which cannot yet change a receiver-visible FIFO word.
+ * A register access materializes partial bits before observing or changing
+ * state. The adapter returns one when another edge observer is present. */
+static void schedule(BF3901State *s)
+{
+    if (s->syncing || !s->event) {
+        return;
+    }
+    if (s->next_ns < 0) {
+        timer_del(s->event);
+        return;
+    }
+    int64_t when = s->next_ns;
+    if (s->batch_edges && s->streaming && s->in_frame &&
+        !s->sync_start_pending && !s->sync_end_pending) {
+        unsigned edges = s->batch_edges(s->batch_opaque,
+                                        !s->level ^ s->falling);
+        unsigned left = (s->width - s->x) * 16 - s->bit * 2 - s->level;
+        edges = MAX(1, MIN(edges, left));
+        uint64_t cycles = s->lead_cycles + s->y * s->line_cycles +
+            (s->x * 16 + s->bit * 2 + s->level + edges) * s->half_cycles;
+        when = deadline(s, cycles);
+    }
+    timer_mod(s->event, when);
+}
+
+void bf3901_sync(DeviceState *dev)
+{
+    BF3901State *s = BF3901(dev);
+    if (s->syncing || !s->event) {
+        /* A receiver callback can change routing at a completion boundary. */
+        s->direct = false;
+        return;
+    }
+    s->direct = s->batch_pin && s->batch_edges && s->streaming &&
+        s->in_frame && !s->sync_start_pending && !s->sync_end_pending &&
+        s->batch_edges(s->batch_opaque, !s->level ^ s->falling) > 1;
+    s->syncing = true;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    while (s->next_ns >= 0 && s->next_ns <= now) {
+        int64_t previous = s->next_ns;
+        step(s);
+        if (s->next_ns == previous) {
+            /* A scene provider can temporarily have no input. */
+            s->next_ns = -1;
+        }
+    }
+    s->syncing = s->direct = false;
+    schedule(s);
+}
+
+void bf3901_set_batch_edges(DeviceState *dev,
+                           unsigned (*fn)(void *, bool),
+                           void (*pin)(void *, unsigned, bool), void *opaque)
+{
+    BF3901State *s = BF3901(dev);
+    bf3901_sync(dev);
+    s->batch_edges = fn;
+    s->batch_pin = pin;
+    s->batch_opaque = opaque;
+    schedule(s);
+}
+
+static void tick(void *opaque)
+{
+    bf3901_sync(DEVICE(opaque));
 }
 
 static void input(void *opaque, int pin, int level) {
     BF3901State *s = opaque;
+    bf3901_sync(DEVICE(s));
     if (pin == 0) {
         if (s->reset_released == !!level) {
             return;
@@ -365,6 +452,7 @@ static void input(void *opaque, int pin, int level) {
 static void instance_init(Object *obj) {
     BF3901State *s = BF3901(obj);
     s->reset_released = true;
+    s->next_ns = -1;
     s->event = timer_new_ns(QEMU_CLOCK_VIRTUAL, tick, s);
     qdev_init_gpio_out_named(DEVICE(s), s->pins, "serial", 3);
     qdev_init_gpio_in_named(DEVICE(s), input, "control", 2);

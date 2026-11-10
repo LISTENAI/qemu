@@ -20,6 +20,9 @@ typedef struct ListenaiPinmux {
     ListenaiGPIOCallbacks callbacks;
     ListenaiGPIO *banks[8];
     unsigned bank_count;
+    /* Materialize connected lazy digital inputs before observation/change. */
+    void (*sync_inputs)(void *);
+    void *sync_opaque;
 } ListenaiPinmux;
 
 struct ListenaiGPIO {
@@ -32,6 +35,7 @@ struct ListenaiGPIO {
     void *observe_opaque;
 };
 
+void listenai_pinmux_sync_inputs(ListenaiPinmux *s);
 void listenai_pinmux_init_unmapped(ListenaiPinmux *s, unsigned count,
                                   ListenaiGPIOCallbacks callbacks);
 uint32_t listenai_pinmux_config(ListenaiPinmux *s, unsigned pin);

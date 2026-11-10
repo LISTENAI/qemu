@@ -101,6 +101,7 @@ static uint64_t common_read(void *opaque, hwaddr off, unsigned size)
 static void common_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsConfigIO *io = opaque;
+    listenai_pinmux_sync_inputs(&io->soc->pinmux[0]);
     ArcsSoC *soc = io->soc;
     ArcsSysctl *s = &soc->sysctl;
     if (off >= 0x80 && off < 0x90 && !(off & (size - 1))) {
@@ -193,6 +194,7 @@ static uint64_t pll_read(void *opaque, hwaddr off, unsigned size)
 static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsConfigIO *io = opaque;
+    listenai_pinmux_sync_inputs(&io->soc->pinmux[0]);
     if (size != 4 || (off & 3) || off > 0x40) {
         arcs_soc_fail(io->soc, io->base + off, size, true, value);
     }
@@ -271,6 +273,7 @@ static uint64_t ap_read(void *opaque, hwaddr off, unsigned size)
 static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsConfigIO *io = opaque;
+    listenai_pinmux_sync_inputs(&io->soc->pinmux[0]);
     if (size != 4 ||
         (off != 0 && off != 8 && off != 12 && off != 16 && off != 0x1c) ||
         (off == 0 && (value & 0x3519))) {
@@ -389,6 +392,7 @@ static uint64_t aon_read(void *opaque, hwaddr off, unsigned size)
 static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsConfigIO *io = opaque;
+    listenai_pinmux_sync_inputs(&io->soc->pinmux[0]);
     ArcsSoC *soc = io->soc;
     ArcsSysctl *s = &soc->sysctl;
     hwaddr original_off = off;

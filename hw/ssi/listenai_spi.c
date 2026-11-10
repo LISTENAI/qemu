@@ -12,6 +12,32 @@
 /* TX/RX threshold and END enables also gate and clear their event latches. */
 #define SPI_ENABLE_LATCHES 0x1cu
 
+static void sync_input(ListenaiSPI *s)
+{
+    if (s->sync_input) {
+        s->sync_input(s->sync_opaque);
+    }
+}
+
+/* RX-only reception cannot assert a new request until its next FIFO word.
+ * Register access still observes partial shift and packed-byte state. */
+unsigned listenai_spi_defer_edges(ListenaiSPI *s, bool next_clock)
+{
+    if (!s->selected || !s->active || !s->serial || s->mode != 2 ||
+        !(s->regs[0x10 / 4] & 4) || !s->bits ||
+        !s->callbacks.clock_rate(s->callbacks.opaque) ||
+        s->pin_clock == next_clock) {
+        return 1;
+    }
+    unsigned remaining = s->bits - (s->inflight ? s->bit_index : 0);
+    if (s->regs[0x10 / 4] & 128) {
+        remaining += (3 - s->rx_packed) * 8;
+    }
+    bool leading = next_clock != !!(s->regs[0x10 / 4] & 2);
+    bool sample = leading != !!(s->regs[0x10 / 4] & 1);
+    return remaining ? (remaining - 1) * 2 + (sample ? 1 : 2) : 1;
+}
+
 static uint32_t spi_pending(ListenaiSPI *s)
 {
     uint32_t thresholds =
@@ -119,6 +145,7 @@ static void schedule(ListenaiSPI *s)
 
 void listenai_spi_clock_changed(ListenaiSPI *s)
 {
+    sync_input(s);
     if (!s->phase) {
         return;
     }
@@ -330,8 +357,11 @@ static void slave_select(ListenaiSPI *s, bool level)
     }
 }
 
-void listenai_spi_pin_input(ListenaiSPI *s, unsigned pin, bool level)
+static void pin_input(ListenaiSPI *s, unsigned pin, bool level)
 {
+    if (pin == LISTENAI_SPI_CS) {
+        sync_input(s);
+    }
     if (pin == LISTENAI_SPI_CS) { s->pin_cs = level; }
     if (pin == LISTENAI_SPI_MISO && !is_slave(s)) {
         s->pin_data = level;
@@ -375,6 +405,14 @@ void listenai_spi_pin_input(ListenaiSPI *s, unsigned pin, bool level)
             serial_prepare(s);
         }
         pin_drive(s, LISTENAI_SPI_MISO, serial_bit(s));
+    }
+}
+
+void listenai_spi_pin_input(ListenaiSPI *s, unsigned pin, bool level)
+{
+    pin_input(s, pin, level);
+    if (pin == LISTENAI_SPI_CS) {
+        sync_input(s);
     }
 }
 
@@ -454,6 +492,7 @@ static void drain(void *opaque)
 static uint64_t spi_read(void *opaque, hwaddr off, unsigned size)
 {
     ListenaiSPI *s = opaque;
+    sync_input(s);
     if ((off & 3) || off > 0x7c) {
         s->callbacks.fail(s->callbacks.opaque, s->base + off, size, false, 0);
         return 0;
@@ -493,7 +532,7 @@ static uint64_t spi_read(void *opaque, hwaddr off, unsigned size)
 static bool spi_icount_read_safe(void *opaque, hwaddr off)
 {
     ListenaiSPI *s = opaque;
-    return s->safe_reads && off <= 0x7c && off != 0x2c && !(off & 3);
+    return !s->sync_input && s->safe_reads && off <= 0x7c && off != 0x2c && !(off & 3);
 }
 
 static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
@@ -659,6 +698,7 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value,
 static void spi_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ListenaiSPI *s = opaque;
+    sync_input(s);
     bool nested = s->io_busy;
     /* A DMA request may synchronously refill this FIFO during a control
      * write. Other recursive controller writes cannot mutate outer state. */
@@ -670,6 +710,7 @@ static void spi_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     s->io_busy = true;
     spi_write_impl(opaque, off, value, size);
     s->io_busy = nested;
+    sync_input(s);
 }
 
 #define OPS(read_fn, write_fn, safe_fn)                                        \

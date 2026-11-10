@@ -184,6 +184,7 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsDVP *s = opaque;
+    listenai_pinmux_sync_inputs(&s->soc->pinmux[0]);
     arcs_dvp_sync(s->soc);
     static const uint32_t masks[] = {
         0x1fff, 0x1fff, 0x1fff, 0x1fff, 3, 7, 0x13f, 15, 3, 63, 0x1ff, 0x7ff,

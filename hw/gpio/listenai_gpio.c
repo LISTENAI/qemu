@@ -5,6 +5,13 @@
 #include "hw/irq.h"
 #include "system/address-spaces.h"
 
+void listenai_pinmux_sync_inputs(ListenaiPinmux *s)
+{
+    if (s->sync_inputs) {
+        s->sync_inputs(s->sync_opaque);
+    }
+}
+
 static bool gpio_register(hwaddr offset)
 {
     switch (offset) {
@@ -44,6 +51,7 @@ static bool resolve(ListenaiPinmux *s, unsigned pin, bool direction,
 
 void listenai_gpio_outputs_snapshot(ListenaiGPIO *s, uint32_t *driven, uint32_t *levels)
 {
+    listenai_pinmux_sync_inputs(s->pinmux);
     *driven = *levels = 0;
     for (unsigned i = 0; i < 32; i++) {
         uint32_t mask = 1u << i;
@@ -74,9 +82,11 @@ void listenai_gpio_observe(ListenaiGPIO *s,
                           void (*observe)(void *, unsigned, uint32_t, uint32_t),
                           void *opaque)
 {
+    listenai_pinmux_sync_inputs(s->pinmux);
     s->observe = observe;
     s->observe_opaque = opaque;
     gpio_observe(s);
+    listenai_pinmux_sync_inputs(s->pinmux);
 }
 
 static void gpio_output(ListenaiGPIO *s, unsigned bit)
@@ -143,6 +153,7 @@ void listenai_gpio_input(ListenaiGPIO *s, unsigned bit, bool value)
 static uint64_t gpio_read(void *opaque, hwaddr offset, unsigned size)
 {
     ListenaiGPIO *s = opaque;
+    listenai_pinmux_sync_inputs(s->pinmux);
     if (size != 4 || (offset & 3)) {
         s->callbacks.fail(s->callbacks.opaque, s->base + offset, size, false, 0);
         return 0;
@@ -162,6 +173,7 @@ static uint64_t gpio_read(void *opaque, hwaddr offset, unsigned size)
 static void gpio_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
     ListenaiGPIO *s = opaque;
+    listenai_pinmux_sync_inputs(s->pinmux);
     if (size != 4 || (offset & 3)) {
         s->callbacks.fail(s->callbacks.opaque, s->base + offset, size, true, value);
         return;
@@ -180,6 +192,7 @@ static void gpio_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
     }
     gpio_irq(s);
     gpio_outputs(s);
+    listenai_pinmux_sync_inputs(s->pinmux);
 }
 
 static void pinmux_changed(ListenaiPinmux *s)
@@ -223,8 +236,10 @@ uint32_t listenai_pinmux_config(ListenaiPinmux *s, unsigned pin)
 void listenai_pinmux_configure(ListenaiPinmux *s, unsigned pin, uint32_t value)
 {
     assert(pin < s->count);
+    listenai_pinmux_sync_inputs(s);
     s->config[pin] = value;
     pinmux_changed(s);
+    listenai_pinmux_sync_inputs(s);
 }
 
 static uint64_t pinmux_read(void *opaque, hwaddr offset, unsigned size)

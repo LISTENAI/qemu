@@ -48,6 +48,7 @@ struct ArcsMachine {
     ArcsNOR flash, flash_cs1;
     DeviceState *screen;
     DeviceState *camera;
+    ArcsSPI *serial_camera_spi;
     DeviceState *touch;
     bool evb;
     ListenaiBoardInputs inputs;
@@ -1018,6 +1019,56 @@ static bool serial_camera_enabled(void *opaque)
     return false;
 }
 
+static void serial_camera_sync(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    bf3901_sync(s->camera);
+}
+
+static unsigned serial_camera_batch(void *opaque, bool next_clock)
+{
+    ArcsMachine *s = opaque;
+    unsigned clock = s->board.camera_pads[LISTENAI_CAM_PCLK];
+    unsigned data = s->board.camera_pads[LISTENAI_CAM_D0];
+    unsigned pads[] = { clock, data };
+    for (unsigned n = 0; n < ARRAY_SIZE(pads); n++) {
+        unsigned pad = pads[n];
+        ArcsGPIO *gpio = &s->soc.gpio[pad / 32];
+        /* Physical edge observers require the original event stream. GPIO
+         * polling instead synchronizes the source at the actual read time. */
+        unsigned bit = pad % 32;
+        if (gpio->observe || (gpio->regs[0x50 / 4] & (1u << bit)) ||
+            ((gpio->regs[0x54 / 4 + bit / 8] >> (4 * (bit % 8))) & 7) ||
+            s->soc.pad_out[pad]) {
+            return 1;
+        }
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        ArcsSPI *spi = &s->soc.spi[i];
+        if (arcs_spi_pad_selected(spi, LISTENAI_SPI_CLOCK, clock) &&
+            arcs_spi_pad_selected(spi, LISTENAI_SPI_MOSI, data)) {
+            s->serial_camera_spi = spi;
+            return listenai_spi_defer_edges(&spi->device, next_clock);
+        }
+    }
+    return 1;
+}
+
+/* The batch predicate excludes GPIO triggers and every other pad consumer.
+ * Keep the sampled pad level, then deliver the same edges to the receiver
+ * without repeating the unchanged mux fanout for each serial bit. */
+static void serial_camera_pin(void *opaque, unsigned pin, bool level)
+{
+    ArcsMachine *s = opaque;
+    unsigned pad = s->board.camera_pads[pin == 1 ? LISTENAI_CAM_PCLK : LISTENAI_CAM_D0];
+    ArcsGPIO *gpio = &s->soc.gpio[pad / 32];
+    uint32_t mask = 1u << (pad % 32);
+    gpio->inputs = level ? gpio->inputs | mask : gpio->inputs & ~mask;
+    listenai_spi_pin_input(&s->serial_camera_spi->device,
+                          pin == 1 ? LISTENAI_SPI_CLOCK : LISTENAI_SPI_MOSI,
+                          level);
+}
+
 static void connect_camera(ArcsMachine *s)
 {
     if (!s->board.camera) { return; }
@@ -1042,6 +1093,13 @@ static void connect_camera(ArcsMachine *s)
                 qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", s->board.camera_pads[outputs[i]]));
         }
         bf3901_set_prepare(s->camera, serial_camera_prepare, s);
+        s->soc.pinmux[0].sync_inputs = serial_camera_sync;
+        s->soc.pinmux[0].sync_opaque = s;
+        for (unsigned i = 0; i < 3; i++) {
+            s->soc.spi[i].device.sync_input = serial_camera_sync;
+            s->soc.spi[i].device.sync_opaque = s;
+        }
+        bf3901_set_batch_edges(s->camera, serial_camera_batch, serial_camera_pin, s);
         listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera,
             bf3901_set_frame, bf3901_clear_frame, getenv("ARCS_QEMU_CAMERA_SHM"),
             serial_camera_changed, serial_camera_enabled, s);

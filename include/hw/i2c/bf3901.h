@@ -10,4 +10,8 @@ bool bf3901_set_frame(DeviceState *dev, const uint8_t *rgb, size_t length,
 void bf3901_clear_frame(DeviceState *dev);
 void bf3901_set_prepare(DeviceState *dev, bool (*fn)(void *, Error **),
                         void *opaque);
+void bf3901_sync(DeviceState *dev);
+void bf3901_set_batch_edges(DeviceState *dev,
+                           unsigned (*fn)(void *, bool),
+                           void (*pin)(void *, unsigned, bool), void *opaque);
 #endif

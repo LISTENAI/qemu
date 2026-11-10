@@ -62,6 +62,9 @@ struct ListenaiSPI {
     /* Board-selected slave bus; controller timing and FIFO service stay local. */
     SSIBus *(*board_bus)(void *opaque);
     void *board_opaque;
+    /* Synchronize a connected clock source before MMIO or CS changes. */
+    void (*sync_input)(void *);
+    void *sync_opaque;
 };
 
 enum {
@@ -72,6 +75,7 @@ enum {
 };
 
 void listenai_spi_pin_input(ListenaiSPI *s, unsigned pin, bool level);
+unsigned listenai_spi_defer_edges(ListenaiSPI *s, bool next_clock);
 void listenai_spi_reset(ListenaiSPI *s);
 void listenai_spi_clock_changed(ListenaiSPI *s);
 
