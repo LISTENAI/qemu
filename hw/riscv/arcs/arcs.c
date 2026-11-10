@@ -13,6 +13,7 @@
 #include "hw/riscv/arcs/arcs_network.h"
 #include "hw/display/serial_lcd.h"
 #include "hw/i2c/gc0328.h"
+#include "hw/i2c/bf3901.h"
 #include "ui/lisa_display.h"
 #include "hw/audio/lisa_stream.h"
 #include "hw/audio/pcm_feedback.h"
@@ -886,6 +887,12 @@ static void camera_clock_changed(void *opaque)
             }
         }
     }
+    if (s->board.camera_bf3901) {
+        uint64_t hz = clock ? arcs_hclk_hz(&s->soc) /
+            (2 * ((s->soc.dvp.regs[0x18 / 4] & 63) + 1)) : 0;
+        bf3901_set_clock(s->camera, hz);
+        return;
+    }
     gc0328_set_clock(s->camera, clock);
     if (!clock) {
         timer_del(s->soc.dvp.event);
@@ -981,24 +988,73 @@ static bool camera_receiver_enabled(void *opaque)
     return arcs_dvp_enabled(&((ArcsMachine *)opaque)->soc.dvp);
 }
 
+static bool serial_camera_prepare(void *opaque, Error **errp)
+{
+    ArcsMachine *s = opaque;
+    if (listenai_camera_scene_receive(&s->camera_scene, errp) < 0) { return false; }
+    listenai_camera_scene_latch(&s->camera_scene);
+    return true;
+}
+
+static void serial_camera_changed(void *opaque)
+{
+    camera_clock_changed(opaque);
+}
+
+static bool serial_camera_enabled(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    for (unsigned i = 0; i < 3; i++) {
+        ArcsSPI *spi = &s->soc.spi[i];
+        if ((spi->device.regs[0x10 / 4] & 4) &&
+            spi->device.callbacks.clock_rate(spi->device.callbacks.opaque) &&
+            arcs_spi_pad_selected(spi, LISTENAI_SPI_CLOCK, s->board.camera_pads[LISTENAI_CAM_PCLK]) &&
+            arcs_spi_pad_selected(spi, LISTENAI_SPI_MOSI, s->board.camera_pads[LISTENAI_CAM_D0]) &&
+            ((spi->device.regs[0x30 / 4] & (1u << 21)) ||
+             arcs_spi_pad_selected(spi, LISTENAI_SPI_CS, s->board.camera_pads[LISTENAI_CAM_VSYNC]))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void connect_camera(ArcsMachine *s)
 {
     if (!s->board.camera) { return; }
     unsigned i2c = s->board.camera_i2c;
-    I2CSlave *sensor = i2c_slave_new(TYPE_GC0328, 0x21);
+    I2CSlave *sensor = i2c_slave_new(
+        s->board.camera_bf3901 ? TYPE_BF3901 : TYPE_GC0328,
+        s->board.camera_bf3901 ? 0x6e : 0x21);
     s->camera = DEVICE(sensor);
     object_property_add_child(OBJECT(s), "camera", OBJECT(sensor));
     i2c_slave_realize_and_unref(sensor, s->soc.i2c[i2c].controller.bus, &error_fatal);
     listenai_board_camera_wire(&s->board, DEVICE(&s->soc), s->camera);
     s->soc.i2c[i2c].controller.route_valid = camera_sccb_route;
     s->soc.i2c[i2c].controller.route_opaque = s;
+    if (s->board.camera_bf3901) {
+        s->soc.dvp.clock_changed = camera_clock_changed;
+        s->soc.dvp.opaque = s;
+        arcs_board_connect_pad(&s->soc, s->board.camera_pads[LISTENAI_CAM_MCLK],
+                              qemu_allocate_irq(camera_pad, s, 0));
+        static const unsigned outputs[] = { LISTENAI_CAM_VSYNC, LISTENAI_CAM_PCLK, LISTENAI_CAM_D0 };
+        for (unsigned i = 0; i < ARRAY_SIZE(outputs); i++) {
+            qdev_connect_gpio_out_named(s->camera, "serial", i,
+                qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", s->board.camera_pads[outputs[i]]));
+        }
+        bf3901_set_prepare(s->camera, serial_camera_prepare, s);
+        listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera,
+            bf3901_set_frame, bf3901_clear_frame, getenv("ARCS_QEMU_CAMERA_SHM"),
+            serial_camera_changed, serial_camera_enabled, s);
+        camera_clock_changed(s);
+        return;
+    }
     s->soc.dvp.begin_frame = camera_begin;
     s->soc.dvp.clock_changed = camera_clock_changed;
     s->soc.dvp.opaque = s;
     gc0328_set_notify(s->camera, camera_sensor_changed, s);
     arcs_board_connect_pad(&s->soc, s->board.camera_pads[LISTENAI_CAM_MCLK],
                           qemu_allocate_irq(camera_pad, s, 0));
-    listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera,
+    listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera, gc0328_set_frame, gc0328_clear_frame,
         getenv("ARCS_QEMU_CAMERA_SHM"), camera_source_changed, camera_receiver_enabled, s);
     camera_clock_changed(s);
 }

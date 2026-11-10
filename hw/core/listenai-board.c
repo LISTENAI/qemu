@@ -207,11 +207,17 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     }
     if (b->camera) {
         QDict *p = qdict_get_qdict(dict, "camera");
+        if (!p) { invalid("camera object"); }
+        const char *model = qdict_get_try_str(p, "model");
+        if (model && strcmp(model, "gc0328") && strcmp(model, "bf3901")) { invalid("camera model"); }
+        b->camera_bf3901 = model && !strcmp(model, "bf3901");
         QDict *pins = p ? qdict_get_qdict(p, "pads") : NULL;
         static const char *names[] = {"SCL", "SDA", "MCLK", "PCLK", "HSYNC",
             "VSYNC", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7"};
         for (unsigned i = 0; i < ARRAY_SIZE(names); i++) {
-            b->camera_pads[i] = pad(pins, names[i], pa_pads, pb_pads);
+            if (b->camera_bf3901 && (i == LISTENAI_CAM_HSYNC || i > LISTENAI_CAM_D0)) {
+                b->camera_pads[i] = UINT_MAX;
+            } else { b->camera_pads[i] = pad(pins, names[i], pa_pads, pb_pads); }
         }
         b->camera_pads[LISTENAI_CAM_RESET] = qdict_haskey(pins, "RESET") ? gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads) : UINT_MAX;
         b->camera_pads[LISTENAI_CAM_PWDN] = qdict_haskey(pins, "PWDN") ? gpio_endpoint(b, pins, "PWDN", pa_pads, pb_pads) : UINT_MAX;

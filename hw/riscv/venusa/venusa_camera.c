@@ -248,7 +248,8 @@ DeviceState *venusa_board_camera_connect(VenusASoC *soc, Object *owner, Listenai
     listenai_board_camera_wire(b, DEVICE(soc), s->sensor);
     soc->i2c[1].route_valid = sccb_route;
     soc->i2c[1].route_opaque = s;
-    listenai_camera_scene_init(&s->scene, owner, s->sensor, getenv("LISEM_QEMU_CAMERA_SHM"),
+    listenai_camera_scene_init(&s->scene, owner, s->sensor, gc0328_set_frame, gc0328_clear_frame,
+                               getenv("LISEM_QEMU_CAMERA_SHM"),
                                source_changed, receiver_enabled, s);
     return dev;
 }

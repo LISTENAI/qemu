@@ -66,7 +66,17 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
     if (b->camera) {
         b->camera_i2c = i2c_route(b->camera_pads[LISTENAI_CAM_SCL], b->camera_pads[LISTENAI_CAM_SDA]);
         static const unsigned dvp[] = {26, 12, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20};
-        for (unsigned i = 0; i < ARRAY_SIZE(dvp); i++) {
+        if (b->camera_bf3901) {
+            if (b->camera_pads[LISTENAI_CAM_MCLK] != 26) { invalid("camera clock route"); }
+            unsigned spi;
+            for (spi = 0; spi < 3; spi++) {
+                if (arcs_spi_pad_valid(spi, LISTENAI_SPI_CLOCK, b->camera_pads[LISTENAI_CAM_PCLK]) &&
+                    arcs_spi_pad_valid(spi, LISTENAI_SPI_MOSI, b->camera_pads[LISTENAI_CAM_D0])) {
+                    break;
+                }
+            }
+            if (spi == 3) { invalid("camera serial pad route"); }
+        } else for (unsigned i = 0; i < ARRAY_SIZE(dvp); i++) {
             if (b->camera_pads[i + 2] != dvp[i]) { invalid("camera DVP pad route"); }
         }
     }

@@ -47,6 +47,7 @@ typedef struct ListenaiBoard {
     uint32_t extio_pull_mask, extio_pull_levels;
     unsigned lcd_sck, lcd_sdi, lcd_cs, lcd_dc, lcd_reset, lcd_te;
     bool lcd_qspi, lcd_axs;
+    bool camera_bf3901;
     unsigned lcd_data[4];
     void *lcd_route_opaque;
     unsigned lcd_width, lcd_height, lcd_x, lcd_y, lcd_rotation;

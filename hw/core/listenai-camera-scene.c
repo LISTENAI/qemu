@@ -2,7 +2,6 @@
 /* Host optical scenes; sensor timing and receiver clocks stay in devices. */
 #include "qemu/osdep.h"
 #include "hw/core/listenai-camera-scene.h"
-#include "hw/i2c/gc0328.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/cutils.h"
@@ -36,10 +35,10 @@ static int camera_input_receive(ListenaiCameraScene *s, uint64_t generation, Err
         error_setg(errp, "Invalid camera source state"); result = -1; goto out;
     }
     if (frame->state == 1 || frame->state == 2) {
-        if (!gc0328_set_frame(s->camera, frame->rgb, LISA_CAMERA_BYTES, errp)) {
+        if (!s->set_frame(s->camera, frame->rgb, LISA_CAMERA_BYTES, errp)) {
             result = -1; goto out;
         }
-    } else { gc0328_clear_frame(s->camera); }
+    } else { s->clear_frame(s->camera); }
     s->camera_sequence = frame->sequence;
     s->camera_frame_index = frame->frame_index;
     s->camera_host_ns = frame->host_ns;
@@ -104,7 +103,7 @@ char *listenai_camera_scene_status(ListenaiCameraScene *s)
 static void camera_frame_set(ListenaiCameraScene *s, const char *value, Error **errp)
 {
     if (s->camera_mapping.address) { error_setg(errp, "Shared camera input owns this run"); return; }
-    if (!*value) { gc0328_clear_frame(s->camera); return; }
+    if (!*value) { s->clear_frame(s->camera); return; }
     const size_t bytes = 640 * 480 * 3, encoded = bytes / 3 * 4;
     if (strlen(value) != encoded || strspn(value,
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") != encoded) {
@@ -112,7 +111,7 @@ static void camera_frame_set(ListenaiCameraScene *s, const char *value, Error **
     }
     gsize length;
     g_autofree uint8_t *rgb = g_base64_decode(value, &length);
-    if (gc0328_set_frame(s->camera, rgb, length, errp)) {
+    if (s->set_frame(s->camera, rgb, length, errp)) {
         s->changed(s->opaque);
     }
 }
@@ -150,9 +149,11 @@ static void frame_property(Object *obj, Visitor *v, const char *name, void *opaq
 }
 
 void listenai_camera_scene_init(ListenaiCameraScene *s, Object *owner,
-                               DeviceState *sensor, const char *shared,
+                               DeviceState *sensor, ListenaiCameraSetFrame set_frame,
+                               ListenaiCameraClearFrame clear_frame, const char *shared,
                                void (*changed)(void *), bool (*enabled)(void *), void *opaque)
 {
+    s->set_frame = set_frame; s->clear_frame = clear_frame;
     s->camera = sensor; s->changed = changed; s->enabled = enabled; s->opaque = opaque;
     object_property_add(owner, "x-lisa-camera-frame", "str", NULL, frame_property, NULL, s);
     object_property_add(owner, "x-lisa-camera-source", "str", NULL, source_property, NULL, s);
