@@ -187,7 +187,10 @@ void arcs_spi_pins_changed(ArcsSoC *soc)
         if (p->service) {
             unsigned input =
                 (p->regs[0x10 / 4] & 4) ? LISTENAI_SPI_MOSI : LISTENAI_SPI_MISO;
-            for (unsigned pad = 0; pad < 64; pad++) {
+            uint64_t routes = pin_routes[i][input];
+            while (routes) {
+                unsigned pad = ctz64(routes);
+                routes &= routes - 1;
                 if (pin_selected(s, input, pad)) {
                     listenai_spi_pin_input(
                         p, input,
@@ -234,9 +237,7 @@ void arcs_spi_pad_input(ArcsSoC *soc, unsigned pad, bool level)
                         (soc->gpio[mosi / 32].inputs >> (mosi % 32)) & 1);
                 }
             }
-            qemu_set_irq(
-                qdev_get_gpio_in_named(DEVICE(&s->device), "pins-in", pin),
-                level);
+            listenai_spi_pin_input(&s->device, pin, level);
         }
     }
 }

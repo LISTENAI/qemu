@@ -79,15 +79,21 @@ void listenai_gpio_observe(ListenaiGPIO *s,
     gpio_observe(s);
 }
 
+static void gpio_output(ListenaiGPIO *s, unsigned bit)
+{
+    uint32_t mask = 1u << bit;
+    s->callbacks.output(s->callbacks.opaque, s->first_pad + bit,
+                        resolve(s->pinmux, s->first_pad + bit,
+                                !!(s->regs[0x28 / 4] & mask),
+                                !!(s->regs[0x24 / 4] & mask),
+                                !!(s->inputs & mask)));
+}
+
 static void gpio_outputs(ListenaiGPIO *s)
 {
     gpio_observe(s);
     for (unsigned i = 0; i < 32; i++) {
-        uint32_t mask = 1u << i;
-        s->callbacks.output(s->callbacks.opaque, s->first_pad + i,
-                     resolve(s->pinmux, s->first_pad + i,
-                             !!(s->regs[0x28 / 4] & mask),
-                             !!(s->regs[0x24 / 4] & mask), !!(s->inputs & mask)));
+        gpio_output(s, i);
     }
 }
 
@@ -122,8 +128,16 @@ void listenai_gpio_input(ListenaiGPIO *s, unsigned bit, bool value)
         (trigger == 7 && previous != !!value)) {
         s->pending |= mask;
     }
-    gpio_irq(s);
-    gpio_outputs(s);
+    if (trigger == 2 || trigger == 3) {
+        s->pending = value == (trigger == 2) ? s->pending | mask
+                                           : s->pending & ~mask;
+    }
+    s->callbacks.irq(s->callbacks.opaque, s->first_pad,
+                     !!(s->pending & s->regs[0x50 / 4]));
+    /* An external edge cannot change another pad's drive or PinMux. Keep
+     * observation and IRQ handling at this event, but only route this pad. */
+    gpio_observe(s);
+    gpio_output(s, bit);
 }
 
 static uint64_t gpio_read(void *opaque, hwaddr offset, unsigned size)
