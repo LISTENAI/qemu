@@ -84,7 +84,7 @@ static void ep0_clear(ArcsUSB *s)
 void arcs_usb_fifo_clear(ArcsUSB *s)
 {
     ep0_clear(s);
-    for (unsigned ep = 1; ep < 8; ep++) {
+    for (unsigned ep = 1; ep < G_N_ELEMENTS(s->endpoint); ep++) {
         s->endpoint[ep][2] &= ~3;
         s->endpoint[ep][6] &= ~1;
     }
@@ -331,7 +331,7 @@ static bool usb_dma_register(hwaddr off, unsigned size)
 
 static bool usb_valid(hwaddr off, unsigned size)
 {
-    return (off >= 0x20 && off <= 0x3c && !(off & 3) &&
+    return (off >= 0x20 && off <= 0x5c && !(off & 3) &&
             (size == 1 || size == 2 || size == 4)) ||
            (off == 0x200 && size == 4) ||
            (size == 1 && (off <= 0x19 || (off >= 0x62 && off <= 0x67) || off == 0x60 || off == 0x77 || off == 0x7f)) ||
@@ -343,7 +343,7 @@ static bool usb_valid(hwaddr off, unsigned size)
  * 0x100 + endpoint * 0x10. Direct access must not alter INDEX. */
 static hwaddr usb_endpoint_offset(hwaddr off, unsigned *endpoint)
 {
-    if (off >= 0x100 && off < 0x180 && (off & 15) <= 9) {
+    if (off >= 0x100 && off < 0x200 && (off & 15) <= 9) {
         *endpoint = (off - 0x100) / 16;
         return 0x10 + (off & 15);
     }
@@ -394,7 +394,7 @@ static uint64_t usb_read(void *opaque, hwaddr off, unsigned size)
     }
     if (!usb_valid(off, size)) { arcs_soc_fail(s->soc, 0x41000000 + original_off, size, false, 0); }
     uint32_t value = 0;
-    if (off >= 0x24 && off <= 0x3c) {
+    if (off >= 0x24 && off <= 0x5c) {
         unsigned ep = (off - 0x20) / 4;
         if (s->bulk_position[ep] + size > s->bulk_count[ep]) {
             arcs_soc_fail(s->soc, 0x41000000 + original_off, size, false, 0);
@@ -434,13 +434,12 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     off = usb_endpoint_offset(off, &endpoint);
     if (usb_dma_register(off, size)) {
         unsigned ch = (off - 0x204) / 16, reg = ((off - 0x204) % 16) / 4;
-        if (reg == 0 && (value & ~0x7ffU || ((value & 1) && !((value >> 4) & 15)) ||
-                         ((value >> 4) & 15) > 7)) { goto fail; }
+        if (reg == 0 && (value & ~0x7ffU || ((value & 1) && !((value >> 4) & 15)))) { goto fail; }
         s->dma[ch][reg] = value;
         return;
     }
     if (!usb_valid(off, size)) { goto fail; }
-    if (off >= 0x24 && off <= 0x3c) {
+    if (off >= 0x24 && off <= 0x5c) {
         unsigned ep = (off - 0x20) / 4;
         if (s->bulk_tx_count[ep] + size > sizeof(s->bulk_tx[ep]) || (s->endpoint[ep][2] & 1)) { goto fail; }
         for (unsigned i = 0; i < size; i++) { s->bulk_tx[ep][s->bulk_tx_count[ep]++] = value >> (8 * i); }
@@ -501,7 +500,7 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         case 8: s->rx_mask = (s->rx_mask & 0xff00) | (byte & 0xfe); break;
         case 9: s->rx_mask = (s->rx_mask & 255) | (byte << 8); break;
         case 11: s->mask = byte; break;
-        case 14: if (byte > 7) { goto fail; } s->index = byte; break;
+        case 14: if (byte >= G_N_ELEMENTS(s->endpoint)) { goto fail; } s->index = byte; break;
         case 15: if (byte) { goto fail; } break;
         case 0x60: if (byte & 2) { goto fail; } s->session = byte & 1; break;
         case 0x7f:
@@ -530,10 +529,13 @@ static void controller_reset(ArcsUSB *s, bool soft)
     /* ARCS SOFT_RST pulses the MAC/PHY reset domain, while SOFTCONN is
      * retained. Both SDK controller drivers pulse it inside the bus-reset
      * handler without reconnecting. CherryUSB also sets IRQ masks before this
-     * pulse, so masks survive. Module/system reset clears all registers. */
+     * pulse, so masks survive. Module/system reset restores MUSB defaults. */
     uint8_t connection = soft ? s->power & 0x70 : 0;
-    uint8_t mask = soft ? s->mask : 0;
-    uint16_t tx_mask = soft ? s->tx_mask : 0, rx_mask = soft ? s->rx_mask : 0;
+    /* MUSB resets with RESUME and RESET enabled, and interrupt enables
+     * set for all implemented TX/RX endpoints (EP0 uses IntrTxE). */
+    uint8_t mask = soft ? s->mask : 0x06;
+    uint16_t tx_mask = soft ? s->tx_mask : 0xffff;
+    uint16_t rx_mask = soft ? s->rx_mask : 0xfffe;
     s->address = s->index = s->mask = s->interrupt = 0;
     s->power = connection;
     s->mask = mask; s->tx_mask = tx_mask; s->rx_mask = rx_mask;

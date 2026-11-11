@@ -30,7 +30,7 @@ static bool adb_endpoints(ArcsUSBHost *h)
         }
         if (adb && d[1] == 5 && (d[3] & 3) == 2) {
             unsigned ep = d[2] & 15, mps = lduw_le_p(d + 4);
-            if (!ep || ep > 7 || mps > (h->high_speed ? 512 : 64) || !mps) { return false; }
+            if (!ep || mps > (h->high_speed ? 512 : 64) || !mps) { return false; }
             if (d[2] & 0x80) { h->adb_in = ep; h->adb_in_max = mps; }
             else { h->adb_out = ep; h->adb_out_max = mps; }
             if (h->adb_in && h->adb_out) { return true; }
