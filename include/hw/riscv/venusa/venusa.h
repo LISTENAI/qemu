@@ -87,7 +87,8 @@ struct VenusASoC {
     BlockBackend *flash;
     uint32_t flash_bytes;
     QEMUTimer *deadline;
-    bool reported, follow_hclk;
+    bool reported, follow_hclk, probe;
+    uint32_t probe_entry;
     bool reset_preserve_aon;
     uint32_t reset_cause;
     uint64_t irq_levels[2];

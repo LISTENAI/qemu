@@ -9,6 +9,7 @@
 #include "system/qtest.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
+#include "system/runstate.h"
 #include "venusa_rom.inc"
 
 static unsigned active_hart(void)
@@ -98,6 +99,12 @@ static void io_write(void *opaque, hwaddr address, uint64_t value, unsigned size
     if (size != 4 || (address & 3)) {
         venusa_fail(s, address, size, true, value);
     }
+    if (address == 0xf0000000 && s->probe) {
+        venusa_report(s, value == 0x600d ? "probe-pass" : "probe-fail");
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        cpu_interrupt(current_cpu, CPU_INTERRUPT_HALT);
+        return;
+    }
     if (address >= 0xe0030000 && address < 0xe0031000) {
         if (nuclei_systimer_write(&s->timer[hart], address & 0xfff, value)) {
             return;
@@ -137,6 +144,10 @@ static void reset(DeviceState *dev)
         s->cpu[i].env.pc = 0;
         CPU(&s->cpu[i])->halted = i != 0;
         nuclei_systimer_reset(&s->timer[i], 1000000);
+    }
+    if (s->probe) {
+        s->cpu[0].env.pc = s->probe_entry;
+        CPU(&s->cpu[0])->halted = false;
     }
     s->core1_held = true;
     nuclei_cidu_reset(&s->cidu);
@@ -189,6 +200,17 @@ static void cidu_fault(void *opaque, hwaddr address, unsigned size,
 static void realize(DeviceState *dev, Error **errp)
 {
     VenusASoC *s = VENUSA_SOC(dev);
+    const char *probe_entry = getenv("LISEM_QEMU_PROBE_ENTRY");
+    if (probe_entry) {
+        char *end;
+        uint64_t entry = g_ascii_strtoull(probe_entry, &end, 0);
+        if (!*probe_entry || *end || entry > UINT32_MAX) {
+            error_setg(errp, "Invalid LISEM_QEMU_PROBE_ENTRY");
+            return;
+        }
+        s->probe = true;
+        s->probe_entry = entry;
+    }
     static const struct { const char *name; hwaddr base, size; } regions[] = {
         { "venusa-core0-ilm", 0x80000, 0x2000 },
         { "venusa-core0-dlm", 0x100000, 0x2000 },
