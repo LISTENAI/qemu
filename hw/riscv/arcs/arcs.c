@@ -1199,14 +1199,18 @@ static void boot_pin_set(Object *obj, bool asserted, Error **errp)
 static void signals_apply(ArcsMachine *s)
 {
     listenai_board_inputs_apply(&s->board, &s->inputs, DEVICE(&s->soc));
-    s->soc.adc.voltage_mask = s->inputs.adc_mask;
-    memcpy(s->soc.adc.voltage_uv, s->inputs.adc_uv, sizeof(s->inputs.adc_uv));
+    /* Board channels 0..5 (PB2..PB7) select GPADC slots/RDR4..9. */
+    s->soc.adc.voltage_mask = s->inputs.adc_mask << 4;
+    for (unsigned channel = 0; channel < 6; channel++) {
+        s->soc.adc.voltage_uv[channel + 4] = s->inputs.adc_uv[channel];
+    }
+    keypad_drive(s);
 }
 
 static void signals_set(Object *obj, const char *value, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
-    if (listenai_board_inputs_parse(&s->board, &s->inputs, value, 28, 10, 4, 10, errp)) {
+    if (listenai_board_inputs_parse(&s->board, &s->inputs, value, 28, 10, 0, 6, errp)) {
         signals_apply(s);
     }
 }
@@ -1315,6 +1319,7 @@ static void machine_init(MachineState *machine)
     s->soc.report_opaque = s;
     s->soc.psram.chip = &s->psram;
     s->soc.flash.chips[0] = &s->flash;
+    s->soc.flash.cs1_pad = s->board.nor_cs1_pad;
     if (s->board.nor_cs1) {
         s->soc.flash.chips[1] = &s->flash_cs1;
     }
@@ -1535,8 +1540,9 @@ static void keypad_drive(ArcsMachine *s)
             else { load += (double)b->keypad_pull_up_ohms / resistance; }
         }
     }
-    s->soc.adc.voltage_mask |= 1u << b->keypad_channel;
-    s->soc.adc.voltage_uv[b->keypad_channel] = grounded ? 0 : b->keypad_supply_uv / load;
+    unsigned slot = b->keypad_channel + 4;
+    s->soc.adc.voltage_mask |= 1u << slot;
+    s->soc.adc.voltage_uv[slot] = grounded ? 0 : b->keypad_supply_uv / load;
 }
 
 static void button_drive(ArcsMachine *s, bool pressed)

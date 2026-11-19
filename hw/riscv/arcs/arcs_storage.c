@@ -42,7 +42,7 @@ static ListenAINOR *selected_chip(void *opaque, uint32_t address)
         if (!(mode == 1 || (mode == 0 && in_range == (i == 0))) || !s->chips[i]) {
             continue;
         }
-        if (i == 1 && !arcs_pinmux_function(&s->soc->pinmux[0], 11, 1)) {
+        if (i == 1 && !arcs_pinmux_function(&s->soc->pinmux[0], s->cs1_pad, 1)) {
             continue;
         }
         if (selected) { arcs_soc_fail(s->soc, FLASH_BASE + 0x58, 4, true, config); }

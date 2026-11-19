@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "hw/core/listenai-signal-trace.h"
 #include "hw/i2c/listenai_extio.h"
+#include "hw/i2c/gxa574.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qobject/qjson.h"
@@ -38,7 +39,12 @@ void listenai_signal_trace_stop(ListenaiSignalTrace *s, const char *reason)
     s->active = false; s->reason = reason;
     s->ended_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     for (unsigned i = 0; i < 2; i++) { listenai_gpio_observe(s->gpio[i], NULL, NULL); }
-    if (s->extio) { listenai_extio_observe(s->extio, NULL, NULL); }
+    if (s->extio) {
+        if (object_dynamic_cast(OBJECT(s->extio), TYPE_GXA574))
+            gxa574_observe(s->extio, NULL, NULL);
+        else
+            listenai_extio_observe(s->extio, NULL, NULL);
+    }
 }
 
 char *listenai_signal_trace_json(ListenaiSignalTrace *s)
@@ -118,7 +124,12 @@ static void request(ListenaiSignalTrace *s, const char *text, Error **errp)
     g_strlcpy(s->id, id, sizeof(s->id)); s->reason = "";
     s->started_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); s->ended_ns = 0; s->active = true;
     for (unsigned i = 0; i < 2; i++) { listenai_gpio_observe(s->gpio[i], changed, &s->banks[i]); }
-    if (s->extio) { listenai_extio_observe(s->extio, changed, &s->banks[2]); }
+    if (s->extio) {
+        if (object_dynamic_cast(OBJECT(s->extio), TYPE_GXA574))
+            gxa574_observe(s->extio, changed, &s->banks[2]);
+        else
+            listenai_extio_observe(s->extio, changed, &s->banks[2]);
+    }
     return;
 invalid:
     error_setg(errp, "Invalid signal trace action, capture ID, capacity or endpoints");
@@ -149,7 +160,8 @@ void listenai_signal_trace_init(ListenaiSignalTrace *s, Object *owner,
     s->extio = extio ? DEVICE(object_ref(OBJECT(extio))) : NULL;
     s->valid[0] = pa == 32 ? UINT32_MAX : (1u << pa) - 1;
     s->valid[1] = pb == 32 ? UINT32_MAX : (1u << pb) - 1;
-    s->valid[2] = extio ? listenai_extio_valid_pins() : 0;
+    s->valid[2] = extio ? (object_dynamic_cast(OBJECT(extio), TYPE_GXA574) ?
+        gxa574_valid_pins() : listenai_extio_valid_pins()) : 0;
     for (unsigned i = 0; i < 3; i++) {
         s->banks[i].trace = s; s->banks[i].first = i == 2 ? 64 : 0;
     }
