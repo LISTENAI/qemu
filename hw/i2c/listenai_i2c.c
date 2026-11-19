@@ -2,6 +2,8 @@
 #include "qemu/osdep.h"
 #include "hw/i2c/listenai_i2c.h"
 #include "system/address-spaces.h"
+#include "qemu/error-report.h"
+#include "hw/core/cpu.h"
 
 /* Byte-paced master transactions. Slaves and board routing are independent. */
 static uint32_t i2c_status(ListenaiI2C *s)
@@ -16,6 +18,11 @@ static uint32_t i2c_status(ListenaiI2C *s)
 
 static void i2c_irq(ListenaiI2C *s)
 {
+    if (getenv("LISEM_I2C_DIAGNOSTIC") && s->regs[0x1c / 4] == 0x20) {
+        error_report("I2C diagnostic base=%" HWADDR_PRIx " status=%x inten=%x ctrl=%x fifo=%u active=%d irq=%d",
+                     s->base, i2c_status(s), s->regs[0x14 / 4], s->regs[0x24 / 4], s->count, s->active,
+                     !!(i2c_status(s) & s->regs[0x14 / 4] & 0x3ff));
+    }
     s->callbacks.irq(s->callbacks.opaque, !!(i2c_status(s) & s->regs[0x14 / 4] & 0x3ff));
 }
 
@@ -57,7 +64,15 @@ static void byte_event(void *opaque)
     ListenaiI2C *s = opaque;
     if (!s->active) { return; }
     if (s->route_valid && !s->route_valid(s->route_opaque)) {
-        s->callbacks.fail(s->callbacks.opaque, s->base + 0x28, 4, true, 1);
+        /* The controller still clocks the transaction when its selected pads
+         * are not wired to this board bus. No slave can acknowledge it. Never
+         * deliver bytes to a device behind a disconnected PinMux route. */
+        s->address_phase = s->stop_only = false;
+        s->regs[0x18 / 4] &= ~0x408u;
+        i2c_end_transfer(s->bus);
+        complete(s);
+        s->head = s->count = 0;
+        i2c_irq(s);
         return;
     }
     if (s->stop_only) {
@@ -135,6 +150,10 @@ static void i2c_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     ListenaiI2C *s = opaque;
     hwaddr original_off = off;
     uint64_t original_value = value;
+    if (getenv("LISEM_I2C_DIAGNOSTIC") && s->regs[0x1c / 4] == 0x20) {
+        error_report("I2C MMIO cpu=%d base=%" HWADDR_PRIx " offset=%" HWADDR_PRIx " value=%" PRIx64,
+                     current_cpu ? current_cpu->cpu_index : -1, s->base, off, value);
+    }
     if (!i2c_valid(off, size)) { goto fail; }
     unsigned lane = (off & 3) * 8;
     unsigned aligned = off & ~3u;
@@ -183,6 +202,10 @@ static void i2c_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     }
     i2c_irq(s); schedule(s); return;
 fail:
+    error_report("I2C command rejected: base=0x%" HWADDR_PRIx
+                 " setup=0x%x control=0x%x address=0x%x active=%d",
+                 s->base, s->regs[0x2c / 4], s->regs[0x24 / 4],
+                 s->regs[0x1c / 4], s->active);
     s->callbacks.fail(s->callbacks.opaque, s->base + original_off, size, true, original_value);
 }
 

@@ -31,6 +31,7 @@ typedef struct ListenaiBoard {
     unsigned sd_detect_endpoint;
     DeviceState *extio;
     char *extio_id;
+    char *extio_model;
     unsigned extio_scl, extio_sda, extio_address, extio_i2c;
     bool typec, typec_host;
     unsigned typec_scl, typec_sda, typec_address, typec_i2c, typec_irq, typec_id_pin;
