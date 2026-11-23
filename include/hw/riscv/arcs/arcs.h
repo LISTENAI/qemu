@@ -41,7 +41,11 @@ typedef struct ArcsUART {
     void *observe_opaque;
     ArcsSoC *soc;
     unsigned index;
+    ListenAIUARTPeer *board_peer;
+    unsigned board_tx_pad, board_rx_pad;
 } ArcsUART;
+
+void arcs_uart_attach_peer(ArcsSoC *s, ListenAIUARTPeer *peer, unsigned tx, unsigned rx);
 
 
 struct ArcsSoC {

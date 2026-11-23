@@ -1319,6 +1319,11 @@ static void machine_init(MachineState *machine)
         s->soc.flash.chips[1] = &s->flash_cs1;
     }
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
+    listenai_board_attach_modem(&s->board, OBJECT(s));
+    if (s->board.modem_device) {
+        arcs_uart_attach_peer(&s->soc, s->board.modem_uart,
+                              s->board.modem_tx, s->board.modem_rx);
+    }
     listenai_board_reset_init(&s->board, OBJECT(s),
                              qdev_get_gpio_in_named(DEVICE(&s->soc), "reset-n", 0));
     object_property_add_str(OBJECT(s), "x-lisa-signals", NULL, signals_set);

@@ -58,6 +58,7 @@ static void idle(void *opaque)
 static int can_receive(void *opaque)
 {
     ListenAIUART *u = opaque;
+    if (u->board_tx) { return 0; }
     return rx_enabled(u) ? 64 - u->count : 64;
 }
 
@@ -77,6 +78,13 @@ static void receive(void *opaque, const uint8_t *bytes, int size)
     u->dma_received = (u->control & DMA_MODE) != 0;
     timer_mod(u->idle, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000);
     update(u);
+}
+
+bool listenai_uart_receive_byte(ListenAIUART *u, uint8_t byte)
+{
+    if (!rx_enabled(u) || u->count == 64) { return false; }
+    receive(u, &byte, 1);
+    return true;
 }
 
 bool listenai_uart_read(ListenAIUART *u, unsigned offset, uint32_t *value)
@@ -131,7 +139,8 @@ bool listenai_uart_write(ListenAIUART *u, unsigned offset, uint32_t value)
                 receive(u, &byte, 1);
             } else {
                 if (u->tx) { u->tx(u->opaque, byte); }
-                qemu_chr_fe_write_all(&u->chr, &byte, 1);
+                if (u->board_tx) { u->board_tx(u->opaque, byte); }
+                else { qemu_chr_fe_write_all(&u->chr, &byte, 1); }
             }
             u->tx_bytes++;
         }

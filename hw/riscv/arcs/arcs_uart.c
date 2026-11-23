@@ -55,6 +55,48 @@ static void uart_tx(void *opaque, uint8_t byte)
     if (u->observe) { u->observe(u->observe_opaque, u->index, byte); }
 }
 
+static unsigned board_baud(ArcsUART *u, unsigned pad)
+{
+    uint32_t cfg = u->soc->sysctl.common_regs[0x14 / 4 + u->index];
+    uint32_t *pll = u->soc->sysctl.pll_regs;
+    uint32_t ctl = u->device.control;
+    if (!(cfg & 2) || (ctl & 15) != 3 ||
+        !arcs_pinmux_function(&u->soc->pinmux[0], pad, 4)) { return 0; }
+    uint64_t hz = 24000000;
+    if (cfg & 1) {
+        if (!(pll[2] & 1) || (pll[6] & 0x100)) { return 0; }
+        hz = hz * (pll[6] & 255) / 12;
+    }
+    unsigned n = (cfg >> 12) & 511, m = (cfg >> 2) & 1023;
+    return m ? hz * n / m / ((ctl & (1u << 20)) ? 16 : 4) : 0;
+}
+
+static void board_transmit(void *opaque, uint8_t byte)
+{
+    ArcsUART *u = opaque;
+    u->board_peer->receive(u->board_peer->opaque, byte,
+                           board_baud(u, u->board_tx_pad));
+}
+
+static bool board_receive(void *opaque, uint8_t byte, unsigned baud)
+{
+    ArcsUART *u = opaque;
+    unsigned actual = board_baud(u, u->board_rx_pad);
+    return actual && abs((int)actual - (int)baud) <= baud / 50 &&
+           listenai_uart_receive_byte(&u->device, byte);
+}
+
+void arcs_uart_attach_peer(ArcsSoC *s, ListenAIUARTPeer *peer, unsigned tx, unsigned rx)
+{
+    ArcsUART *u = &s->uart[2];
+    u->board_peer = peer;
+    u->board_tx_pad = rx;
+    u->board_rx_pad = tx;
+    u->device.board_tx = board_transmit;
+    peer->controller = u;
+    peer->deliver = board_receive;
+}
+
 uint32_t arcs_uart_read(ArcsSoC *s, unsigned index, unsigned offset)
 {
     uint32_t value;

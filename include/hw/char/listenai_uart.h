@@ -4,6 +4,13 @@
 #include "chardev/char-fe.h"
 #include "qemu/timer.h"
 
+typedef struct ListenAIUARTPeer {
+    void *opaque;
+    void (*receive)(void *opaque, uint8_t byte, unsigned baud);
+    void *controller;
+    bool (*deliver)(void *controller, uint8_t byte, unsigned baud);
+} ListenAIUARTPeer;
+
 /* Shared UART register/FIFO contract; SoCs own clock, pins and DMA routing. */
 typedef struct ListenAIUART {
     CharBackend chr;
@@ -12,6 +19,7 @@ typedef struct ListenAIUART {
     void (*irq)(void *opaque, bool level);
     void (*dma)(void *opaque, bool receive, bool transmit);
     void (*tx)(void *opaque, uint8_t byte);
+    void (*board_tx)(void *opaque, uint8_t byte);
     uint32_t control, mask, triggers, commands, dma_done;
     uint8_t fifo[64];
     unsigned head, count;
@@ -26,4 +34,5 @@ void listenai_uart_dma_done(ListenAIUART *u, bool receive);
 bool listenai_uart_rx_request(const ListenAIUART *u);
 bool listenai_uart_read(ListenAIUART *u, unsigned offset, uint32_t *value);
 bool listenai_uart_write(ListenAIUART *u, unsigned offset, uint32_t value);
+bool listenai_uart_receive_byte(ListenAIUART *u, uint8_t byte);
 #endif

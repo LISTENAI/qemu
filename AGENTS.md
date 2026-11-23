@@ -30,6 +30,9 @@
   清除 NOR 内容，SD 的介质状态与机械检测信号保持分离。
 - `hw/misc/listenai_luna.c` 通过固定 LUNA ABI 提供共享 MMIO 与完成定时，
   芯片只接入地址、复位、时钟与诊断；不解析组件参数或实现算子。
+- `hw/char/listenai_modem.c` 是抽象 AT 模组运行层，管理 UART、宿主 socket、
+  有界缓冲和异步请求取消；具体型号以子类解释命令并格式化响应、URC。
+  板级装配验证具体 modem 类型，只使用公共 UART 和状态接口。
 - ROM 和 LUNA 二进制由构建方提供，不提交 SDK、业务固件或私有组件源码。
   `scripts/lisem-assets.py` 校验目标、ABI、大小及哈希，在构建目录生成头文件。
 

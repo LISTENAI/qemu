@@ -10,6 +10,7 @@
 #include "hw/i2c/listenai_extio.h"
 #include "hw/i2c/husb320.h"
 #include "hw/i2c/fs1815.h"
+#include "hw/char/listenai_modem.h"
 #include "hw/i2c/cst328.h"
 #include "hw/i2c/sc919_touch.h"
 #include "hw/i2c/axs15231e_touch.h"
@@ -102,6 +103,24 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         b->reset_active_low = boolean(p, "active_low");
     }
     b->configured = true;
+    if (qdict_haskey(dict, "modem")) {
+        QDict *p = qdict_get_qdict(dict, "modem");
+        const char *id = p ? qdict_get_try_str(p, "id") : NULL;
+        if (!id || !*id || strlen(id) > 64 ||
+            (strcmp(chip, "ls2684") && strcmp(chip, "ls2663"))) { invalid("modem"); }
+        const char *model = qdict_get_try_str(p, "model");
+        ObjectClass *klass = model ? object_class_by_name(model) : NULL;
+        if (!klass || !object_class_dynamic_cast(klass, TYPE_LISTENAI_MODEM) ||
+            object_class_is_abstract(klass)) {
+            invalid("modem model");
+        }
+        b->modem_model = g_strdup(model);
+        b->modem_id = g_strdup(id);
+        b->modem_tx = pad(p, "TX", pa_pads, pb_pads);
+        b->modem_rx = pad(p, "RX", pa_pads, pb_pads);
+        if (!((b->modem_tx == 8 && b->modem_rx == 9) ||
+              (b->modem_tx == 39 && b->modem_rx == 38))) { invalid("UART2 pad route"); }
+    }
     b->nor_cs1 = qdict_haskey(dict, "nor_cs1");
     if (b->nor_cs1) {
         QDict *p = qdict_get_qdict(dict, "nor_cs1");
@@ -398,6 +417,8 @@ void listenai_board_connect_pad(DeviceState *soc, unsigned pad, qemu_irq input)
 
 void listenai_board_cleanup(ListenaiBoard *b)
 {
+    g_free(b->modem_id);
+    g_free(b->modem_model);
     listenai_signal_trace_destroy(&b->signal_trace);
     for (unsigned i = 0; i < b->button_count; i++) { g_free(b->buttons[i].id); }
     for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
@@ -407,6 +428,19 @@ void listenai_board_cleanup(ListenaiBoard *b)
     g_free(b->ls8500_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
     g_free(b->panel_otp_luts);
+}
+
+void listenai_board_attach_modem(ListenaiBoard *b, Object *owner)
+{
+    if (!b->modem_id) { return; }
+    b->modem_device = qdev_new(b->modem_model);
+    object_property_add_child(owner, "modem", OBJECT(b->modem_device));
+    qdev_prop_set_bit(b->modem_device, "host-network",
+                     !g_strcmp0(getenv("LISEM_MODEM_NETWORK"), "1"));
+    qdev_realize_and_unref(b->modem_device, NULL, &error_fatal);
+    b->modem_uart = listenai_modem_uart(b->modem_device);
+    object_property_add_alias(owner, "x-lisem-modem-status", OBJECT(b->modem_device), "status");
+    object_property_add_alias(owner, "x-lisem-modem-sim-present", OBJECT(b->modem_device), "sim-present");
 }
 
 QDict *listenai_board_display_snapshot(ListenaiBoard *b)
@@ -567,6 +601,10 @@ void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endp
 QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
 {
     QDict *devices = qdict_new();
+    if (b->modem_device) {
+        qdict_put_obj(devices, b->modem_id,
+                      QOBJECT(listenai_modem_snapshot(b->modem_device)));
+    }
     if (b->ls8500_device) {
         qdict_put_obj(devices, b->ls8500_id, QOBJECT(ls8500_snapshot(b->ls8500_device)));
     }

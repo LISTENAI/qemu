@@ -43,6 +43,10 @@ typedef struct ListenaiBoard {
     char *fs1815_id;
     unsigned fs1815_scl, fs1815_sda, fs1815_i2c;
     DeviceState *fs1815_device;
+    char *modem_id, *modem_model;
+    unsigned modem_tx, modem_rx;
+    DeviceState *modem_device;
+    struct ListenAIUARTPeer *modem_uart;
     unsigned psram_bytes;
     uint32_t nor_bytes[2];
     bool nor_cs1;
@@ -113,6 +117,7 @@ void listenai_board_display_observer_init(ListenaiBoard *b, Object *owner);
 void listenai_board_cleanup(ListenaiBoard *b);
 void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus);
 void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus);
+void listenai_board_attach_modem(ListenaiBoard *b, Object *owner);
 void listenai_board_reset_init(ListenaiBoard *b, Object *owner, qemu_irq reset);
 void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc);
 void listenai_board_rotaries_drive(ListenaiBoard *b);
