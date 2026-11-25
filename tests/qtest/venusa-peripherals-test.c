@@ -389,11 +389,29 @@ static void gpt_timers(void)
 static void otp_mapping(void)
 {
     QTestState *q = start(false);
+    const uint32_t clock = 0x45000054;
+    uint32_t saved_clock = qtest_readl(q, clock);
+    g_assert_cmphex(qtest_readl(q, 0x45500000), ==, 0x200);
+    g_assert_cmphex(qtest_readl(q, 0x45500020), ==, 0);
+    qtest_writel(q, clock, saved_clock | 0x60);
+    qtest_writel(q, 0x45500020, 1);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(qtest_readl(q, 0x45500000), ==, 0x200);
+    g_assert_cmphex(qtest_readl(q, 0x45500020), ==, 0);
+    /* Clock gating preserves already loaded shadows and the ready state. */
+    qtest_writel(q, clock, saved_clock & ~0x40);
+    for (unsigned i = 0; i < 8; i++) {
+        g_assert_cmphex(qtest_readl(q, 0x45500000), ==, 0x200);
+    }
+    qtest_writel(q, clock, saved_clock | 0x60);
     for (unsigned word = 0; word < 16; word++) {
         g_assert_cmphex(qtest_readl(q, 0x45500080 + 4 * word), ==, 0x97530000 + word);
         g_assert_cmphex(qtest_readl(q, 0x45501000 + 4 * word), ==, 0x97530000 + word);
     }
+    qtest_writel(q, 0x45500020, 1);
     qtest_system_reset(q);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(qtest_readl(q, 0x45500000), ==, 0x200);
     g_assert_cmphex(qtest_readl(q, 0x45500090), ==, 0x97530004);
     qtest_quit(q);
 }

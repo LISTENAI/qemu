@@ -88,7 +88,6 @@ bool venusa_sysctl_read(VenusASoC *s, hwaddr address, uint32_t *value)
     case 0x45000000: *value = 0x63020000; return true;
     case 0x450000a0: *value = s->aon[0xa0 / 4] | 0x40; return true;
     case 0x431000a4: *value = 1; return true;
-    case 0x45500090: *value = 0; return true; /* Unprogrammed boot option fuses. */
     case 0x4500004c: *value = s->aon[0x4c / 4]; return true;
     }
     return false;
@@ -132,6 +131,7 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             s->pll_core_div = ((s->buscfg[3] >> 1) & 15) + 3;
         }
         if (address == 0x45000054) {
+            venusa_efuse_clock(s);
             listenai_aon_timer_clock(&s->aon_timer, (value & 4) != 0);
             /* WDT PCLK gating does not stop its independent RC32k counter. */
         }

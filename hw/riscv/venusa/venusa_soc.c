@@ -61,8 +61,9 @@ static uint64_t io_read(void *opaque, hwaddr address, unsigned size)
     if ((address >= 0x45500080 && address + size <= 0x455000c0) ||
         (address >= 0x45501000 && address + size <= 0x45501040)) {
         unsigned offset = address - (address >= 0x45501000 ? 0x45501000 : 0x45500080);
+        const uint8_t *bytes = address >= 0x45501000 ? s->otp : s->efuse_shadow;
         uint64_t value = 0;
-        for (unsigned i = 0; i < size; i++) { value |= (uint64_t)s->otp[offset + i] << (8 * i); }
+        for (unsigned i = 0; i < size; i++) { value |= (uint64_t)bytes[offset + i] << (8 * i); }
         return value;
     }
     if (size != 4 || (address & 3)) {
@@ -75,6 +76,7 @@ static uint64_t io_read(void *opaque, hwaddr address, unsigned size)
         }
     }
     uint32_t value;
+    if (venusa_efuse_read(s, address, &value)) { return value; }
     if (venusa_sysctl_read(s, address, &value)) { return value; }
     venusa_fail(s, address, size, false, 0);
 }
@@ -103,6 +105,7 @@ static void io_write(void *opaque, hwaddr address, uint64_t value, unsigned size
             return;
         }
     }
+    if (venusa_efuse_write(s, address, value)) { return; }
     if (venusa_sysctl_write(s, address, value)) { return; }
     venusa_fail(s, address, size, true, value);
 }
@@ -148,6 +151,7 @@ static void reset(DeviceState *dev)
     venusa_i2s_reset(s, 1);
     venusa_spi_reset(s);
     venusa_sysctl_reset(s);
+    venusa_efuse_reset(s);
     if (s->reset_preserve_aon) {
         memcpy(s->aon, saved_aon, sizeof(saved_aon));
         memcpy(s->syscfg, saved_syscfg, sizeof(saved_syscfg));
@@ -246,6 +250,7 @@ static void realize(DeviceState *dev, Error **errp)
     s->cidu.irq = cidu_irq;
     s->cidu.fail = cidu_fault;
     nuclei_cidu_init(&s->cidu, OBJECT(s), "venusa-cidu", 0x47000000, 2, 80, 32, 20, 19);
+    venusa_efuse_init(s);
     venusa_gpio_init(s);
     venusa_dma_init(s);
     venusa_spi_init(s);
@@ -276,6 +281,7 @@ static void class_init(ObjectClass *oc, const void *data)
 static void finalize(Object *obj)
 {
     VenusASoC *s = VENUSA_SOC(obj);
+    if (s->efuse_load) { timer_free(s->efuse_load); }
     for (unsigned p = 0; p < 2; p++) {
         listenai_i2s_destroy(&s->audio.serial[p].engine);
     }

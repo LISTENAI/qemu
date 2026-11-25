@@ -84,6 +84,9 @@ struct VenusASoC {
     VenusAPeripheral dual_context[2], i2c_context[2];
     uint32_t board_inputs[2];
     uint8_t otp[64];
+    uint8_t efuse_shadow[64];
+    QEMUTimer *efuse_load;
+    bool efuse_busy;
     BlockBackend *flash;
     uint32_t flash_bytes, psram_bytes;
     QEMUTimer *deadline;
@@ -133,4 +136,9 @@ void venusa_luna_reset(VenusASoC *s);
 void venusa_image_init(VenusASoC *s);
 void venusa_image_reset(VenusASoC *s);
 void venusa_image_clock(VenusASoC *s);
+void venusa_efuse_init(VenusASoC *s);
+void venusa_efuse_reset(VenusASoC *s);
+void venusa_efuse_clock(VenusASoC *s);
+bool venusa_efuse_read(VenusASoC *s, hwaddr address, uint32_t *value);
+bool venusa_efuse_write(VenusASoC *s, hwaddr address, uint32_t value);
 #endif
