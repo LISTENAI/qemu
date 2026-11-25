@@ -174,6 +174,37 @@ static void second_channel(void)
     qtest_quit(q);
 }
 
+static void alternate_routes(void)
+{
+    QTestState *q = start();
+    /* PWM0 fans out to PA2; GPIO function 1 on PA2 must not drive it. */
+    qtest_writel(q, 0x44100008, 11);
+    qtest_clock_step(q, 700000);
+    g_assert_true(qtest_get_irq(q, 2));
+    qtest_writel(q, 0x44100008, 1);
+    g_assert_false(qtest_get_irq(q, 2));
+    /* PWM7 is routed to PA1 and through AON NORMAL to PB3. */
+    qtest_writel(q, 0x44100004, 11);
+    qtest_writel(q, 0x44100000 + 35 * 4, 11);
+    qtest_writel(q, GPT + 8, 0x018004af);
+    qtest_writel(q, GPT + 0x10, 0x08000023);
+    qtest_writew(q, GPT + 0x18, 18);
+    qtest_writew(q, GPT + 0x46, 15);
+    qtest_writel(q, GPT + 0xa0, 8);
+    qtest_writel(q, GPT + 0x10, 0x08008023);
+    qtest_writel(q, GPT + 0x1c, 0x0c000002);
+    qtest_clock_step(q, 200000);
+    g_assert_true(qtest_get_irq(q, 1));
+    g_assert_false(qtest_get_irq(q, 35));
+    qtest_writel(q, 0x4510000c, 6);
+    g_assert_true(qtest_get_irq(q, 35));
+    qtest_writel(q, 0x4510000c, 4); /* Analog selection disconnects core. */
+    g_assert_false(qtest_get_irq(q, 35));
+    qtest_system_reset(q);
+    g_assert_false(qtest_get_irq(q, 1));
+    qtest_quit(q);
+}
+
 typedef struct Rejected { const char *name; unsigned offset; uint32_t value; } Rejected;
 static const Rejected rejected[] = {
     { "phase-delay", 0x30, 1 },
@@ -223,6 +254,7 @@ int main(int argc, char **argv)
         g_setenv("LISEM_QEMU_OTP_IMAGE", otp_path, true);
     }
     qtest_add_func("venusa/pwm/waveform", waveform);
+    qtest_add_func("venusa/pwm/alternate-routes", alternate_routes);
     qtest_add_func("venusa/pwm/repeated-clock-load", repeated_clock_load);
     qtest_add_func("venusa/pwm/shadow-gate-reset", shadow_and_gate);
     qtest_add_func("venusa/pwm/pinmux", pinmux);

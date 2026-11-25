@@ -64,6 +64,7 @@ typedef struct ListenaiBoard {
     void *lcd_route_opaque;
     unsigned lcd_width, lcd_height, lcd_x, lcd_y, lcd_rotation;
     bool lcd_inverted, backlight_active, amplifier_active;
+    bool amplifier_fixed, amplifier_enabled;
     unsigned backlight_pad, amplifier_pad;
     unsigned camera_pads[16], camera_i2c;
     unsigned button_count;
@@ -104,6 +105,7 @@ void listenai_board_attach_spi(ListenaiBoard *b, DeviceState *soc,
                               bool (*selected)(void *, unsigned, unsigned));
 void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sensor);
 DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner);
+uint32_t listenai_board_keypad_voltage(ListenaiBoard *b);
 void listenai_board_panel_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *panel);
 void listenai_board_panel_failure_callback(ListenaiBoard *b,
     void (*fn)(void *, const char *), void *opaque);

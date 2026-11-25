@@ -115,6 +115,9 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             return true;
         }
         *reg = value;
+        if (address >= 0x45100000 && address < 0x45100018) {
+            listenai_pinmux_refresh(&s->pinmux);
+        }
         if (address == 0x43000000 && (value & (1u << 25)) && !(previous & (1u << 25))) {
             s->hclk_n = (value >> 21) & 15;
             s->hclk_m = (value >> 16) & 31;

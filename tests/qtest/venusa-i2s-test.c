@@ -6,6 +6,8 @@
 #define APC 0x44700000
 #define CLK 0x43100034
 static char *flash, *source, *capture;
+static unsigned test_port;
+static unsigned test_pads[4] = {4, 5, 6, 7};
 static QTestState *machine(const char *peer)
 {
     g_autofree char *drive =
@@ -23,27 +25,31 @@ static QTestState *start(bool peer_master, bool attached)
         attached
             ? g_strdup_printf(
                   "listenai-i2s-peer,gpio=/machine/soc,master=%s,rate=16000,"
-                  "frames=8,start-ns=%u,input-s32le=%s,output-s32le=%s",
+                  "frames=8,start-ns=%u,input-s32le=%s,output-s32le=%s,"
+                  "bclk-pin=%u,ws-pin=%u,input-pin=%u,output-pin=%u",
                   peer_master ? "on" : "off", peer_master ? 1000000 : 0, source,
-                  capture)
+                  capture, test_pads[0], test_pads[1], test_pads[2], test_pads[3])
             : g_strdup("");
     QTestState *q = machine(attached ? peer : NULL);
-    qtest_writel(q, CLK, qtest_readl(q, CLK) | 0x8400);
+    qtest_writel(q, CLK, qtest_readl(q, CLK) | 0x400 | (0x8000u >> test_port));
     qtest_writel(q, APC, 3);
-    for (unsigned i = 4; i <= 7; i++) {
-        qtest_writel(q, 0x44100000 + 4 * i, 9);
+    for (unsigned i = 0; i < 4; i++) {
+        if (test_pads[i] >= 32 && test_pads[i] < 38) {
+            qtest_writel(q, 0x45100000 + 4 * (test_pads[i] - 32), 6);
+        }
+        qtest_writel(q, 0x44100000 + 4 * test_pads[i], 9 + test_port);
     }
-    qtest_writel(q, APC + 0x10, 0x02010001);
-    qtest_writel(q, APC + 0x1c, 0x02010001);
+    qtest_writel(q, APC + 0x10 + 4 * test_port, 0x02010001);
+    qtest_writel(q, APC + 0x1c + 4 * test_port, 0x02010001);
     for (unsigned i = 0; i < 8; i++) {
-        qtest_writel(q, APC + 0x38,
+        qtest_writel(q, APC + 0x38 + 8 * test_port,
                      (uint16_t)(0x1230 + i) |
                          ((uint32_t)(uint16_t)(-0x3210 - i) << 16));
     }
     if (!peer_master) {
-        qtest_writel(q, APC + 0x28, (48u << 16) | (1u << 26));
+        qtest_writel(q, APC + 0x28 + 8 * test_port, (48u << 16) | (1u << 26));
     }
-    qtest_writel(q, APC + 0x24, peer_master ? 0x80093000 : 0x80303000);
+    qtest_writel(q, APC + 0x24 + 8 * test_port, peer_master ? 0x80093000 : 0x80303000);
     return q;
 }
 static void check_capture(void)
@@ -64,13 +70,13 @@ static void transfer(bool peer_master)
     QTestState *q = start(peer_master, true);
     qtest_clock_step(q, peer_master ? 2000000 : 514000);
     if (!peer_master) {
-        qtest_writel(q, APC + 0x24, 0x00303000);
+        qtest_writel(q, APC + 0x24 + 8 * test_port, 0x00303000);
     }
-    g_assert_cmphex(qtest_readl(q, APC + 0x1c) & 0x1f001f0, ==, 0x800080);
+    g_assert_cmphex(qtest_readl(q, APC + 0x1c + 4 * test_port) & 0x1f001f0, ==, 0x800080);
     for (unsigned i = 0; i < 8; i++) {
         uint32_t expected =
             (uint16_t)(-0x2340 - i) | ((uint32_t)(0x4320 + i) << 16);
-        g_assert_cmphex(qtest_readl(q, APC + 0x50), ==, expected);
+        g_assert_cmphex(qtest_readl(q, APC + 0x50 + 8 * test_port), ==, expected);
     }
     listenai_test_quit(q);
     check_capture();
@@ -83,6 +89,17 @@ static void master(void)
 {
     transfer(false);
 }
+static void alternate_transfer(const void *opaque)
+{
+    unsigned combination = GPOINTER_TO_UINT(opaque);
+    test_port = combination / 2;
+    unsigned pads[2][4] = {{32, 33, 34, 35}, {10, 11, 8, 9}};
+    memcpy(test_pads, pads[test_port], sizeof(test_pads));
+    transfer(combination % 2);
+    test_port = 0;
+    for (unsigned i = 0; i < 4; i++) { test_pads[i] = 4 + i; }
+}
+
 static void absent(void)
 {
     QTestState *q = start(true, false);
@@ -425,6 +442,11 @@ int main(int argc, char **argv)
     qtest_add_data_func("venusa/i2s/reject/long-sync",
                        GUINT_TO_POINTER(0x100), reject_extended);
     qtest_add_func("venusa/i2s/stop-at-fifo-empty", stop_at_fifo_empty);
+    for (unsigned i = 0; i < 4; i++) {
+        g_autofree char *name = g_strdup_printf("venusa/i2s/alternate-%u-%s", i / 2,
+                                               i % 2 ? "slave" : "master");
+        qtest_add_data_func(name, GUINT_TO_POINTER(i), alternate_transfer);
+    }
     int result = g_test_run();
     unlink(flash);
     unlink(source);

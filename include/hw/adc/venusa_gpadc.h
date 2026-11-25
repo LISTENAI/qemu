@@ -13,6 +13,7 @@ typedef struct VenusAGPADCCallbacks {
     void (*fail)(void *opaque, hwaddr address, unsigned size, bool write,
                  uint64_t value);
     /* Zero means this reference source is not connected. */
+    bool (*input_connected)(void *opaque, unsigned channel);
     uint32_t (*reference_uv)(void *opaque, unsigned selection);
 } VenusAGPADCCallbacks;
 

@@ -224,23 +224,57 @@ static void serial_received(void *opaque, unsigned channel, int32_t sample)
         signals(a);
     }
 }
-static void serial_output(void *opaque, unsigned signal, bool level)
+/* Core functions 9/10: BCLK, WS, ADC data, DAC data. */
+static const uint64_t serial_routes[2][4] = {
+    {UINT64_C(0x445111111111), UINT64_C(0x88a222222222), UINT64_C(0x110444444444), UINT64_C(0x220888888888)},
+    {UINT64_C(0x114444444444), UINT64_C(0x220888888888), UINT64_C(0x443111111111), UINT64_C(0x888222222222)},
+};
+
+static int serial_input_pad(VenusAI2SPort *port, unsigned signal)
 {
-    VenusAI2SPort *serial = opaque;
-    static const unsigned pads[] = {4, 5, 7};
-    if (!serial->port) {
-        listenai_pinmux_output(&serial->audio->soc->pinmux, pads[signal], 9,
-                               level);
+    VenusASoC *soc = port->audio->soc;
+    uint64_t routes = serial_routes[port->port][signal];
+    int found = -1;
+    while (routes) {
+        unsigned pad = ctz64(routes);
+        routes &= routes - 1;
+        if (!listenai_pinmux_function(&soc->pinmux, pad, 9 + port->port)) {
+            continue;
+        }
+        if (found >= 0) {
+            venusa_fail(soc, 0x44100000 + pad * 4, 4, false,
+                        listenai_pinmux_config(&soc->pinmux, pad));
+        }
+        found = pad;
+    }
+    return found;
+}
+
+static void serial_drive(VenusAI2SPort *port, unsigned signal, bool level,
+                         bool enabled)
+{
+    unsigned wire = signal == LISTENAI_I2S_DATA ? 3 : signal;
+    uint64_t routes = serial_routes[port->port][wire];
+    ListenaiPinmux *mux = &port->audio->soc->pinmux;
+    while (routes) {
+        unsigned pad = ctz64(routes);
+        routes &= routes - 1;
+        if (enabled) {
+            listenai_pinmux_output(mux, pad, 9 + port->port, level);
+        } else {
+            listenai_pinmux_release_output(mux, pad, 9 + port->port);
+        }
     }
 }
+
+static void serial_output(void *opaque, unsigned signal, bool level)
+{
+    serial_drive(opaque, signal, level, true);
+}
+
 static void serial_release(void *opaque, unsigned signal)
 {
-    VenusAI2SPort *serial = opaque;
-    static const unsigned pads[] = { 4, 5, 7 };
-    if (!serial->port) {
-        listenai_pinmux_release_output(&serial->audio->soc->pinmux,
-                                      pads[signal], 9);
-    }
+    serial_drive(opaque, signal, false, false);
 }
 
 static void serial_updated(void *opaque)
@@ -266,41 +300,42 @@ static void serial_loopback(void *opaque, uint32_t cfg)
 }
 void venusa_i2s_pins_changed(VenusASoC *soc)
 {
-    VenusAI2SPort *port = &soc->audio.serial[0];
-    ListenaiI2S *s = &port->engine;
-    if (!s->timer) {
-        return;
-    }
-    uint8_t mask = 0;
-    for (unsigned i = 0; i < 4; i++) {
-        if (listenai_pinmux_function(&soc->pinmux, 4 + i, 9)) {
-            mask |= 1u << i;
+    for (unsigned p = 0; p < 2; p++) {
+        VenusAI2SPort *port = &soc->audio.serial[p];
+        ListenaiI2S *s = &port->engine;
+        if (!s->timer) { continue; }
+        for (unsigned signal = 0; signal < 4; signal++) {
+            int pad = serial_input_pad(port, signal);
+            if (port->input_pad[signal] != pad && s->enabled &&
+                (s->tx.known || s->rx.known)) {
+                unsigned old = pad >= 0 ? pad : port->input_pad[signal];
+                venusa_fail(soc, 0x44100000 + old * 4, 4, true, 0);
+            }
+            port->input_pad[signal] = pad;
         }
+        s->input_enabled = port->input_pad[2] >= 0;
     }
-    if ((port->mux_mask & ~mask) && s->enabled &&
-        (s->tx.known || s->rx.known)) {
-        unsigned pad = 4 + ctz32(port->mux_mask & ~mask);
-        venusa_fail(soc, 0x44100000 + pad * 4, 4, true,
-                    listenai_pinmux_config(&soc->pinmux, pad));
-    }
-    port->mux_mask = mask;
-    s->input_enabled = mask & 4;
 }
+
 void venusa_i2s_pad_input(VenusASoC *s, unsigned pad, bool level)
 {
-    ListenaiI2S *serial = &s->audio.serial[0].engine;
-    if (pad == 6) {
-        listenai_i2s_input(serial, LISTENAI_I2S_DATA, level);
+    for (unsigned p = 0; p < 2; p++) {
+        VenusAI2SPort *port = &s->audio.serial[p];
+        if (pad == port->input_pad[2]) {
+            listenai_i2s_input(&port->engine, LISTENAI_I2S_DATA, level);
+        }
+        if (port->input_pad[0] < 0 || port->input_pad[1] < 0) { continue; }
+        if (pad == port->input_pad[1]) {
+            listenai_i2s_input(&port->engine, LISTENAI_I2S_WS, level);
+        } else if (pad == port->input_pad[0]) {
+            listenai_i2s_input(&port->engine, LISTENAI_I2S_BCLK, level);
+        }
     }
-    if (!listenai_pinmux_function(&s->pinmux, 4, 9) ||
-        !listenai_pinmux_function(&s->pinmux, 5, 9)) {
-        return;
-    }
-    if (pad == 5) {
-        listenai_i2s_input(serial, LISTENAI_I2S_WS, level);
-    } else if (pad == 4) {
-        listenai_i2s_input(serial, LISTENAI_I2S_BCLK, level);
-    }
+}
+
+static bool serial_input_level(VenusASoC *s, int pad)
+{
+    return pad >= 0 && !!(s->gpio[pad / 32].inputs & (1u << (pad % 32)));
 }
 
 static int32_t saturate24(double value)
@@ -438,15 +473,13 @@ void venusa_audio_clock(VenusASoC *s)
             (s->syscfg[0x30 / 4] & (1u << (29 - p)))) {
             venusa_fail(s, 0x43100030, 4, true, s->syscfg[0x30 / 4]);
         }
-        if (!p) {
-            a->serial[p].engine.input_clock = !!(s->gpio[0].inputs & (1u << 4));
-            a->serial[p].engine.input_ws = !!(s->gpio[0].inputs & (1u << 5));
-        }
+        a->serial[p].engine.input_clock = serial_input_level(s, a->serial[p].input_pad[0]);
+        a->serial[p].engine.input_ws = serial_input_level(s, a->serial[p].input_pad[1]);
         if (!listenai_i2s_clock(
                 &a->serial[p].engine, AUDIO_HZ, enable,
                 (enabled(a, tx) && a->count[tx]) ||
                     (enabled(a, tx + 1) && a->count[tx + 1]),
-                !p && listenai_pinmux_function(&s->pinmux, 6, 9))) {
+                a->serial[p].input_pad[2] >= 0)) {
             venusa_fail(s, 0x43100034, 4, true, clocks);
         }
     }
@@ -670,6 +703,7 @@ void venusa_audio_init(VenusASoC *s)
     for (unsigned p = 0; p < 2; p++) {
         a->serial[p].audio = a;
         a->serial[p].port = p;
+        for (unsigned i = 0; i < 4; i++) { a->serial[p].input_pad[i] = -1; }
         ListenaiI2SCallbacks callbacks = {
             .opaque = &a->serial[p],
             .load = serial_load,

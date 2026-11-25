@@ -180,7 +180,7 @@ void venusa_dvp_xclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *denominator)
     VenusADVP *d = &s->dvp;
     uint32_t cfg = s->syscfg[0x28 / 4];
     *n = 0; *denominator = 1;
-    if (!(cfg & (1u << 17)) || !listenai_pinmux_function(&s->pinmux, 35, 13)) { return; }
+    if (!(cfg & (1u << 17))) { return; }
     *n = 24000000; *denominator = d->xclk_div;
     if (cfg & (1u << 18)) {
         if (!(s->buscfg[2] & 1) || !(s->buscfg[2] & (1u << 26))) { *n = 0; return; }

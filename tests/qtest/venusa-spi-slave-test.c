@@ -5,6 +5,7 @@
 #define MASTER 0x43e00000
 #define SLAVE 0x43f00000
 static char *flash;
+static bool alternate;
 static QTestState *start_wiring(bool reverse)
 {
     g_autofree char *path = listenai_test_quote_arg(flash);
@@ -18,10 +19,10 @@ static QTestState *start_wiring(bool reverse)
         "listenai-gpio-wire,gpio=/machine/soc,source=%u,destination=%u "
         "-device "
         "listenai-gpio-wire,gpio=/machine/soc,source=%u,destination=%u",
-        path, reverse ? 22 : 16, reverse ? 16 : 22, reverse ? 23 : 19,
-        reverse ? 19 : 23, reverse ? 21 : 17, reverse ? 17 : 21,
-        reverse ? 18 : 24, reverse ? 24 : 18);
-    for (unsigned i = 16; i <= 19; i++) {
+        path, reverse ? 22 : (alternate ? 10 : 16), reverse ? 16 : 22, reverse ? 23 : (alternate ? 13 : 19),
+        reverse ? 19 : 23, reverse ? 21 : (alternate ? 11 : 17), reverse ? 17 : 21,
+        reverse ? 18 : 24, reverse ? 24 : (alternate ? 12 : 18));
+    for (unsigned i = alternate ? 10 : 16; i <= (alternate ? 13 : 19); i++) {
         qtest_writel(q, 0x44100000 + i * 4, 5);
     }
     for (unsigned i = 21; i <= 24; i++) {
@@ -79,6 +80,13 @@ static void duplex(const void *opaque)
     g_assert_cmphex(qtest_readl(q, SLAVE + 0x3c), ==, 0);
     qtest_quit(q);
 }
+static void alternate_duplex(void)
+{
+    alternate = true;
+    duplex(GUINT_TO_POINTER(8 << 4));
+    alternate = false;
+}
+
 static void gpio_drive(QTestState *q, bool cs, bool clk, bool data)
 {
     qtest_writel(q, 0x43600024, (cs << 17) | (clk << 16) | (data << 19));
@@ -484,6 +492,7 @@ static void observer_ssi_route(const void *opaque)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("venusa/spi/alternate-duplex", alternate_duplex);
     int fd = g_file_open_tmp("venusa-spi-slave-XXXXXX", &flash, NULL);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(close(fd), ==, 0);

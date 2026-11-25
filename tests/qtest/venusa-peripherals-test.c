@@ -75,6 +75,34 @@ static void psram(void)
     qtest_quit(q);
 }
 
+static void psram_16m(void)
+{
+    g_autofree char *flash = g_shell_quote(flash_path);
+    QTestState *q = qtest_initf("-machine venusa-rd-evb "
+        "-global venusa-soc.psram-bytes=16777216 "
+        "-drive if=pflash,format=raw,file=%s", flash);
+    uint32_t mr2 = qtest_readl(q, PSRAM_CTRL + 0x808);
+    /* SDK Xccela discovery checks both density and the capacity-specific ID. */
+    g_assert_cmpuint(mr2 & 7, ==, 5);
+    g_assert_cmpuint((mr2 >> 3) & 3, ==, 3);
+    g_assert_cmpuint((mr2 >> 7) & 1, ==, 1);
+    qtest_writel(q, 0x38000000, 0x12345678);
+    qtest_writel(q, 0x38800000, 0x87654321);
+    qtest_writel(q, 0x38fffffc, 0xabcdef01);
+    g_assert_cmphex(qtest_readl(q, 0x38000000), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(q, 0x38800000), ==, 0x87654321);
+    g_assert_cmphex(qtest_readl(q, 0x38fffffc), ==, 0xabcdef01);
+    /* Device identity is read-only; reset preserves both independent halves. */
+    qtest_writel(q, PSRAM_CTRL + 0x808, 0x93);
+    g_assert_cmphex(qtest_readl(q, PSRAM_CTRL + 0x808) & 0xff, ==, 0x9d);
+    qtest_system_reset(q);
+    g_assert_cmphex(qtest_readl(q, PSRAM_CTRL + 0x808) & 0xff, ==, 0x9d);
+    g_assert_cmphex(qtest_readl(q, 0x38000000), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(q, 0x38800000), ==, 0x87654321);
+    g_assert_cmphex(qtest_readl(q, 0x38fffffc), ==, 0xabcdef01);
+    qtest_quit(q);
+}
+
 static uint32_t command(QTestState *q, unsigned index, uint32_t argument,
                         unsigned flags)
 {
@@ -551,6 +579,7 @@ int main(int argc, char **argv)
     qtest_add_func("venusa/nor-block-persistence", nor_block_persistence);
     qtest_add_func("venusa/systimer", systimer);
     qtest_add_func("venusa/psram", psram);
+    qtest_add_func("venusa/psram-16m", psram_16m);
     qtest_add_func("venusa/sd-transfers", sd_transfers);
     qtest_add_func("venusa/dma-channels", dma_channels);
     qtest_add_func("venusa/dma-descriptor-writeback", dma_descriptor_writeback);

@@ -15,7 +15,10 @@ typedef struct ListenaiGPIOCallbacks {
 
 typedef struct ListenaiPinmux {
     MemoryRegion io;
-    uint32_t base, count;
+    uint32_t base, count, function_mask;
+    uint64_t gpio_zero, gpio_one;
+    bool (*pad_connected)(void *, unsigned);
+    void *pad_opaque;
     uint32_t config[64], peripheral_valid[64], peripheral_level[64];
     ListenaiGPIOCallbacks callbacks;
     ListenaiGPIO *banks[8];
@@ -35,6 +38,7 @@ struct ListenaiGPIO {
     void *observe_opaque;
 };
 
+void listenai_pinmux_refresh(ListenaiPinmux *s);
 void listenai_pinmux_sync_inputs(ListenaiPinmux *s);
 void listenai_pinmux_init_unmapped(ListenaiPinmux *s, unsigned count,
                                   ListenaiGPIOCallbacks callbacks);

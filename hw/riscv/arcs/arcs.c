@@ -454,6 +454,7 @@ static bool pa_enabled(ArcsMachine *s)
     if (s->board.aw8737_device) { return aw8737_enabled(s->board.aw8737_device); }
     if (s->board.fs1815_device) { return fs1815_enabled(s->board.fs1815_device); }
     if (!s->board.amplifier) { return false; }
+    if (s->board.amplifier_fixed) { return s->board.amplifier_enabled; }
     uint32_t driven, levels;
     unsigned pin = s->board.amplifier_pad;
     if (pin >= 64) {
@@ -1534,17 +1535,8 @@ static void keypad_drive(ArcsMachine *s)
 {
     ListenaiBoard *b = &s->board;
     if (!b->keypad) { return; }
-    double load = 1.0;
-    bool grounded = false;
-    for (unsigned i = 0; i < b->button_count; i++) {
-        if (b->buttons[i].analog && b->buttons[i].pressed) {
-            unsigned resistance = b->buttons[i].resistance_ohms;
-            if (!resistance) { grounded = true; }
-            else { load += (double)b->keypad_pull_up_ohms / resistance; }
-        }
-    }
     s->soc.adc.voltage_mask |= 1u << b->keypad_channel;
-    s->soc.adc.voltage_uv[b->keypad_channel] = grounded ? 0 : b->keypad_supply_uv / load;
+    s->soc.adc.voltage_uv[b->keypad_channel] = listenai_board_keypad_voltage(b);
 }
 
 static void button_drive(ArcsMachine *s, bool pressed)

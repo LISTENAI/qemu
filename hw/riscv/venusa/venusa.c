@@ -41,8 +41,9 @@ static void backlight(void *opaque, int unused, int level)
     uint32_t driven, levels;
     listenai_gpio_outputs_snapshot(&s->soc->gpio[pad / 32], &driven, &levels);
     double duty = (driven & (1u << (pad % 32))) ? !!(levels & (1u << (pad % 32))) : 0;
-    if (pad == 14 && listenai_pinmux_function(&s->soc->pinmux, pad, 11)) {
-        duty = venusa_gpt_duty(&s->soc->gpt, 0);
+    int channel = venusa_pwm_channel(s->soc, pad);
+    if (channel >= 0) {
+        duty = venusa_gpt_duty(&s->soc->gpt, channel);
     }
     serial_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
 }
@@ -50,15 +51,13 @@ static void backlight(void *opaque, int unused, int level)
 static bool extio_route(void *opaque)
 {
     VenusABoard *s = opaque;
-    return listenai_pinmux_function(&s->soc->pinmux, s->components.extio_scl, 8) &&
-           listenai_pinmux_function(&s->soc->pinmux, s->components.extio_sda, 8);
+    return venusa_i2c_route(s->soc, s->components.extio_scl, s->components.extio_sda);
 }
 
 static bool typec_route(void *opaque)
 {
     VenusABoard *s = opaque;
-    return listenai_pinmux_function(&s->soc->pinmux, s->components.typec_scl, 8) &&
-           listenai_pinmux_function(&s->soc->pinmux, s->components.typec_sda, 8);
+    return venusa_i2c_route(s->soc, s->components.typec_scl, s->components.typec_sda);
 }
 
 static void panel_connect(VenusABoard *s)
@@ -87,25 +86,25 @@ static void panel_connect(VenusABoard *s)
 static bool touch_route(void *opaque)
 {
     VenusABoard *s = opaque;
-    return listenai_pinmux_function(&s->soc->pinmux, s->components.touch_scl, 8) &&
-           listenai_pinmux_function(&s->soc->pinmux, s->components.touch_sda, 8);
+    return venusa_i2c_route(s->soc, s->components.touch_scl, s->components.touch_sda);
 }
 
 static void touch_connect(VenusABoard *s)
 {
     ListenaiBoard *b = &s->components;
     if (!b->touch) { return; }
-    if (b->touch_scl != 34 || b->touch_sda != 33) {
+    int bus = venusa_i2c_bus(b->touch_scl, b->touch_sda);
+    if (bus < 0) {
         error_report("Unsupported VenusA touch I2C route"); exit(1);
     }
     if (b->touch_sc919) {
         error_report("SC919 touch is not supported on VenusA"); exit(1);
     }
-    DeviceState *dev = listenai_board_touch_new(b, OBJECT(s), DEVICE(s->soc), s->soc->i2c[1].bus);
+    DeviceState *dev = listenai_board_touch_new(b, OBJECT(s), DEVICE(s->soc), s->soc->i2c[bus].bus);
     listenai_board_touch_input(b, OBJECT(s), dev);
-    if (!b->camera) {
-        s->soc->i2c[1].route_valid = touch_route;
-        s->soc->i2c[1].route_opaque = s;
+    if (!b->camera || venusa_i2c_bus(b->camera_pads[0], b->camera_pads[1]) != bus) {
+        s->soc->i2c[bus].route_valid = touch_route;
+        s->soc->i2c[bus].route_opaque = s;
     }
 }
 
@@ -147,6 +146,15 @@ static void button_get(Object *obj, Visitor *v, const char *name,
     visit_type_bool(v, name, &b->pressed, errp);
 }
 
+static void keypad_drive(VenusABoard *s)
+{
+    ListenaiBoard *b = &s->components;
+    if (b->keypad) {
+        venusa_gpadc_set_voltage(&s->soc->gpadc, b->keypad_channel,
+                                listenai_board_keypad_voltage(b));
+    }
+}
+
 static void button_set(Object *obj, Visitor *v, const char *name,
                        void *opaque, Error **errp)
 {
@@ -155,6 +163,7 @@ static void button_set(Object *obj, Visitor *v, const char *name,
     bool pressed;
     if (!visit_type_bool(v, name, &pressed, errp)) { return; }
     b->pressed = pressed;
+    if (b->analog) { keypad_drive(s); return; }
     listenai_board_gpio_input(&s->components, DEVICE(s->soc), b->pad,
                               pressed ? b->pressed_level : b->released_level);
 }
@@ -176,7 +185,9 @@ static void board_reset(void *opaque)
     ListenaiBoard *b = &s->components;
     listenai_board_pulls_apply(b, DEVICE(s->soc));
     listenai_board_rotaries_drive(b);
+    keypad_drive(s);
     for (unsigned i = 0; i < b->button_count; i++) {
+        if (b->buttons[i].analog) { continue; }
         listenai_board_gpio_input(b, DEVICE(s->soc), b->buttons[i].pad,
                                   b->buttons[i].pressed ? b->buttons[i].pressed_level : b->buttons[i].released_level);
     }
@@ -198,6 +209,9 @@ static void venusa_board_init(MachineState *machine)
     if (!strcmp(object_get_typename(OBJECT(machine)), TYPE_VENUSA_BOARD) && !b->configured) {
         error_report("venusa-board requires a checked board assembly file"); exit(1);
     }
+    if (b->keypad && b->keypad_channel >= 4) {
+        error_report("Unsupported VenusA keypad ADC route"); exit(1);
+    }
     DeviceState *soc = qdev_new(TYPE_VENUSA_SOC);
     board->soc = VENUSA_SOC(soc);
     object_property_add_child(OBJECT(machine), "soc", OBJECT(soc));
@@ -210,27 +224,32 @@ static void venusa_board_init(MachineState *machine)
     DriveInfo *flash = drive_get(IF_PFLASH, 0, 0);
     if (!flash) { error_report("VenusA requires a pflash image"); exit(1); }
     qdev_prop_set_uint32(soc, "flash-bytes", b->nor_bytes[0]);
+    if (b->psram_bytes) {
+        qdev_prop_set_uint32(soc, "psram-bytes", b->psram_bytes);
+    }
     qdev_prop_set_drive_err(soc, "flash", blk_by_legacy_dinfo(flash), &error_fatal);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(soc), &error_fatal);
     if (b->expander) {
-        if (b->extio_scl != 34 || b->extio_sda != 33) {
+        int bus = venusa_i2c_bus(b->extio_scl, b->extio_sda);
+        if (bus < 0) {
             error_report("Unsupported VenusA EXTIO I2C route"); exit(1);
         }
-        listenai_board_attach_extio(b, OBJECT(board), board->soc->i2c[1].bus);
-        board->soc->i2c[1].route_valid = extio_route;
-        board->soc->i2c[1].route_opaque = board;
+        listenai_board_attach_extio(b, OBJECT(board), board->soc->i2c[bus].bus);
+        board->soc->i2c[bus].route_valid = extio_route;
+        board->soc->i2c[bus].route_opaque = board;
     }
     listenai_signal_trace_init(&b->signal_trace, OBJECT(board), OBJECT(board->soc),
                               board->soc->gpio,
                               32, 22, b->extio);
     board->soc->signal_trace = &b->signal_trace;
     if (b->typec) {
-        if (b->typec_scl != 34 || b->typec_sda != 33 || b->typec_host) {
+        int bus = venusa_i2c_bus(b->typec_scl, b->typec_sda);
+        if (bus < 0 || b->typec_host) {
             error_report("Unsupported VenusA HUSB320 route or USB host transport"); exit(1);
         }
-        listenai_board_attach_typec(b, OBJECT(board), soc, board->soc->i2c[1].bus);
-        board->soc->i2c[1].route_valid = typec_route;
-        board->soc->i2c[1].route_opaque = board;
+        listenai_board_attach_typec(b, OBJECT(board), soc, board->soc->i2c[bus].bus);
+        board->soc->i2c[bus].route_valid = typec_route;
+        board->soc->i2c[bus].route_opaque = board;
     }
     listenai_board_sd_wire(b, DEVICE(board->soc), board->soc->sd.host);
     panel_connect(board);
@@ -247,7 +266,8 @@ static void venusa_board_init(MachineState *machine)
     qemu_register_reset(board_reset, board);
     venusa_board_audio_connect(VENUSA_SOC(soc),
         b->configured ? (b->amplifier ? b->amplifier_pad : UINT_MAX) : 0,
-        b->configured ? b->amplifier_active : true, b->extio);
+        b->configured ? b->amplifier_active : true,
+        b->configured && b->amplifier_fixed && b->amplifier_enabled, b->extio);
     object_property_add_str(OBJECT(machine), "x-lisa-snapshot", snapshot, NULL);
     object_property_add_str(OBJECT(machine), "x-lisa-signals", NULL, signals_set);
 }

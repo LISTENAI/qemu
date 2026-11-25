@@ -25,16 +25,20 @@ static bool gpio_register(hwaddr offset)
 bool listenai_pinmux_function(ListenaiPinmux *s, unsigned pin, unsigned function)
 {
     assert(pin < 64);
-    return (s->config[pin] & 0x1ff) == function;
+    return (!s->pad_connected || s->pad_connected(s->pad_opaque, pin)) &&
+           (s->config[pin] & s->function_mask) == function;
 }
 
 static bool output_enabled(ListenaiPinmux *s, unsigned pin, bool direction)
 {
+    if (pin >= s->count || (s->pad_connected && !s->pad_connected(s->pad_opaque, pin))) {
+        return false;
+    }
     uint32_t config = s->config[pin];
     uint32_t function = 1u << (config & 31);
-    bool peripheral = (s->peripheral_valid[pin] & function) && !(config & 0x1e0);
-    /* Selector 1 is explicit GPIO; selector 0 retains the default GPIO path. */
-    bool gpio = listenai_pinmux_function(s, pin, 0) || listenai_pinmux_function(s, pin, 1);
+    bool peripheral = (s->peripheral_valid[pin] & function) && (config & s->function_mask) < 32;
+    bool gpio = ((s->gpio_zero & (UINT64_C(1) << pin)) && listenai_pinmux_function(s, pin, 0)) ||
+                ((s->gpio_one & (UINT64_C(1) << pin)) && listenai_pinmux_function(s, pin, 1));
     return config & 0x400000 ? !(config & 0x200000) : peripheral || (direction && gpio);
 }
 
@@ -43,7 +47,7 @@ static bool resolve(ListenaiPinmux *s, unsigned pin, bool direction,
 {
     uint32_t config = s->config[pin];
     uint32_t function = 1u << (config & 31);
-    bool peripheral = (s->peripheral_valid[pin] & function) && !(config & 0x1e0);
+    bool peripheral = (s->peripheral_valid[pin] & function) && (config & s->function_mask) < 32;
     if (!output_enabled(s, pin, direction)) { return undriven; }
     if (peripheral) { output = !!(s->peripheral_level[pin] & function); }
     return config & 0x1000000 ? !!(config & 0x800000) : output;
@@ -195,7 +199,7 @@ static void gpio_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
     listenai_pinmux_sync_inputs(s->pinmux);
 }
 
-static void pinmux_changed(ListenaiPinmux *s)
+void listenai_pinmux_refresh(ListenaiPinmux *s)
 {
     for (unsigned i = 0; i < s->bank_count; i++) {
         gpio_outputs(s->banks[i]);
@@ -210,7 +214,7 @@ void listenai_pinmux_output(ListenaiPinmux *s, unsigned pin, unsigned function, 
     s->peripheral_valid[pin] |= 1u << function;
     if (value) { s->peripheral_level[pin] |= 1u << function; }
     else { s->peripheral_level[pin] &= ~(1u << function); }
-    pinmux_changed(s);
+    listenai_pinmux_refresh(s);
 }
 
 void listenai_pinmux_release_output(ListenaiPinmux *s, unsigned pin,
@@ -224,7 +228,7 @@ void listenai_pinmux_release_output(ListenaiPinmux *s, unsigned pin,
         return;
     }
     s->peripheral_valid[pin] &= ~mask;
-    pinmux_changed(s);
+    listenai_pinmux_refresh(s);
 }
 
 uint32_t listenai_pinmux_config(ListenaiPinmux *s, unsigned pin)
@@ -238,7 +242,7 @@ void listenai_pinmux_configure(ListenaiPinmux *s, unsigned pin, uint32_t value)
     assert(pin < s->count);
     listenai_pinmux_sync_inputs(s);
     s->config[pin] = value;
-    pinmux_changed(s);
+    listenai_pinmux_refresh(s);
     listenai_pinmux_sync_inputs(s);
 }
 
@@ -279,6 +283,8 @@ void listenai_pinmux_init_unmapped(ListenaiPinmux *s, unsigned count,
     assert(count && count <= ARRAY_SIZE(s->config));
     assert(callbacks.fail);
     s->count = count;
+    s->function_mask = 0x1ff;
+    s->gpio_zero = s->gpio_one = UINT64_MAX;
     s->callbacks = callbacks;
 }
 

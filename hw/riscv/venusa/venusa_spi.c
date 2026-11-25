@@ -56,28 +56,49 @@ static void interrupt(void *opaque, int unused, int level)
     venusa_irq(p->soc, 32 + p->index, level);
 }
 
-static const unsigned pins[2][4] = {
-    {16, 19, 18, 17},
-    {22, 23, 24, 21},
+/* Core IOMUX functions 5/6: CLK, MOSI, MISO and CS. */
+static const uint64_t pin_routes[2][4] = {
+    {UINT64_C(0x50208410408), UINT64_C(0x81002082040),
+     UINT64_C(0x106881041022), UINT64_C(0x820440820811)},
+    {UINT64_C(0x44828420804), UINT64_C(0xa0200808020),
+     UINT64_C(0x110101104010), UINT64_C(0x80a08028240a)},
 };
 
 bool venusa_spi_pad_selected(void *opaque, unsigned signal, unsigned pad)
 {
     VenusASPI *p = opaque;
-    return signal < 4 && pad == pins[p->index][signal] &&
+    return signal < 4 && pad < 54 &&
+           (pin_routes[p->index][signal] & (UINT64_C(1) << pad)) &&
            listenai_pinmux_function(&p->soc->pinmux, pad, 5 + p->index);
+}
+
+static int input_pad(VenusASPI *p, unsigned signal)
+{
+    int found = -1;
+    for (unsigned pad = 0; pad < 54; pad++) {
+        if (!venusa_spi_pad_selected(p, signal, pad)) { continue; }
+        if (found >= 0) {
+            venusa_fail(p->soc, 0x44100000 + pad * 4, 4, false,
+                        listenai_pinmux_config(&p->soc->pinmux, pad));
+        }
+        found = pad;
+    }
+    return found;
 }
 
 static void pin_output(void *opaque, int pin, int level)
 {
     VenusASPI *p = opaque;
     p->pin_level[pin] = level;
-    if (p->pin_enabled[pin]) {
-        listenai_pinmux_output(&p->soc->pinmux, pins[p->index][pin],
-                               5 + p->index, level);
-    } else {
-        listenai_pinmux_release_output(&p->soc->pinmux, pins[p->index][pin],
-                                       5 + p->index);
+    uint64_t routes = pin_routes[p->index][pin];
+    while (routes) {
+        unsigned pad = ctz64(routes);
+        routes &= routes - 1;
+        if (p->pin_enabled[pin]) {
+            listenai_pinmux_output(&p->soc->pinmux, pad, 5 + p->index, level);
+        } else {
+            listenai_pinmux_release_output(&p->soc->pinmux, pad, 5 + p->index);
+        }
     }
 }
 
@@ -91,18 +112,19 @@ static void pin_enable(void *opaque, int pin, int level)
 static bool pins_connected(void *opaque)
 {
     VenusASPI *p = opaque;
-    unsigned function = 5 + p->index;
-    unsigned clock = pins[p->index][LISTENAI_SPI_CLOCK];
-    unsigned mosi = pins[p->index][LISTENAI_SPI_MOSI];
-    unsigned miso = pins[p->index][LISTENAI_SPI_MISO];
-    if (listenai_pinmux_function(&p->soc->pinmux, clock, function) &&
-        listenai_gpio_wire_connected(DEVICE(p->soc), clock)) {
-        return true;
+    for (unsigned clock = 0; clock < 54; clock++) {
+        if (venusa_spi_pad_selected(p, LISTENAI_SPI_CLOCK, clock) &&
+            listenai_gpio_wire_connected(DEVICE(p->soc), clock)) {
+            input_pad(p, LISTENAI_SPI_MISO);
+            return true;
+        }
     }
-    if (listenai_pinmux_function(&p->soc->pinmux, mosi, function) &&
-        listenai_pinmux_function(&p->soc->pinmux, miso, function) &&
-        listenai_gpio_wire_connects(DEVICE(p->soc), mosi, miso)) {
-        return true;
+    int miso = input_pad(p, LISTENAI_SPI_MISO);
+    for (unsigned mosi = 0; miso >= 0 && mosi < 54; mosi++) {
+        if (venusa_spi_pad_selected(p, LISTENAI_SPI_MOSI, mosi) &&
+            listenai_gpio_wire_connects(DEVICE(p->soc), mosi, miso)) {
+            return true;
+        }
     }
     return false;
 }
@@ -128,8 +150,8 @@ static bool capture_route(void *opaque)
 {
     VenusASPI *p = opaque;
     for (unsigned pin = 0; pin < 4; pin++) {
-        if (required_pin(&p->device, pin) &&
-            !venusa_spi_pad_selected(p, pin, pins[p->index][pin])) {
+        p->selected_pad[pin] = required_pin(&p->device, pin) ? input_pad(p, pin) : -1;
+        if (required_pin(&p->device, pin) && p->selected_pad[pin] < 0) {
             return false;
         }
     }
@@ -147,13 +169,14 @@ void venusa_spi_pins_changed(VenusASoC *s)
             if (!required_pin(p, pin)) {
                 continue;
             }
-            if (!listenai_pinmux_function(&s->pinmux, pins[i][pin], 5 + i)) {
+            int pad = s->spi[i].selected_pad[pin];
+            if (pad < 0 || input_pad(&s->spi[i], pin) != pad) {
                 /*
                  * The asynchronous receiver's mid-word reconfiguration is
                  * not calibrated. Do not join bits across missing edges.
                  */
-                venusa_fail(s, 0x44100000 + pins[i][pin] * 4, 4, true,
-                            listenai_pinmux_config(&s->pinmux, pins[i][pin]));
+                venusa_fail(s, 0x44100000 + MAX(pad, 0) * 4, 4, true,
+                            pad < 0 ? 0 : listenai_pinmux_config(&s->pinmux, pad));
             }
         }
     }
@@ -163,8 +186,7 @@ void venusa_spi_pad_input(VenusASoC *s, unsigned pad, bool level)
 {
     for (unsigned i = 0; i < 2; i++) {
         for (unsigned pin = 0; pin < 4; pin++) {
-            if (pad == pins[i][pin] &&
-                listenai_pinmux_function(&s->pinmux, pad, 5 + i)) {
+            if (venusa_spi_pad_selected(&s->spi[i], pin, pad)) {
                 ListenaiSPI *p = &s->spi[i].device;
                 listenai_spi_pin_input(p, pin, level);
             }

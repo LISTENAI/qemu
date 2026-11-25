@@ -40,10 +40,56 @@ static void i2c_clock(void *opaque, uint64_t *n, uint64_t *d)
     while (b) { uint64_t r = a % b; a = b; b = r; }
     *n /= a; *d /= a;
 }
+/* Controller, SCL/SDA, functions 7/8. The last SDIO pads swap selectors. */
+static const uint64_t i2c_routes[2][2][2] = {
+    {{UINT64_C(0xa96a3895555), UINT64_C(0x500000000000)},
+     {UINT64_C(0x15695c76aaaa), UINT64_C(0xa00000000000)}},
+    {{UINT64_C(0xa00000000000), UINT64_C(0x52d4712aaaa)},
+     {UINT64_C(0x400000000000), UINT64_C(0xad2b8ed5555)}},
+};
+
+int venusa_i2c_bus(unsigned scl, unsigned sda)
+{
+    int found = -1;
+    if (scl >= 54 || sda >= 54 || scl == sda) { return -1; }
+    for (unsigned i = 0; i < 2; i++) {
+        if (((i2c_routes[i][0][0] | i2c_routes[i][0][1]) & (UINT64_C(1) << scl)) &&
+            ((i2c_routes[i][1][0] | i2c_routes[i][1][1]) & (UINT64_C(1) << sda))) {
+            /* A board without a controller link must identify one bus. */
+            if (found >= 0) { return -1; }
+            found = i;
+        }
+    }
+    return found;
+}
+
+bool venusa_i2c_route(VenusASoC *s, unsigned scl, unsigned sda)
+{
+    int bus = venusa_i2c_bus(scl, sda);
+    if (bus < 0) { return false; }
+    unsigned pads[] = {scl, sda};
+    for (unsigned signal = 0; signal < 2; signal++) {
+        bool selected = false;
+        for (unsigned f = 0; f < 2; f++) {
+            selected |= (i2c_routes[bus][signal][f] & (UINT64_C(1) << pads[signal])) &&
+                        listenai_pinmux_function(&s->pinmux, pads[signal], 7 + f);
+        }
+        if (!selected) { return false; }
+    }
+    return true;
+}
+
 static void adc_irq(void *opaque, bool level)
 {
     venusa_irq(opaque, 23, level);
 }
+static bool adc_connected(void *opaque, unsigned channel)
+{
+    VenusASoC *s = opaque;
+    /* VIN0..3 are PB0..3, AON function 4 with analog selector zero. */
+    return channel >= 4 || (s->aon_iomux[channel] & 0x1ff) == 4;
+}
+
 static uint32_t adc_reference(void *opaque, unsigned selection)
 {
     VenusASoC *s = opaque;
@@ -63,7 +109,8 @@ static void adc_voltage(void *opaque, int channel, int voltage)
 void venusa_peripherals_init(VenusASoC *s)
 {
     VenusAGPADCCallbacks adc_cb = { .opaque = s, .irq = adc_irq,
-        .fail = calendar_fault, .reference_uv = adc_reference };
+        .fail = calendar_fault, .reference_uv = adc_reference,
+        .input_connected = adc_connected };
     venusa_gpadc_init(&s->gpadc, OBJECT(s), "venusa-gpadc", 0x43500000, adc_cb);
     memory_region_add_subregion(get_system_memory(), 0x43500000, &s->gpadc.io);
     qdev_init_gpio_in_named(DEVICE(s), adc_voltage, "adc-voltage-uv", 6);

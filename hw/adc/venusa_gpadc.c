@@ -49,6 +49,10 @@ static bool register_valid(hwaddr off, unsigned size)
 
 static bool sample(VenusAGPADC *s, unsigned channel, uint16_t *value)
 {
+    if (s->callbacks.input_connected &&
+        !s->callbacks.input_connected(s->callbacks.opaque, channel)) {
+        return false;
+    }
     unsigned selection = (REG(s, CONFIG) >> 4) & 3;
     uint32_t reference = s->callbacks.reference_uv(s->callbacks.opaque,
                                                   selection);

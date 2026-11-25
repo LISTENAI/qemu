@@ -18,7 +18,7 @@ typedef struct VenusAI2SPort {
     VenusAAudio *audio;
     unsigned port;
     ListenaiI2S engine;
-    uint8_t mux_mask;
+    int input_pad[4];
     int32_t frame[2], received_left;
     bool left_valid, frame_valid[2];
 } VenusAI2SPort;
@@ -41,7 +41,7 @@ struct VenusAAudio {
     void (*output)(void *opaque, unsigned rate, int16_t sample);
     double highpass_x[2][2], highpass_y[2][2];
 };
-void venusa_board_audio_connect(VenusASoC *s, unsigned pad, bool active, DeviceState *extio);
+void venusa_board_audio_connect(VenusASoC *s, unsigned pad, bool active, bool fixed_enable, DeviceState *extio);
 void venusa_audio_init(VenusASoC *s);
 void venusa_audio_reset(VenusASoC *s);
 void venusa_audio_clock(VenusASoC *s);

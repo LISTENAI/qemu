@@ -8,6 +8,7 @@ typedef struct VenusASPI {
     ListenaiSPI device;
     bool pin_enabled[4], pin_level[4];
     unsigned index, n, m;
+    int selected_pad[4];
     uint32_t clock_config;
     bool rx_request, tx_request;
     qemu_irq cs;

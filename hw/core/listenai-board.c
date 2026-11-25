@@ -86,6 +86,14 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (!dict || number(dict, "version", 1) != 1) { invalid("version"); }
     const char *model = qdict_get_try_str(dict, "chip");
     if (!model || strcmp(model, chip)) { invalid("chip"); }
+    if (qdict_haskey(dict, "psram_bytes")) {
+        b->psram_bytes = number(dict, "psram_bytes", 16 * 1024 * 1024);
+        if (strcmp(chip, "venusa") ||
+            (b->psram_bytes != 8 * 1024 * 1024 &&
+             b->psram_bytes != 16 * 1024 * 1024)) {
+            invalid("PSRAM geometry");
+        }
+    }
     b->expander = qdict_haskey(dict, "extio");
     if (b->expander) {
         QDict *p = qdict_get_qdict(dict, "extio");
@@ -228,7 +236,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             b->lcd_dc = gpio_endpoint(b, pins, "DC", pa_pads, pb_pads);
         }
         b->lcd_cs = gpio_endpoint(b, pins, "CS", pa_pads, pb_pads);
-        b->lcd_reset = gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads); b->lcd_te = b->epaper ? gpio_endpoint(b, pins, "BUSY", pa_pads, pb_pads) : pad(pins, "TE", pa_pads, pb_pads);
+        bool optional_controls = !b->epaper && !b->lcd_qspi;
+        b->lcd_reset = optional_controls && !qdict_haskey(pins, "RESET") ? UINT_MAX :
+            gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads);
+        b->lcd_te = b->epaper ? gpio_endpoint(b, pins, "BUSY", pa_pads, pb_pads) :
+            optional_controls && !qdict_haskey(pins, "TE") ? UINT_MAX :
+            pad(pins, "TE", pa_pads, pb_pads);
         b->lcd_width = number(p, "width", b->lcd_axs ? 180 : 240);
         b->lcd_height = number(p, "height", b->lcd_axs ? 720 : 320);
         b->lcd_x = number(p, "x_offset", b->lcd_axs ? 179 : 239); b->lcd_y = number(p, "y_offset", b->lcd_axs ? 719 : 319);
@@ -268,8 +281,16 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     }
     if (b->amplifier) {
         QDict *p = qdict_get_qdict(dict, "amplifier");
-        b->amplifier_pad = gpio_endpoint(b, p, "pad", pa_pads, pb_pads);
-        b->amplifier_active = number(p, "active_level", 1);
+        b->amplifier_fixed = qdict_haskey(p, "enabled");
+        if (b->amplifier_fixed) {
+            if (qdict_haskey(p, "pad") || qdict_haskey(p, "active_level") ||
+                qdict_haskey(p, "model")) { invalid("fixed amplifier enable"); }
+            b->amplifier_enabled = boolean(p, "enabled");
+            b->amplifier_pad = UINT_MAX;
+        } else {
+            b->amplifier_pad = gpio_endpoint(b, p, "pad", pa_pads, pb_pads);
+            b->amplifier_active = number(p, "active_level", 1);
+        }
         const char *model = qdict_get_try_str(p, "model");
         if (model) {
             if (strcmp(model, TYPE_AW8737) ||
@@ -558,14 +579,31 @@ DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
     return panel;
 }
 
+uint32_t listenai_board_keypad_voltage(ListenaiBoard *b)
+{
+    double load = 1.0;
+    for (unsigned i = 0; i < b->button_count; i++) {
+        if (b->buttons[i].analog && b->buttons[i].pressed) {
+            unsigned resistance = b->buttons[i].resistance_ohms;
+            if (!resistance) { return 0; }
+            load += (double)b->keypad_pull_up_ohms / resistance;
+        }
+    }
+    return b->keypad_supply_uv / load;
+}
+
 void listenai_board_panel_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *panel)
 {
     listenai_board_connect_gpio(b, soc, b->lcd_cs, qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
     if (!b->lcd_qspi) { listenai_board_connect_gpio(b, soc, b->lcd_dc, qdev_get_gpio_in(panel, 0)); }
-    listenai_board_connect_gpio(b, soc, b->lcd_reset, qdev_get_gpio_in(panel, 1));
-    qdev_connect_gpio_out_named(panel, b->epaper ? "busy-n" : "te", 0,
-        b->lcd_te < 64 ? qdev_get_gpio_in_named(soc, "pad-in", b->lcd_te) :
-                        qdev_get_gpio_in_named(b->extio, "pin-in", b->lcd_te - 64));
+    if (b->lcd_reset != UINT_MAX) {
+        listenai_board_connect_gpio(b, soc, b->lcd_reset, qdev_get_gpio_in(panel, 1));
+    }
+    if (b->lcd_te != UINT_MAX) {
+        qdev_connect_gpio_out_named(panel, b->epaper ? "busy-n" : "te", 0,
+            b->lcd_te < 64 ? qdev_get_gpio_in_named(soc, "pad-in", b->lcd_te) :
+                            qdev_get_gpio_in_named(b->extio, "pin-in", b->lcd_te - 64));
+    }
 }
 
 void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sensor)

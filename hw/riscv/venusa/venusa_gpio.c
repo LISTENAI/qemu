@@ -14,14 +14,14 @@ static void gpio_irq(void *opaque, unsigned first_pad, bool value)
 static void gpio_output(void *opaque, unsigned pad, bool value)
 {
     VenusASoC *s = opaque;
-    if (pad >= 4 && pad <= 7) {
+    if (pad < 54) {
         venusa_i2s_pins_changed(s);
     }
     if (pad < 54) { qemu_set_irq(s->pad_output[pad], value); }
-    if (pad >= 16 && pad <= 24) {
+    if (pad < 54) {
         venusa_spi_pins_changed(s);
     }
-    if (s->dvp.camera_clock_changed && (pad == 35 || (pad >= 21 && pad <= 31))) {
+    if (s->dvp.camera_clock_changed && pad < 38) {
         s->dvp.camera_clock_changed(s->dvp.camera_opaque);
     }
 }
@@ -45,6 +45,14 @@ void venusa_dma_init(VenusASoC *s)
     listenai_dma_init(&s->dma, OBJECT(s), "venusa-dma", 0x40000000, 6,
                      dma_irq, fault, s);
 }
+static bool core_pad_connected(void *opaque, unsigned pad)
+{
+    VenusASoC *s = opaque;
+    /* PB0..PB5 pass through the always-on mux before the core mux. */
+    return pad < 54 && (pad < 32 || pad >= 38 ||
+                        (s->aon_iomux[pad - 32] & 31) == 6);
+}
+
 void venusa_gpio_init(VenusASoC *s)
 {
     qdev_init_gpio_in_named(DEVICE(s), gpio_input, "pad-in", 64);
@@ -52,6 +60,11 @@ void venusa_gpio_init(VenusASoC *s)
     ListenaiGPIOCallbacks cb = { .opaque = s, .fail = fault,
         .irq = gpio_irq, .output = gpio_output };
     listenai_pinmux_init(&s->pinmux, OBJECT(s), "venusa-pinmux", 0x44100000, 54, cb);
+    s->pinmux.function_mask = 31;
+    s->pinmux.gpio_zero = (UINT64_C(1) << 38) - 1;
+    s->pinmux.gpio_one = ((UINT64_C(1) << 54) - 1) & ~s->pinmux.gpio_zero;
+    s->pinmux.pad_connected = core_pad_connected;
+    s->pinmux.pad_opaque = s;
     for (unsigned i = 0; i < 2; i++) {
         char name[32];
         snprintf(name, sizeof(name), "venusa-gpio%u", i);
@@ -60,10 +73,28 @@ void venusa_gpio_init(VenusASoC *s)
     }
 }
 
+static const uint64_t pwm_routes[8] = {
+    UINT64_C(0x5001004004), UINT64_C(0xa002008008),
+    UINT64_C(0x10004010010), UINT64_C(0x20008020020),
+    UINT64_C(0x40110040040), UINT64_C(0x80220080080),
+    UINT64_C(0x100440100001), UINT64_C(0x200880200002),
+};
+
+int venusa_pwm_channel(VenusASoC *s, unsigned pad)
+{
+    if (pad >= 54 || !listenai_pinmux_function(&s->pinmux, pad, 11)) { return -1; }
+    for (unsigned i = 0; i < 8; i++) {
+        if (pwm_routes[i] & (UINT64_C(1) << pad)) { return i; }
+    }
+    return -1;
+}
+
 void venusa_gpt_output(VenusASoC *s, unsigned output, bool level)
 {
-    /* Verified SoC mux route: PWM0 to PA14, alternate function 11. */
-    if (output == 0) {
-        listenai_pinmux_output(&s->pinmux, 14, 11, level);
+    assert(output < 8);
+    for (unsigned pad = 0; pad < 54; pad++) {
+        if (pwm_routes[output] & (UINT64_C(1) << pad)) {
+            listenai_pinmux_output(&s->pinmux, pad, 11, level);
+        }
     }
 }

@@ -218,6 +218,10 @@ static void realize(DeviceState *dev, Error **errp)
         memcpy(s->otp, contents, size);
     }
     venusa_storage_init(s);
+    if (s->psram_bytes != 8 * MiB && s->psram_bytes != 16 * MiB) {
+        error_setg(errp, "VenusA supports 8 or 16 MiB Xccela PSRAM");
+        return;
+    }
     venusa_psram_init(s);
     for (unsigned i = 0; i < 2; i++) {
         object_initialize_child(OBJECT(s), i ? "core1" : "core0", &s->cpu[i], TYPE_RISCV_CPU_RV32I);
@@ -257,6 +261,7 @@ static void realize(DeviceState *dev, Error **errp)
 
 static const Property properties[] = {
     DEFINE_PROP_UINT32("flash-bytes", VenusASoC, flash_bytes, LISTENAI_NOR_SIZE),
+    DEFINE_PROP_UINT32("psram-bytes", VenusASoC, psram_bytes, 8 * MiB),
     DEFINE_PROP_DRIVE("flash", VenusASoC, flash),
 };
 

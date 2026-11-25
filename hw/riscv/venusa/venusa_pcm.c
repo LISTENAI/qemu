@@ -16,7 +16,7 @@ typedef struct VenusAPCM {
     uint8_t *input;
     size_t length, position;
     unsigned rate, channels, output_rate, amplifier_pad;
-    bool amplifier_active;
+    bool amplifier_active, amplifier_fixed_enable;
     GByteArray *output;
     const char *output_path;
 } VenusAPCM;
@@ -47,6 +47,7 @@ static void input(void *opaque, unsigned rate, int16_t samples[2])
 static bool pa_enabled(VenusAPCM *p)
 {
     uint32_t driven, levels;
+    if (p->amplifier_fixed_enable) { return true; }
     if (p->amplifier_pad == UINT_MAX) { return false; }
     unsigned pad = p->amplifier_pad;
     if (pad >= 64) {
@@ -113,12 +114,13 @@ static void finish(Notifier *notifier, void *data)
     g_free(p);
 }
 
-void venusa_board_audio_connect(VenusASoC *s, unsigned pad, bool active, DeviceState *extio)
+void venusa_board_audio_connect(VenusASoC *s, unsigned pad, bool active, bool fixed_enable, DeviceState *extio)
 {
     VenusAPCM *p = g_new0(VenusAPCM, 1);
     p->soc = s; p->extio = extio;
     p->amplifier_pad = pad;
     p->amplifier_active = active;
+    p->amplifier_fixed_enable = fixed_enable;
     const char *path = getenv("LISEM_QEMU_AUDIO_INPUT");
     if (path) {
         const char *format = getenv("LISEM_QEMU_AUDIO_FORMAT");

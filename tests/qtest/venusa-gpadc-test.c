@@ -14,6 +14,7 @@ static QTestState *start(void)
     g_autofree char *flash = g_shell_quote(flash_path);
     QTestState *q = qtest_initf("-machine venusa-rd-evb "
                               "-drive if=pflash,format=raw,file=%s", flash);
+    for (unsigned i = 0; i < 4; i++) { qtest_writel(q, 0x45100000 + i * 4, 4); }
     qtest_writel(q, CLOCK, qtest_readl(q, CLOCK) | 1);
     qtest_writel(q, RESET, 1u << 14);
     return q;
@@ -177,6 +178,22 @@ static void rejected_access(const void *opaque)
     g_test_trap_assert_stderr(diagnostic);
 }
 
+static void disconnected_input(const void *opaque)
+{
+    unsigned mux = GPOINTER_TO_UINT(opaque);
+    if (g_test_subprocess()) {
+        QTestState *q = start();
+        qtest_set_expected_status(q, 1);
+        qtest_writel(q, 0x45100008, mux);
+        convert(q, 1u << 2, 1);
+        qtest_quit(q);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 5 * G_USEC_PER_SEC, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*VenusA unsupported write*address=0x43500000 size=4*");
+}
+
 static void image(const char *pattern, char **path, size_t length)
 {
     int fd = g_file_open_tmp(pattern, path, NULL);
@@ -200,6 +217,10 @@ int main(int argc, char **argv)
     qtest_add_func("venusa/gpadc/reset-voltage", reset_and_voltage);
     qtest_add_func("venusa/gpadc/complete-irq", complete_irq);
     qtest_add_func("venusa/gpadc/fifo-boundaries", fifo_boundaries);
+    qtest_add_data_func("venusa/gpadc/reject/core-route",
+                       GUINT_TO_POINTER(6), disconnected_input);
+    qtest_add_data_func("venusa/gpadc/reject/other-analog-route",
+                       GUINT_TO_POINTER(4 | (1u << 5)), disconnected_input);
     for (unsigned n = 0; n < G_N_ELEMENTS(rejected); n++) {
         g_autofree char *name = g_strdup_printf("venusa/gpadc/reject/%s",
                                                rejected[n].name);
