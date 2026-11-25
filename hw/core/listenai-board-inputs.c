@@ -2,7 +2,7 @@
 /* Validate one complete batch before applying electrical input changes. */
 #include "qemu/osdep.h"
 #include "hw/core/listenai-board-inputs.h"
-#include "hw/i2c/listenai_extio.h"
+#include "hw/gpio/listenai-expander.h"
 #include "hw/i2c/ls8500.h"
 #include "qobject/qjson.h"
 #include "qobject/qnum.h"
@@ -43,8 +43,7 @@ bool listenai_board_inputs_parse(ListenaiBoard *b, ListenaiBoardInputs *state,
         } else {
             if (!b->extio) { goto invalid; }
             pin -= 64;
-            static const unsigned valid[] = {6, 0, 0x9f, 0x7f};
-            if (!(valid[pin / 8] & (1u << (pin % 8)))) { goto invalid; }
+            if (!(listenai_expander_valid_pins(b->extio) & (1u << pin))) { goto invalid; }
             next.extio_mask |= 1u << pin;
             if (qbool_get_bool(level)) { next.extio_levels |= 1u << pin; }
         }
@@ -63,7 +62,7 @@ bool listenai_board_inputs_parse(ListenaiBoard *b, ListenaiBoardInputs *state,
         for (const QDictEntry *e = qdict_first(values); e; e = qdict_next(values, e)) {
             uint64_t channel, uv;
             QNum *n = qobject_to(QNum, qdict_entry_value(e));
-            if (qemu_strtou64(qdict_entry_key(e), NULL, 10, &channel) || channel >= 8 ||
+            if (qemu_strtou64(qdict_entry_key(e), NULL, 10, &channel) || channel >= listenai_expander_adc_channels(b->extio) ||
                 !n || !qnum_get_try_uint(n, &uv) || uv > 3300000) { goto invalid; }
             next.extio_adc_mask |= 1u << channel; next.extio_adc_uv[channel] = uv;
         }
@@ -95,7 +94,7 @@ void listenai_board_inputs_apply(ListenaiBoard *b, ListenaiBoardInputs *state, D
     }
     for (unsigned i = 0; i < 8; i++) {
         if (state->extio_adc_mask & (1u << i)) {
-            bool ok = listenai_extio_voltage(b->extio, i, state->extio_adc_uv[i]);
+            bool ok = listenai_expander_voltage(b->extio, i, state->extio_adc_uv[i]);
             assert(ok);
         }
     }

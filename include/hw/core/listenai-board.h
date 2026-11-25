@@ -31,6 +31,7 @@ typedef struct ListenaiBoard {
     unsigned sd_detect_endpoint;
     DeviceState *extio;
     char *extio_id;
+    char *extio_model;
     unsigned extio_scl, extio_sda, extio_address, extio_i2c;
     bool typec, typec_host;
     unsigned typec_scl, typec_sda, typec_address, typec_i2c, typec_irq, typec_id_pin;
@@ -47,6 +48,9 @@ typedef struct ListenaiBoard {
     unsigned modem_tx, modem_rx;
     DeviceState *modem_device;
     struct ListenAIUARTPeer *modem_uart;
+    bool aw8737;
+    char *aw8737_id;
+    DeviceState *aw8737_device;
     unsigned psram_bytes;
     uint32_t nor_bytes[2];
     bool nor_cs1;
@@ -118,6 +122,7 @@ void listenai_board_cleanup(ListenaiBoard *b);
 void listenai_board_attach_ls8500(ListenaiBoard *b, Object *owner, DeviceState *soc, I2CBus *bus);
 void listenai_board_attach_fs1815(ListenaiBoard *b, Object *owner, I2CBus *bus);
 void listenai_board_attach_modem(ListenaiBoard *b, Object *owner);
+void listenai_board_attach_aw8737(ListenaiBoard *b, Object *owner, DeviceState *soc);
 void listenai_board_reset_init(ListenaiBoard *b, Object *owner, qemu_irq reset);
 void listenai_board_rotaries_init(ListenaiBoard *b, Object *owner, DeviceState *soc);
 void listenai_board_rotaries_drive(ListenaiBoard *b);

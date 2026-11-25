@@ -4,7 +4,7 @@
 #include "hw/riscv/venusa/venusa.h"
 #include "hw/audio/lisa_stream.h"
 #include "hw/loader.h"
-#include "hw/i2c/listenai_extio.h"
+#include "hw/gpio/listenai-expander.h"
 #include "qemu/error-report.h"
 #include "system/system.h"
 
@@ -50,9 +50,7 @@ static bool pa_enabled(VenusAPCM *p)
     if (p->amplifier_pad == UINT_MAX) { return false; }
     unsigned pad = p->amplifier_pad;
     if (pad >= 64) {
-        unsigned pin = pad - 64;
-        listenai_extio_outputs(p->extio, pin / 8, &driven, &levels);
-        pad = pin % 8;
+        return listenai_expander_active(p->extio, pad - 64, p->amplifier_active);
     } else { listenai_gpio_outputs_snapshot(&p->soc->gpio[pad / 32], &driven, &levels); pad %= 32; }
     return (driven & (1u << (pad % 32))) &&
            !!(levels & (1u << (pad % 32))) == p->amplifier_active;

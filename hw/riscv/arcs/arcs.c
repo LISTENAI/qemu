@@ -2,13 +2,14 @@
 /* ARCS Mini board: external storage, wiring and bounded bring-up harness. */
 #include "qemu/osdep.h"
 #include "hw/i2c/fs1815.h"
+#include "hw/audio/aw8737.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
 #include "hw/riscv/arcs/arcs.h"
 #include "hw/riscv/arcs/arcs_board.h"
 #include "hw/core/listenai-board-inputs.h"
-#include "hw/i2c/listenai_extio.h"
+#include "hw/gpio/listenai-expander.h"
 #include "hw/riscv/arcs/arcs_wifi_ap.h"
 #include "hw/riscv/arcs/arcs_network.h"
 #include "hw/display/serial_lcd.h"
@@ -450,14 +451,13 @@ static char *ble_central_get(Object *obj, Error **errp)
 
 static bool pa_enabled(ArcsMachine *s)
 {
+    if (s->board.aw8737_device) { return aw8737_enabled(s->board.aw8737_device); }
     if (s->board.fs1815_device) { return fs1815_enabled(s->board.fs1815_device); }
     if (!s->board.amplifier) { return false; }
     uint32_t driven, levels;
     unsigned pin = s->board.amplifier_pad;
     if (pin >= 64) {
-        unsigned port = pin - 64;
-        listenai_extio_outputs(s->board.extio, port / 8, &driven, &levels);
-        pin = port % 8;
+        return listenai_expander_active(s->board.extio, pin - 64, s->board.amplifier_active);
     } else { arcs_gpio_outputs_snapshot(&s->soc.gpio[pin / 32], &driven, &levels); pin %= 32; }
     return (driven & (1u << (pin % 32))) &&
            !!(levels & (1u << (pin % 32))) == s->board.amplifier_active;
@@ -1201,6 +1201,7 @@ static void signals_apply(ArcsMachine *s)
     listenai_board_inputs_apply(&s->board, &s->inputs, DEVICE(&s->soc));
     s->soc.adc.voltage_mask = s->inputs.adc_mask;
     memcpy(s->soc.adc.voltage_uv, s->inputs.adc_uv, sizeof(s->inputs.adc_uv));
+    keypad_drive(s);
 }
 
 static void signals_set(Object *obj, const char *value, Error **errp)
@@ -1315,6 +1316,7 @@ static void machine_init(MachineState *machine)
     s->soc.report_opaque = s;
     s->soc.psram.chip = &s->psram;
     s->soc.flash.chips[0] = &s->flash;
+    s->soc.flash.cs1_pad = s->board.nor_cs1_pad;
     if (s->board.nor_cs1) {
         s->soc.flash.chips[1] = &s->flash_cs1;
     }
@@ -1372,6 +1374,7 @@ static void machine_init(MachineState *machine)
         s->soc.i2c[bus].controller.route_opaque = s;
     }
     connect_pcm(s);
+    listenai_board_attach_aw8737(&s->board, OBJECT(s), DEVICE(&s->soc));
     if (getenv("ARCS_QEMU_WIFI_CAPTURE")) {
         s->wifi_capture = g_byte_array_new(); reset_radio(s);
     }

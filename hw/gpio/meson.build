@@ -20,3 +20,5 @@ system_ss.add(when: 'CONFIG_SIFIVE_GPIO', if_true: files('sifive_gpio.c'))
 system_ss.add(when: 'CONFIG_PCF8574', if_true: files('pcf8574.c'))
 
 system_ss.add(when: 'CONFIG_LISTENAI_GPIO', if_true: files('listenai_gpio.c', 'listenai_gpio_wire.c'))
+
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai-expander.c'))

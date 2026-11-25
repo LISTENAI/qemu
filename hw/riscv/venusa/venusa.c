@@ -7,7 +7,7 @@
 #include "qapi/error.h"
 #include "hw/core/listenai-board.h"
 #include "hw/core/listenai-board-inputs.h"
-#include "hw/i2c/listenai_extio.h"
+#include "hw/gpio/listenai-expander.h"
 #include "hw/display/serial_lcd.h"
 #include "hw/irq.h"
 #include "ui/lisa_display.h"
@@ -34,7 +34,7 @@ static void backlight(void *opaque, int unused, int level)
     if (s->components.epaper) { return; }
     unsigned pad = s->components.backlight_pad;
     if (pad >= 64) {
-        double duty = listenai_extio_duty(s->components.extio, pad - 64);
+        double duty = listenai_expander_duty(s->components.extio, pad - 64);
         serial_lcd_backlight(s->screen, s->components.backlight_active ? duty : 1 - duty);
         return;
     }

@@ -8,9 +8,13 @@
 #include "hw/display/serial_lcd.h"
 #include "hw/display/jd79651c.h"
 #include "hw/i2c/listenai_extio.h"
+#include "hw/i2c/gxa574.h"
+#include "hw/gpio/listenai-expander.h"
 #include "hw/i2c/husb320.h"
 #include "hw/i2c/fs1815.h"
 #include "hw/char/listenai_modem.h"
+#include "hw/audio/aw8737.h"
+#include "hw/sysbus.h"
 #include "hw/i2c/cst328.h"
 #include "hw/i2c/sc919_touch.h"
 #include "hw/i2c/axs15231e_touch.h"
@@ -63,7 +67,8 @@ static unsigned gpio_endpoint(ListenaiBoard *b, QDict *dict, const char *field, 
     if (n < 64) { return pad(dict, field, pa, pb); }
     unsigned pin = n - 64;
     static const unsigned masks[] = {6, 0, 0x9f, 0x7f};
-    if (!b->expander || !(masks[pin / 8] & (1u << (pin % 8)))) { invalid(field); }
+    if (!b->expander || (b->extio_model && !strcmp(b->extio_model, TYPE_GXA574) ?
+        pin >= 8 : !(masks[pin / 8] & (1u << (pin % 8))))) { invalid(field); }
     return n;
 }
 
@@ -90,7 +95,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         b->extio_scl = pad(p, "SCL", pa_pads, pb_pads);
         b->extio_sda = pad(p, "SDA", pa_pads, pb_pads);
         b->extio_address = number(p, "address", 0x7f);
-        if (b->extio_address != 0x6c && b->extio_address != 0x15) { invalid("extio address strap"); }
+        const char *model = qdict_get_try_str(p, "model");
+        b->extio_model = g_strdup(model ? model : TYPE_LISTENAI_EXTIO);
+        if (strcmp(b->extio_model, TYPE_GXA574) && strcmp(b->extio_model, TYPE_LISTENAI_EXTIO)) { invalid("GPIO expander model"); }
+        if (model && !strcmp(model, TYPE_GXA574)) {
+            if (b->extio_address != 0x20) { invalid("GXA574 address"); }
+        } else if (b->extio_address != 0x6c && b->extio_address != 0x15) { invalid("extio address strap"); }
     }
     if (qdict_haskey(dict, "hold_reset")) {
         if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) {
@@ -144,7 +154,9 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         }
         if (!b->nor_bytes[0]) { invalid("missing primary NOR"); }
         b->nor_cs1 = b->nor_bytes[1] != 0;
-        b->nor_cs1_pad = 11;
+        if (!qdict_haskey(dict, "nor_cs1")) {
+            b->nor_cs1_pad = 11; /* Legacy assembly plans used PA11. */
+        }
     }
     b->ls8500 = qdict_haskey(dict, "ls8500");
     if (b->ls8500) {
@@ -258,6 +270,17 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         QDict *p = qdict_get_qdict(dict, "amplifier");
         b->amplifier_pad = gpio_endpoint(b, p, "pad", pa_pads, pb_pads);
         b->amplifier_active = number(p, "active_level", 1);
+        const char *model = qdict_get_try_str(p, "model");
+        if (model) {
+            if (strcmp(model, TYPE_AW8737) ||
+                (strcmp(chip, "ls2684") && strcmp(chip, "ls2663"))) {
+                invalid("amplifier model or chip adapter");
+            }
+            b->aw8737 = true;
+            const char *id = qdict_get_try_str(p, "id");
+            if (!id || !*id) { invalid("AW8737A device ID"); }
+            b->aw8737_id = g_strdup(id);
+        }
     }
     if (b->sd) {
         QDict *p = qdict_get_qdict(dict, "sd");
@@ -424,7 +447,9 @@ void listenai_board_cleanup(ListenaiBoard *b)
     for (unsigned i = 0; i < b->rotary_count; i++) { g_free(b->rotaries[i].id); }
     for (unsigned i = 0; i < b->pwm_led_count; i++) { g_free(b->pwm_leds[i].id); }
     g_free(b->fs1815_id);
+    g_free(b->aw8737_id);
     g_free(b->extio_id);
+    g_free(b->extio_model);
     g_free(b->ls8500_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
     g_free(b->panel_otp_luts);
@@ -557,7 +582,9 @@ void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState 
 void listenai_board_attach_extio(ListenaiBoard *b, Object *owner, I2CBus *bus)
 {
     if (!b->expander) { return; }
-    I2CSlave *dev = i2c_slave_new(TYPE_LISTENAI_EXTIO, b->extio_address);
+    const char *type = b->extio_model && !strcmp(b->extio_model, TYPE_GXA574)
+        ? TYPE_GXA574 : TYPE_LISTENAI_EXTIO;
+    I2CSlave *dev = i2c_slave_new(type, b->extio_address);
     b->extio = DEVICE(dev);
     object_property_add_child(owner, "extio", OBJECT(dev));
     i2c_slave_realize_and_unref(dev, bus, &error_fatal);
@@ -577,6 +604,17 @@ void listenai_board_connect_gpio(ListenaiBoard *b, DeviceState *soc, unsigned en
         input = qdev_get_gpio_in(split, 0);
     }
     qdev_connect_gpio_out_named(b->extio, "pin-out", pin, input);
+}
+
+void listenai_board_attach_aw8737(ListenaiBoard *b, Object *owner, DeviceState *soc)
+{
+    if (!b->aw8737) { return; }
+    DeviceState *dev = qdev_new(TYPE_AW8737);
+    object_property_add_child(owner, "aw8737", OBJECT(dev));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    b->aw8737_device = dev;
+    listenai_board_connect_gpio(b, soc, b->amplifier_pad,
+                               qdev_get_gpio_in_named(dev, "shdn", 0));
 }
 
 void listenai_board_gpio_input(ListenaiBoard *b, DeviceState *soc, unsigned endpoint, bool level)
@@ -604,6 +642,10 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
     if (b->modem_device) {
         qdict_put_obj(devices, b->modem_id,
                       QOBJECT(listenai_modem_snapshot(b->modem_device)));
+    }
+    if (b->aw8737_device) {
+        qdict_put_obj(devices, b->aw8737_id,
+                      QOBJECT(aw8737_snapshot(b->aw8737_device)));
     }
     if (b->ls8500_device) {
         qdict_put_obj(devices, b->ls8500_id, QOBJECT(ls8500_snapshot(b->ls8500_device)));
@@ -633,7 +675,7 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
         QDict *device = qdict_new(), *pads = qdict_new();
         for (unsigned i = 0; i < 4; i++) {
             uint32_t driven, levels;
-            listenai_extio_outputs(b->extio, i, &driven, &levels);
+            listenai_expander_outputs(b->extio, i, &driven, &levels);
             QDict *bank = qdict_new(); char name[] = {'A' + i, 0};
             qdict_put_int(bank, "driven", driven); qdict_put_int(bank, "levels", levels);
             qdict_put_obj(pads, name, QOBJECT(bank));
