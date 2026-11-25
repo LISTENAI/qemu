@@ -25,6 +25,8 @@ static unsigned i2c_route(unsigned scl, unsigned sda)
     if ((scl == 39 && sda == 38) || (scl == 23 && sda == 22) ||
         (scl == 20 && sda == 21)) { return 0; }
     if (scl == 33 && sda == 32) { return 1; }
+    if (scl == 18 && sda == 17) { return 1; }
+    if (scl == 19 && sda == 18) { return 1; }
     invalid("I2C physical pad route");
 }
 
@@ -56,7 +58,7 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
     b->psram_bytes = !strcmp(chip, "ls2663") ? 8 * 1024 * 1024 : 16 * 1024 * 1024;
     listenai_board_load(b, path, chip, 28, 10);
     qobject_unref(root);
-    if (b->nor_cs1 && b->nor_cs1_pad != 11) { invalid("SPIB CS1 pad route"); }
+    if (b->nor_cs1 && b->nor_cs1_pad != 10 && b->nor_cs1_pad != 11) { invalid("SPIB CS1 pad route"); }
     if (b->lcd_qspi) {
         if (!arcs_qspi_pad_valid(0, b->lcd_sck)) { invalid("video QSPI clock route"); }
         for (unsigned i = 0; i < 4; i++) {
@@ -177,4 +179,3 @@ double arcs_board_backlight(ListenaiBoard *b, ArcsSoC *soc)
     if (duty < 0) { return 0; }
     return b->backlight_active ? duty : 1.0 - duty;
 }
-

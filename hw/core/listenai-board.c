@@ -8,6 +8,7 @@
 #include "hw/display/serial_lcd.h"
 #include "hw/display/jd79651c.h"
 #include "hw/i2c/listenai_extio.h"
+#include "hw/i2c/gxa574.h"
 #include "hw/i2c/husb320.h"
 #include "hw/i2c/fs1815.h"
 #include "hw/char/listenai_modem.h"
@@ -63,7 +64,8 @@ static unsigned gpio_endpoint(ListenaiBoard *b, QDict *dict, const char *field, 
     if (n < 64) { return pad(dict, field, pa, pb); }
     unsigned pin = n - 64;
     static const unsigned masks[] = {6, 0, 0x9f, 0x7f};
-    if (!b->expander || !(masks[pin / 8] & (1u << (pin % 8)))) { invalid(field); }
+    if (!b->expander || (b->extio_model && !strcmp(b->extio_model, TYPE_GXA574) ?
+        pin >= 8 : !(masks[pin / 8] & (1u << (pin % 8))))) { invalid(field); }
     return n;
 }
 
@@ -90,7 +92,11 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         b->extio_scl = pad(p, "SCL", pa_pads, pb_pads);
         b->extio_sda = pad(p, "SDA", pa_pads, pb_pads);
         b->extio_address = number(p, "address", 0x7f);
-        if (b->extio_address != 0x6c && b->extio_address != 0x15) { invalid("extio address strap"); }
+        const char *model = qdict_get_try_str(p, "model");
+        b->extio_model = g_strdup(model ? model : TYPE_LISTENAI_EXTIO);
+        if (model && !strcmp(model, TYPE_GXA574)) {
+            if (b->extio_address != 0x20) { invalid("GXA574 address"); }
+        } else if (b->extio_address != 0x6c && b->extio_address != 0x15) { invalid("extio address strap"); }
     }
     if (qdict_haskey(dict, "hold_reset")) {
         if (strcmp(chip, "ls2684") && strcmp(chip, "ls2663")) {
@@ -144,7 +150,9 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         }
         if (!b->nor_bytes[0]) { invalid("missing primary NOR"); }
         b->nor_cs1 = b->nor_bytes[1] != 0;
-        b->nor_cs1_pad = 11;
+        if (!qdict_haskey(dict, "nor_cs1")) {
+            b->nor_cs1_pad = 11; /* Legacy assembly plans used PA11. */
+        }
     }
     b->ls8500 = qdict_haskey(dict, "ls8500");
     if (b->ls8500) {
@@ -425,6 +433,7 @@ void listenai_board_cleanup(ListenaiBoard *b)
     for (unsigned i = 0; i < b->pwm_led_count; i++) { g_free(b->pwm_leds[i].id); }
     g_free(b->fs1815_id);
     g_free(b->extio_id);
+    g_free(b->extio_model);
     g_free(b->ls8500_id);
     g_free(b->panel_id); g_free(b->panel_controller_id); g_free(b->backlight_id);
     g_free(b->panel_otp_luts);
@@ -557,7 +566,9 @@ void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState 
 void listenai_board_attach_extio(ListenaiBoard *b, Object *owner, I2CBus *bus)
 {
     if (!b->expander) { return; }
-    I2CSlave *dev = i2c_slave_new(TYPE_LISTENAI_EXTIO, b->extio_address);
+    const char *type = b->extio_model && !strcmp(b->extio_model, TYPE_GXA574)
+        ? TYPE_GXA574 : TYPE_LISTENAI_EXTIO;
+    I2CSlave *dev = i2c_slave_new(type, b->extio_address);
     b->extio = DEVICE(dev);
     object_property_add_child(owner, "extio", OBJECT(dev));
     i2c_slave_realize_and_unref(dev, bus, &error_fatal);
@@ -633,7 +644,12 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
         QDict *device = qdict_new(), *pads = qdict_new();
         for (unsigned i = 0; i < 4; i++) {
             uint32_t driven, levels;
+        if (b->extio_model && !strcmp(b->extio_model, TYPE_GXA574)) {
+            if (i != 0) { continue; }
+            gxa574_outputs(b->extio, &driven, &levels);
+        } else {
             listenai_extio_outputs(b->extio, i, &driven, &levels);
+        }
             QDict *bank = qdict_new(); char name[] = {'A' + i, 0};
             qdict_put_int(bank, "driven", driven); qdict_put_int(bank, "levels", levels);
             qdict_put_obj(pads, name, QOBJECT(bank));

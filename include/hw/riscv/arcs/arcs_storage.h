@@ -11,6 +11,7 @@ typedef struct ArcsFlash {
     ArcsSoC *soc;
     ListenAISpiMem core;
     ArcsNOR *chips[2];
+    unsigned cs1_pad;
     MemoryRegion delay_io;
     uint32_t delay_regs[2];
 } ArcsFlash;
