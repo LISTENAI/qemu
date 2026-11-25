@@ -16,6 +16,7 @@
 #include "hw/audio/aw8737.h"
 #include "hw/sysbus.h"
 #include "hw/i2c/cst328.h"
+#include "hw/i2c/cst836u.h"
 #include "hw/i2c/sc919_touch.h"
 #include "hw/i2c/axs15231e_touch.h"
 #include "hw/i2c/ls8500.h"
@@ -339,10 +340,17 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (b->touch) {
         QDict *p = qdict_get_qdict(dict, "touch");
         const char *model = qdict_get_try_str(p, "model");
-        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1") && strcmp(model, TYPE_AXS15231E_TOUCH)) { invalid("touch model"); }
+        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1") && strcmp(model, TYPE_AXS15231E_TOUCH) && strcmp(model, TYPE_CST836U)) { invalid("touch model"); }
         b->touch_sc919 = model && !strcmp(model, "sc919-touch-v1");
         b->touch_axs = model && !strcmp(model, TYPE_AXS15231E_TOUCH);
-        if (b->touch_axs) {
+        b->touch_cst836u = model && !strcmp(model, TYPE_CST836U);
+        if (b->touch_cst836u) {
+            b->touch_address = qdict_haskey(p, "address") ? number(p, "address", 0x77) : 0x15;
+            if (b->touch_address < 8) { invalid("touch address"); }
+            b->touch_chip_type = qdict_haskey(p, "chip_type") ? number(p, "chip_type", 65535) : UINT_MAX;
+            b->touch_reset = qdict_haskey(p, "RESET") ? pad(p, "RESET", pa_pads, pb_pads) : UINT_MAX;
+        }
+        if (b->touch_axs || b->touch_cst836u) {
             b->touch_width = number(p, "width", 4096);
             b->touch_height = number(p, "height", 4096);
             if (!b->touch_width || !b->touch_height) { invalid("touch dimensions"); }
@@ -832,9 +840,10 @@ void listenai_board_panel_save(ListenaiBoard *b, const char *path)
 DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
                                      DeviceState *soc, I2CBus *bus)
 {
-    I2CSlave *touch = i2c_slave_new(b->touch_axs ? TYPE_AXS15231E_TOUCH : b->touch_sc919 ? TYPE_SC919_TOUCH : TYPE_CST328,
-                                   b->touch_axs ? 0x3b : b->touch_sc919 ? 0x28 : 0x1d);
-    if (b->touch_axs) {
+    I2CSlave *touch = i2c_slave_new(b->touch_cst836u ? TYPE_CST836U : b->touch_axs ? TYPE_AXS15231E_TOUCH : b->touch_sc919 ? TYPE_SC919_TOUCH : TYPE_CST328,
+                                   b->touch_cst836u ? b->touch_address : b->touch_axs ? 0x3b : b->touch_sc919 ? 0x28 : 0x1d);
+    if (b->touch_cst836u) { qdev_prop_set_uint32(DEVICE(touch), "chip-type", b->touch_chip_type); }
+    if (b->touch_axs || b->touch_cst836u) {
         qdev_prop_set_uint32(DEVICE(touch), "width", b->touch_width);
         qdev_prop_set_uint32(DEVICE(touch), "height", b->touch_height);
     }
@@ -842,7 +851,8 @@ DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
     i2c_slave_realize_and_unref(touch, bus, &error_fatal);
     qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
                                 qdev_get_gpio_in_named(soc, "pad-in", b->touch_irq));
-    if (b->touch_sc919 || b->touch_axs) {
+    if (b->touch_sc919 || b->touch_axs ||
+        (b->touch_cst836u && b->touch_reset != UINT_MAX)) {
         listenai_board_connect_pad(soc, b->touch_reset,
                                   qdev_get_gpio_in_named(DEVICE(touch), "reset", 0));
     }
@@ -851,7 +861,8 @@ DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
 
 void listenai_board_touch_input(ListenaiBoard *b, Object *owner, DeviceState *touch)
 {
-    if (b->touch_axs) { axs15231e_touch_add_input(owner, touch, "x-lisa-touch"); }
+    if (b->touch_cst836u) { cst836u_add_input(owner, touch, "x-lisa-touch"); }
+    else if (b->touch_axs) { axs15231e_touch_add_input(owner, touch, "x-lisa-touch"); }
     else if (b->touch_sc919) { sc919_touch_add_input(owner, touch, "x-lisa-touch"); }
     else { cst328_add_input(owner, touch, "x-lisa-touch"); }
 }

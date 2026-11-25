@@ -23,7 +23,8 @@ typedef struct ListenaiBoard {
     bool reset_active_low;
     bool configured, panel, epaper, camera, sd, amplifier, touch, keypad;
     unsigned touch_scl, touch_sda, touch_irq, touch_i2c;
-    bool touch_sc919, touch_axs;
+    bool touch_sc919, touch_axs, touch_cst836u;
+    unsigned touch_address, touch_chip_type;
     unsigned touch_width, touch_height;
     unsigned touch_reset;
     unsigned keypad_channel, keypad_supply_uv, keypad_pull_up_ohms;

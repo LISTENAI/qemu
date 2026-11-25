@@ -34,4 +34,4 @@ system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('gxa574.c'))
 system_ss.add(when: 'CONFIG_HUSB320', if_true: files('husb320.c'))
 system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('fs1815.c', 'ls8500.c'))
 
-system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('bf3901.c', 'axs15231e_touch.c'))
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('bf3901.c', 'axs15231e_touch.c', 'cst836u.c'))
