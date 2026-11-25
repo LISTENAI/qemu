@@ -352,6 +352,7 @@ static bool aon_storage(hwaddr off)
     case 0x2c: case 0x50: case 0x54: case 0x64: case 0x84: case 0x90:
     case 0x94: case 0x98: case 0xa0: case 0xc4: case 0xc8:
     case 0x100: case 0x104: case 0x108: case 0x114: case 0x124: case 0x140:
+    case 0xd8:
     case 0x168: case 0x16c: case 0x170: case 0x174: case 0x178:
     case 0x190:
         return true;
@@ -454,6 +455,11 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     case 0xc0:
         arcs_codec_power(soc, value & 0x4000);
         *reg = value & 0x3fdf80; return;
+    case 0xd8:
+        /* The emulated PSRAM rail is always powered while the SoC runs.
+         * Preserve that power-good state and retain the modeled control bits.
+         * The analog voltage and settling behavior have no host-side model. */
+        *reg = (*reg & 2) | (value & 0x7d); return;
     case 0x58:
         if (value != 0xcafe000a) { goto fail; }
         request_chip_reset(soc, 1u << 1, false);
@@ -580,6 +586,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
         s->aon_regs[0x12c / 4] = tsf_hi;
     }
     s->aon_regs[0x84 / 4] = 3;
+    s->aon_regs[0xd8 / 4] = 2;
     s->aon_regs[0x190 / 4] = 0;
     s->aon_regs[0x54 / 4] = s->reset_status ? s->reset_status :
                              (s->warm_reset ? 0 : 1);
