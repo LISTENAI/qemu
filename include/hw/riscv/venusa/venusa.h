@@ -11,6 +11,7 @@
 #include "hw/char/listenai_uart.h"
 #include "hw/ssi/listenai_spimem.h"
 #include "hw/sd/listenai_sd.h"
+#include "hw/usb/listenai_musb.h"
 #include "hw/mem/listenai_psram.h"
 #include "hw/timer/nuclei_systimer.h"
 #include "hw/gpio/listenai_gpio.h"
@@ -61,6 +62,7 @@ struct VenusASoC {
     ListenAIXccela psram_chip;
     ListenAIPSRAM psram_ctrl;
     ListenAISD sd;
+    ListenAIMUSB usb;
     ListenAINOR nor;
     ListenAISpiMem flash_ctrl;
     MemoryRegion flash_delay_io;

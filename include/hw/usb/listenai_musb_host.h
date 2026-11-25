@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef HW_RISCV_ARCS_USB_HOST_H
-#define HW_RISCV_ARCS_USB_HOST_H
-#include "hw/riscv/arcs/arcs_aux.h"
+#ifndef HW_USB_LISTENAI_MUSB_HOST_H
+#define HW_USB_LISTENAI_MUSB_HOST_H
+#include "hw/usb/listenai_musb.h"
 #include "chardev/char-fe.h"
 #define TRACE_CAPACITY 128
 #define DESCRIPTOR_CAPACITY 4096
@@ -14,8 +14,8 @@ typedef struct USBTrace {
     uint8_t data[64];
     unsigned length;
 } USBTrace;
-struct ArcsUSBHost {
-    ArcsUSB *controller;
+struct ListenAIMUSBHost {
+    ListenAIMUSB *controller;
     QEMUTimer *timer, *sof;
     uint16_t frame;
     bool connected, enumerating, high_speed;
@@ -41,13 +41,13 @@ struct ArcsUSBHost {
     uint64_t bytes_in, bytes_out;
 };
 
-void arcs_usb_irq(ArcsUSB *s);
-void arcs_usb_fifo_clear(ArcsUSB *s);
-void arcs_usb_descriptors_clear(ArcsUSBHost *h);
-void arcs_usb_sof_update(ArcsUSBHost *h);
-void arcs_usb_bus_reset(ArcsUSBHost *h, bool enumerate);
-void arcs_usb_dma_service(ArcsUSB *s);
-void arcs_usb_adb_close(ArcsUSBHost *h, const char *reason);
-void arcs_usb_adb_init(ArcsSoC *s);
-void arcs_usb_adb_finalize(ArcsUSBHost *h);
+void listenai_musb_irq(ListenAIMUSB *s);
+void listenai_musb_fifo_clear(ListenAIMUSB *s);
+void listenai_musb_descriptors_clear(ListenAIMUSBHost *h);
+void listenai_musb_sof_update(ListenAIMUSBHost *h);
+void listenai_musb_bus_reset(ListenAIMUSBHost *h, bool enumerate);
+void listenai_musb_dma_service(ListenAIMUSB *s);
+void listenai_musb_adb_close(ListenAIMUSBHost *h, const char *reason);
+void listenai_musb_adb_init(ListenAIMUSB *s);
+void listenai_musb_adb_finalize(ListenAIMUSBHost *h);
 #endif

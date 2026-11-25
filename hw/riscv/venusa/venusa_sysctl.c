@@ -44,7 +44,7 @@ static uint32_t *configuration(VenusASoC *s, hwaddr address)
     if (address >= 0x450000d8 && address <= 0x450000f0) {
         return &s->aon[(address - 0x45000000) / 4];
     }
-    if (address == 0x43100010 || address == 0x43100084) {
+    if (address == 0x43100010 || address == 0x43100084 || address == 0x43100040) {
         return &s->syscfg[(address - 0x43100000) / 4];
     }
     if (address == 0x4310000c) { return &s->syscfg[0x0c / 4]; }
@@ -168,7 +168,10 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
             (address >= 0x43000000 && address <= 0x43000018)) { venusa_dvp_clock(s); }
         if (address == 0x43100030 || address == 0x43100034 ||
             (address >= 0x43000000 && address <= 0x43000018)) { venusa_image_clock(s); }
-        if (address == 0x43100034) { listenai_luna_clock(&s->luna, (value & 0x80) != 0); }
+        if (address == 0x43100034) {
+            listenai_luna_clock(&s->luna, (value & 0x80) != 0);
+            listenai_musb_clock(&s->usb, (value & 4) != 0);
+        }
         if (address == 0x43100030 || address == 0x43100034) { venusa_audio_clock(s); }
         if (address == 0x43000008) {
             /* Functional PLL lock follows enable; analog settling is not modeled. */
@@ -186,11 +189,12 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         return true;
     }
     if (address == 0x43100014) {
-        const uint32_t supported = 7u | (1u << 16) | (1u << 25) | (1u << 21) | (1u << 27) | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (15u << 17) | (1u << 14) | (3u << 7);
+        const uint32_t supported = 31u | (1u << 16) | (1u << 25) | (1u << 21) | (1u << 27) | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (15u << 17) | (1u << 14) | (1u << 8);
         if (value & ~supported) { return false; }
         for (unsigned i = 0; i < 2; i++) {
-            if (value & (1u << (7 + i))) { listenai_spi_reset(&s->spi[i].device); }
+            if (value & (1u << (3 + i))) { listenai_spi_reset(&s->spi[i].device); }
         }
+        if (value & (1u << 8)) { listenai_musb_reset(&s->usb); }
         if (value & (1u << 14)) { venusa_gpadc_reset(&s->gpadc); }
         if (value & (1u << 21)) { venusa_dvp_reset(s); }
         if (value & (1u << 16)) { venusa_dma2d_reset(&s->dma2d); }

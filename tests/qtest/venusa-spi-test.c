@@ -126,7 +126,7 @@ static void transmit_clock_and_reset(void)
     qtest_writel(q, SPI + 0x18, 0);
     qtest_writel(q, SPI + 0x24, 0);
     qtest_clock_step(q, 1000);
-    qtest_writel(q, 0x43100014, 1u << 7);
+    qtest_writel(q, 0x43100014, 1u << 3);
     qtest_clock_step(q, 1000000);
     g_assert_cmphex(qtest_readl(q, SPI + 0x34), ==, 0x404000);
     g_assert_cmphex(qtest_readl(q, SPI + 0x3c), ==, 0);

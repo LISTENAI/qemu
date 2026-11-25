@@ -157,6 +157,8 @@ static void reset(DeviceState *dev)
         memcpy(s->syscfg, saved_syscfg, sizeof(saved_syscfg));
     }
     if (s->reset_cause) { s->aon[0x4c / 4] = s->reset_cause; }
+    listenai_musb_reset(&s->usb);
+    listenai_musb_clock(&s->usb, (s->syscfg[0x34 / 4] & 4) != 0);
     venusa_storage_reset(s);
     venusa_peripherals_reset(s);
     venusa_codec_reset(s);
@@ -186,6 +188,17 @@ static void cidu_irq(void *opaque, unsigned core, unsigned irq, bool level)
 }
 static void cidu_fault(void *opaque, hwaddr address, unsigned size,
                        bool write, uint64_t value)
+{
+    venusa_fail(opaque, address, size, write, value);
+}
+
+static void usb_irq(void *opaque, bool level)
+{
+    venusa_irq(opaque, 56, level);
+}
+
+static void usb_fault(void *opaque, hwaddr address, unsigned size,
+                      bool write, uint64_t value)
 {
     venusa_fail(opaque, address, size, write, value);
 }
@@ -251,6 +264,7 @@ static void realize(DeviceState *dev, Error **errp)
     s->cidu.fail = cidu_fault;
     nuclei_cidu_init(&s->cidu, OBJECT(s), "venusa-cidu", 0x47000000, 2, 80, 32, 20, 19);
     venusa_efuse_init(s);
+    listenai_musb_init(&s->usb, DEVICE(s), 0x41000000, usb_irq, usb_fault, s, false);
     venusa_gpio_init(s);
     venusa_dma_init(s);
     venusa_spi_init(s);
@@ -282,6 +296,7 @@ static void finalize(Object *obj)
 {
     VenusASoC *s = VENUSA_SOC(obj);
     if (s->efuse_load) { timer_free(s->efuse_load); }
+    listenai_musb_destroy(&s->usb);
     for (unsigned p = 0; p < 2; p++) {
         listenai_i2s_destroy(&s->audio.serial[p].engine);
     }
