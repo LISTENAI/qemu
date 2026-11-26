@@ -47,10 +47,14 @@ static void host_fail(ListenAIMUSBHost *h, const char *reason)
     h->phase = HOST_IDLE; timer_del(h->timer);
     trace(h, reason, NULL, 0);
     if (h->adb_connected) { listenai_musb_adb_close(h, reason); }
+    listenai_musb_cdc_close(h, reason);
 }
 
 void listenai_musb_descriptors_clear(ListenAIMUSBHost *h)
 {
+    h->control_done = NULL;
+    h->cdc.ready = h->cdc.opening = false;
+    h->cdc.in = h->cdc.out = h->cdc.notification = 0;
     h->adb_in = h->adb_out = 0;
     h->adb_in_max = h->adb_out_max = 0;
     h->configuration = h->device_length = h->config_length = 0;
@@ -134,6 +138,16 @@ static void setup_request(ListenAIMUSBHost *h, uint8_t type, uint8_t request,
     trace(h, "setup", h->setup, 8); listenai_musb_irq(s); schedule(h, PACKET_NS);
 }
 
+/* CDC class requests use the same EP0 FIFO and status handshake as enumeration. */
+void listenai_musb_control(ListenAIMUSBHost *h, uint8_t type, uint8_t request,
+                           uint16_t value, uint16_t index,
+                           void (*done)(ListenAIMUSBHost *h))
+{
+    assert(h->phase == HOST_IDLE && h->configuration && !h->control_done);
+    h->control_done = done;
+    setup_request(h, type, request, value, index, 0);
+}
+
 static bool config_valid(const uint8_t *data, unsigned n)
 {
     if (n < 9 || data[0] != 9 || data[1] != 2 || lduw_le_p(data + 2) != n || !data[5]) { return false; }
@@ -148,6 +162,13 @@ static bool config_valid(const uint8_t *data, unsigned n)
 
 static void finish_response(ListenAIMUSBHost *h)
 {
+    if (h->control_done) {
+        void (*done)(ListenAIMUSBHost *) = h->control_done;
+        h->control_done = NULL;
+        h->phase = HOST_IDLE; h->status = "configured";
+        done(h);
+        return;
+    }
     const uint8_t *r = h->response;
     unsigned n = h->received;
     if (h->step == 0) {
@@ -224,7 +245,7 @@ static void host_tick(void *opaque)
     if (*csr & SEND_STALL) {
         *csr = SENT_STALL; s->tx_pending |= 1; listenai_musb_irq(s);
         trace(h, "stall", NULL, 0);
-        if (h->step >= 5 && h->step <= 8) {
+        if (!h->control_done && h->step >= 5 && h->step <= 8) {
             h->step++; h->phase = HOST_NEXT; schedule(h, h->step == 2 ? 2 * PACKET_NS : PACKET_NS);
         } else { host_fail(h, "stall"); }
         return;
@@ -493,6 +514,7 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
                 if (s->host->enumerating) { host_fail(s->host, "device-disconnected"); }
                 else { s->host->status = s->host->connected ? "connected" : "disconnected"; }
                 if (s->host->adb_connected) { listenai_musb_adb_close(s->host, "device-disconnected"); }
+                listenai_musb_cdc_close(s->host, "device-disconnected");
                 listenai_musb_descriptors_clear(s->host); listenai_musb_fifo_clear(s);
                 trace(s->host, "device-disconnected", NULL, 0);
             }
@@ -528,6 +550,7 @@ static void controller_reset(ListenAIMUSB *s, bool soft)
     ListenAIMUSBHost *h = s->host;
     bool recovering = soft && h && h->phase == HOST_RESET;
     if (!recovering && h && h->adb_connected) { listenai_musb_adb_close(h, "controller-reset"); }
+    if (!recovering && h) { listenai_musb_cdc_close(h, "controller-reset"); }
     /* The SOFT_RST pulses the MAC/PHY reset domain, while SOFTCONN is
      * retained. Both SDK controller drivers pulse it inside the bus-reset
      * handler without reconnecting. CherryUSB also sets IRQ masks before this
@@ -567,7 +590,7 @@ void listenai_musb_clock(ListenAIMUSB *s, bool enabled)
 {
     if (s->clock_enabled == enabled) { return; }
     s->clock_enabled = enabled;
-    if (!enabled && (s->host->phase != HOST_IDLE || s->host->adb_connected)) {
+    if (!enabled && (s->host->phase != HOST_IDLE || s->host->adb_connected || s->host->cdc.connected)) {
         host_fail(s->host, "controller-clock-disabled");
     }
     listenai_musb_sof_update(s->host);
@@ -630,8 +653,8 @@ static void lab_set(Object *obj, const char *command, Error **errp)
 {
     ListenAIMUSB *s = LISTENAI_MUSB(obj);
     ListenAIMUSBHost *h = s->host;
-    if (h->listen && strcmp(command, "clear")) {
-        error_setg(errp, "Disable the ADB bridge before controlling the USB host"); return;
+    if ((h->listen || h->cdc.listen) && strcmp(command, "clear")) {
+        error_setg(errp, "Disable the USB bridge before controlling the USB host"); return;
     }
     if (!strcmp(command, "connect")) {
         if (!h->connected) {
@@ -671,6 +694,8 @@ void listenai_musb_init(ListenAIMUSB *s, DeviceState *owner, hwaddr base,
     memory_region_add_subregion(get_system_memory(), base, &s->io);
     object_property_add_str(OBJECT(s), "lab", lab_get, lab_set);
     object_property_add_alias(OBJECT(owner), "x-lisem-usb-lab", OBJECT(s), "lab");
+    listenai_musb_cdc_init(s);
+    object_property_add_alias(OBJECT(owner), "x-lisem-usb-cdc", OBJECT(s), "cdc");
     if (adb) {
         listenai_musb_adb_init(s);
         object_property_add_alias(OBJECT(owner), "x-lisem-usb-adb", OBJECT(s), "adb");
@@ -681,6 +706,7 @@ void listenai_musb_destroy(ListenAIMUSB *s)
 {
     ListenAIMUSBHost *h = s->host;
     if (!h) { return; }
+    listenai_musb_cdc_finalize(h);
     if (h->bulk) { listenai_musb_adb_finalize(h); }
     timer_free(h->timer); timer_free(h->sof); g_free(h); s->host = NULL;
 }

@@ -14,6 +14,18 @@ typedef struct USBTrace {
     uint8_t data[64];
     unsigned length;
 } USBTrace;
+typedef struct USBCDC {
+    CharBackend chr;
+    QEMUTimer *timer;
+    char *listen;
+    const char *error;
+    bool connected, ready, opening;
+    unsigned control, in, out, notification, in_max, out_max, notification_max;
+    uint8_t incoming[65536], outgoing[65536];
+    unsigned incoming_count, outgoing_count;
+    uint64_t bytes_in, bytes_out, notifications;
+    int64_t deadline, control_at;
+} USBCDC;
 struct ListenAIMUSBHost {
     ListenAIMUSB *controller;
     QEMUTimer *timer, *sof;
@@ -39,6 +51,8 @@ struct ListenAIMUSBHost {
     uint8_t incoming[65536], outgoing[65536];
     unsigned incoming_count, outgoing_count;
     uint64_t bytes_in, bytes_out;
+    USBCDC cdc;
+    void (*control_done)(ListenAIMUSBHost *h);
 };
 
 void listenai_musb_irq(ListenAIMUSB *s);
@@ -50,4 +64,10 @@ void listenai_musb_dma_service(ListenAIMUSB *s);
 void listenai_musb_adb_close(ListenAIMUSBHost *h, const char *reason);
 void listenai_musb_adb_init(ListenAIMUSB *s);
 void listenai_musb_adb_finalize(ListenAIMUSBHost *h);
+void listenai_musb_cdc_init(ListenAIMUSB *s);
+void listenai_musb_cdc_finalize(ListenAIMUSBHost *h);
+void listenai_musb_cdc_close(ListenAIMUSBHost *h, const char *reason);
+void listenai_musb_control(ListenAIMUSBHost *h, uint8_t type, uint8_t request,
+                           uint16_t value, uint16_t index,
+                           void (*done)(ListenAIMUSBHost *h));
 #endif

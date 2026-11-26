@@ -91,4 +91,4 @@ system_ss.add(when: ['CONFIG_USB', 'CONFIG_XEN_BUS', libusb], if_true: files('xe
 
 modules += { 'hw-usb': hw_usb_modules }
 
-system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai_musb.c', 'listenai_musb_adb.c'))
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai_musb.c', 'listenai_musb_adb.c', 'listenai_musb_cdc.c'))
