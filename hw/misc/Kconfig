@@ -239,3 +239,6 @@ source macio/Kconfig
 
 config LISTENAI_LUNA
     bool
+
+config LISTENAI_JPEG
+    bool

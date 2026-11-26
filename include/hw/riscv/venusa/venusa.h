@@ -28,6 +28,7 @@
 #include "hw/riscv/venusa/venusa_dvp.h"
 #include "hw/dma/venusa_dma2d.h"
 #include "hw/display/venusa_rgb.h"
+#include "hw/misc/listenai_jpeg.h"
 
 #define TYPE_VENUSA_SOC "venusa-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(VenusASoC, VENUSA_SOC)
@@ -55,6 +56,7 @@ struct VenusASoC {
     VenusADVP dvp;
     VenusADMA2D dma2d;
     VenusARGB rgb;
+    ListenaiJPEG jpeg;
     uint32_t rgb_clock_config, rgb_div;
     bool core1_held;
     RISCVCPU cpu[2];

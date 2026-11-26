@@ -13,10 +13,12 @@ typedef struct VenusADMA2DCallbacks {
     bool (*memory_allowed)(void *opaque, hwaddr address, unsigned size, bool write);
     /* Peripheral request mux and FIFO readiness, checked for every beat. */
     bool (*request)(void *opaque, unsigned handshake, hwaddr address, bool write);
+    bool (*source_complete)(void *opaque, unsigned handshake, hwaddr address);
 } VenusADMA2DCallbacks;
 
 typedef struct VenusADMA2DDescriptor {
     uint32_t control, src, dst, length, irq_enable, block_mask;
+    uint32_t image_format, image_size, output_size, stride, jpeg;
 } VenusADMA2DDescriptor;
 
 typedef struct VenusADMA2DChannel {

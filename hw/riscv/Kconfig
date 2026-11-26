@@ -7,6 +7,7 @@ config VENUSA
     select VENUSA_RGB
     select VENUSA_DMA2D
     select LISTENAI_LUNA
+    select LISTENAI_JPEG
     select AT24C
     select LISTENAI_SPI
     select LISTENAI_HOST_AUDIO
@@ -33,6 +34,7 @@ config ARCS
     select LISTENAI_I2S_PEER
     select GC0328
     select LISTENAI_LUNA
+    select LISTENAI_JPEG
     select LISTENAI_HOST_AUDIO
     bool
     select LISTENAI_SPI

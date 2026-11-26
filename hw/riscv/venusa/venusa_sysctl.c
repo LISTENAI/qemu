@@ -190,7 +190,7 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
     }
     if (address == 0x43100014) {
         const uint32_t supported = 31u | (1u << 16) | (1u << 25) | (1u << 21) | (1u << 27) | (3u << 10) | (3u << 12) | (1u << 26) | (3u << 29) | (1u << 15) | (3u << 5) | (1u << 9) | (15u << 17) | (1u << 14) | (1u << 8);
-        if (value & ~supported) { return false; }
+        if (value & ~(supported | (1u << 24))) { return false; }
         for (unsigned i = 0; i < 2; i++) {
             if (value & (1u << (3 + i))) { listenai_spi_reset(&s->spi[i].device); }
         }
@@ -199,6 +199,7 @@ bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
         if (value & (1u << 21)) { venusa_dvp_reset(s); }
         if (value & (1u << 16)) { venusa_dma2d_reset(&s->dma2d); }
         if (value & (1u << 25)) { venusa_rgb_reset(&s->rgb); }
+        if (value & (1u << 24)) { listenai_jpeg_reset(&s->jpeg); }
         if (value & (1u << 27)) { venusa_luna_reset(s); }
         if (value & (1u << 17)) { venusa_audio_reset(s); }
         if (value & (1u << 18)) { venusa_codec_reset(s); }

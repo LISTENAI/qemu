@@ -389,6 +389,12 @@ static void reject(const void *opaque)
             qtest_writel(q, DMA + 0xe0, 4);
         }
         qtest_writel(q, r->address, r->value);
+        if (r->address == DMA + 0x100) {
+            /* Format fields are staged; unsupported pipelines are rejected
+             * when a descriptor is submitted, before any transfer. */
+            qtest_writel(q, DMA, CTRL_COPY | (1u << 23));
+            descriptor(q, 0, RAM, RAM + 0x1000, 32);
+        }
         if (r->address == DMA + 0x200) { qtest_clock_step(q, 100000); }
         qtest_quit(q); return;
     }

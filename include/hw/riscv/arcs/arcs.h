@@ -82,7 +82,7 @@ struct ArcsSoC {
     ArcsAES aes;
     ArcsECC ecc;
     ArcsTRNG trng;
-    ArcsJPEG jpeg;
+    ListenaiJPEG jpeg;
     MemoryRegion mailbox_io;
     uint32_t mailbox_regs[0xc0 / 4];
     qemu_irq spi_cs[3], uart_dma[6];

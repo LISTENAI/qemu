@@ -4,6 +4,7 @@
 #include "hw/dma/venusa_dma2d.h"
 #include "system/address-spaces.h"
 #include "qemu/host-utils.h"
+#include "qemu/bswap.h"
 
 static void fail(VenusADMA2D *s, hwaddr off, bool write, uint32_t v)
 {
@@ -40,7 +41,8 @@ static bool ready(VenusADMA2D *s, unsigned ch)
     if (!c->active || !(s->regs[ch] & 1)) { return false; }
     unsigned mode = (c->working.control >> 1) & 3;
     return mode == 2 || s->cb.request(s->cb.opaque, c->working.control >> 28,
-                                     c->dst_cursor, true);
+                                     mode == 0 ? c->src_cursor : c->dst_cursor,
+                                     mode != 0);
 }
 static Int128 multiply(uint64_t a, uint64_t b)
 {
@@ -87,6 +89,59 @@ static uint32_t next_address(uint32_t a, unsigned mode, unsigned bytes)
 {
     return mode == 0 ? a + bytes : mode == 1 ? a - bytes : a;
 }
+/* Convert raster YUYV addressing into JPEG 4:2:2 MCU block order. The
+ * programmed line stride belongs to guest memory, not the pixel FIFO. */
+static bool read_pixels(VenusADMA2D *s, VenusADMA2DChannel *c, uint8_t bytes[4])
+{
+    VenusADMA2DDescriptor *w = &c->working;
+    unsigned width = w->image_size & 0x7ff;
+    unsigned stride = w->stride & 0x3fff;
+    for (unsigned i = 0; i < 4; i++) {
+        unsigned pos = c->transferred + i, mcu = pos / 256, part = pos % 256;
+        unsigned x = (mcu % (width / 16)) * 16;
+        unsigned y = (mcu / (width / 16)) * 8;
+        unsigned component;
+        if (part < 128) {
+            x += (part / 64) * 8 + part % 8;
+            component = 0;
+        } else {
+            x += (part % 8) * 2;
+            component = part < 192 ? 1 : 3;
+        }
+        y += (part % 64) / 8;
+        hwaddr address = (hwaddr)w->src + (uint64_t)y * stride + x * 2 + component;
+        if (!s->cb.memory_allowed(s->cb.opaque, address, 1, false) ||
+            address_space_read(&address_space_memory, address,
+                               MEMTXATTRS_UNSPECIFIED, &bytes[i], 1) != MEMTX_OK) {
+            return false;
+        }
+    }
+    return true;
+}
+static int floor_shift(int value, unsigned bits)
+{
+    return value >= 0 ? value >> bits : -((-value + (1 << bits) - 1) >> bits);
+}
+
+/* Limited-range integer conversion. Chroma is quantized for each pixel
+ * before adjacent pixels are averaged; the two truncations are observable. */
+static void rgb565_yuyv(uint8_t bytes[4], bool swap)
+{
+    int y[2], u[2], v[2];
+    for (unsigned i = 0; i < 2; i++) {
+        uint16_t pixel = lduw_le_p(bytes + i * 2);
+        int r = pixel >> 11, g = (pixel >> 5) & 63, b = pixel & 31;
+        if (swap) { int t = r; r = b; b = t; }
+        r = (r << 3) | (r >> 2);
+        g = (g << 2) | (g >> 4);
+        b = (b << 3) | (b >> 2);
+        y[i] = 16 + floor_shift(47 * r + 157 * g + 16 * b, 8);
+        u[i] = 128 + floor_shift(-26 * r - 87 * g + 112 * b, 8);
+        v[i] = 128 + floor_shift(112 * r - 102 * g - 10 * b, 8);
+    }
+    bytes[0] = y[0]; bytes[1] = (u[0] + u[1]) / 2;
+    bytes[2] = y[1]; bytes[3] = (v[0] + v[1]) / 2;
+}
 static void transfer(void *opaque)
 {
     VenusADMA2D *s = opaque;
@@ -110,20 +165,35 @@ static void transfer(void *opaque)
         /* A granted burst remains granted after the watermark deasserts. */
         for (unsigned b = 0; b < beats && c->active; b++) {
             uint8_t bytes[4];
-            if (!s->cb.memory_allowed(s->cb.opaque, c->src_cursor, width, false) ||
-                (mode == 2 && !s->cb.memory_allowed(s->cb.opaque, c->dst_cursor, width, true))) {
+            bool convert = mode == 2 && (w->control & (1u << 23));
+            hwaddr source = c->src_cursor, dest = c->dst_cursor;
+            if (convert) {
+                unsigned row_bytes = (w->image_size & 0x7ff) * 2;
+                unsigned row = c->transferred / row_bytes, col = c->transferred % row_bytes;
+                source = (hwaddr)w->src + (uint64_t)row * (w->stride & 0x3fff) + col;
+                dest = (hwaddr)w->dst + (uint64_t)row * ((w->stride >> 16) & 0x3fff) + col;
+            }
+            if ((mode != 0 && !w->jpeg &&
+                 !s->cb.memory_allowed(s->cb.opaque, source, width, false)) ||
+                (mode != 1 && !s->cb.memory_allowed(s->cb.opaque, dest, width, true))) {
                 fail(s, 0xa0 + ch * 4, true, w->src); break;
             }
-            if (address_space_read(&address_space_memory, c->src_cursor, MEMTXATTRS_UNSPECIFIED,
-                                   bytes, width) != MEMTX_OK ||
-                address_space_write(&address_space_memory, c->dst_cursor, MEMTXATTRS_UNSPECIFIED,
+            bool read_ok = w->jpeg ? read_pixels(s, c, bytes) :
+                address_space_read(&address_space_memory, source, MEMTXATTRS_UNSPECIFIED,
+                                   bytes, width) == MEMTX_OK;
+            if (read_ok && convert) { rgb565_yuyv(bytes, w->image_format & (1u << 12)); }
+            if (!read_ok ||
+                address_space_write(&address_space_memory, dest, MEMTXATTRS_UNSPECIFIED,
                                     bytes, width) != MEMTX_OK) {
                 fail(s, 0xa0 + ch * 4, true, w->src); break;
             }
             c->src_cursor = next_address(c->src_cursor, (w->control >> 8) & 3, width);
             c->dst_cursor = next_address(c->dst_cursor, (w->control >> 10) & 3, width);
             c->transferred += width;
-            if (c->transferred == w->length) {
+            bool peripheral_done = mode == 0 && (w->control & (1u << 17)) &&
+                s->cb.source_complete &&
+                s->cb.source_complete(s->cb.opaque, w->control >> 28, w->src);
+            if (c->transferred == w->length || peripheral_done) {
                 c->active = false;
                 c->raw |= 1;
                 activate(s, ch);
@@ -153,19 +223,42 @@ static void queue(VenusADMA2D *s, unsigned ch)
     uint32_t src = s->regs[(0xa0 + 4 * ch) / 4];
     uint32_t dst = s->regs[(0xc0 + 4 * ch) / 4];
     uint32_t len = s->regs[(0xe0 + 4 * ch) / 4];
-    /* Image, peripheral flow-control, gather/scatter and triggering require
-     * distinct pipelines; never acknowledge them as a normal copy. */
-    uint32_t unsupported = (1u << 12) | (1u << 17) | (1u << 18) | (0x7fu << 21);
+    uint32_t format = s->regs[(0x100 + ch * 4) / 4];
+    uint32_t image = s->regs[(0x120 + ch * 4) / 4];
+    uint32_t output = s->regs[(0x140 + ch * 4) / 4];
+    uint32_t stride = s->regs[(0x160 + ch * 4) / 4];
+    uint32_t jpeg = ch == 2 ? s->regs[0x184 / 4] : 0;
+    unsigned columns = image & 0x7ff, rows = (image >> 16) & 0x7ff;
+    bool image_mode = ctrl & (1u << 23);
+    bool jpeg_mode = jpeg == 2 && image_mode && mode == 1 && width == 2 &&
+        format == 0x33 && image == output && !(image & 0xf800f800u) &&
+        columns && !(columns % 16) && rows && !(rows % 8) &&
+        len == columns * rows * 2 && (stride & 0x3fff) >= columns * 2 &&
+        !(stride & 0xc000c000u) && ((ctrl >> 8) & 3) == 0;
+    bool rgb_mode = !jpeg && image_mode && mode == 2 && width == 2 &&
+        (ch == 0 || ch == 3 || ch == 4) && (format & ~(1u << 12)) == 0x31 &&
+        image == output && !(image & 0xf800f800u) && columns && !(columns % 2) && rows &&
+        len == columns * rows * 2 && !(stride & 0xc000c000u) &&
+        (stride & 0x3fff) >= columns * 2 && (stride >> 16) >= columns * 2 &&
+        !(stride & 0x00010001u) && ((ctrl >> 8) & 15) == 0;
+    /* Unsupported image conversions, gather/scatter and triggers must not
+     * fall through to a normal byte copy. */
+    uint32_t unsupported = (1u << 12) | (1u << 18) | (0x7bu << 21);
     if (c->pending || width > 2 || width != ((ctrl >> 5) & 3) ||
         ((ctrl >> 8) & 3) == 3 || ((ctrl >> 10) & 3) == 3 ||
-        (mode != 1 && mode != 2) || (ctrl & unsupported) ||
+        mode == 3 || (ctrl & unsupported) ||
+        ((ctrl & (1u << 17)) && (mode != 0 || !s->cb.source_complete)) ||
+        (mode == 0 && (((ctrl >> 8) & 3) != 2 || width != 2)) ||
         !len || len > 0xffffff || ((src | dst | len) & ((1u << width) - 1)) ||
         (mode == 1 && (((ctrl >> 10) & 3) != 2 || width != 2)) ||
-        s->regs[(0x100 + ch * 4) / 4] || s->regs[(0x300 + ch * 4) / 4]) {
+        ((image_mode || jpeg) && !jpeg_mode && !rgb_mode) ||
+        (!image_mode && (format || image || output || stride)) ||
+        s->regs[(0x300 + ch * 4) / 4]) {
         fail(s, ch * 4, true, ctrl); return;
     }
     c->queued = (VenusADMA2DDescriptor){ctrl, src, dst, len,
-        s->regs[(0x220 + 4 * ch) / 4], s->regs[(0x240 + 4 * ch) / 4] & 1};
+        s->regs[(0x220 + 4 * ch) / 4], s->regs[(0x240 + 4 * ch) / 4] & 1,
+        format, image, output, stride, jpeg};
     c->pending = true;
     if (s->clock_enabled) { activate(s, ch); }
     venusa_dma2d_request(s);
@@ -211,7 +304,8 @@ static uint64_t read_reg32(void *opaque, hwaddr off, unsigned size)
                                   c->working.irq_enable << 31; }
         return 0;
     }
-    if (off == 0x184 || off == 0x1a0 || off == 0x1c0) { return 0; }
+    if (off == 0x184) { return s->regs[off / 4]; }
+    if (off == 0x1a0 || off == 0x1c0) { return 0; }
     if (off == 0x360 || off == 0x364 || off == 0x4dc) { return 0; }
     if (off >= 0x4c0 && off <= 0x500) { return s->regs[off / 4]; }
     fail(s, off, false, 0); return 0;
@@ -225,6 +319,7 @@ static void write_reg32(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (ch < 6 && (bank <= 0x160 || (bank >= 0x200 && bank <= 0x300))) {
         VenusADMA2DChannel *c = &s->channels[ch];
         bool shadow_write = bank == 0xa0 || bank == 0xc0 || bank == 0xe0 ||
+                            (bank >= 0x100 && bank <= 0x160) ||
                             bank == 0x220 || (bank == 0x240 &&
                             ((v ^ s->regs[off / 4]) & 1));
         if (c->pending && shadow_write) { fail(s, off, true, v); return; }
@@ -244,7 +339,7 @@ static void write_reg32(void *opaque, hwaddr off, uint64_t value, unsigned size)
             c->raw &= ~v; irq(s, ch); return;
         case 0x280: case 0x2a0: fail(s, off, true, v); return;
         default:
-            if (bank >= 0x100 && bank != 0x200 && v) {
+            if (bank > 0x160 && bank != 0x200 && v) {
                 fail(s, off, true, v); return;
             }
             break;
@@ -252,6 +347,13 @@ static void write_reg32(void *opaque, hwaddr off, uint64_t value, unsigned size)
         s->regs[off / 4] = v;
         irq(s, ch);
         venusa_dma2d_request(s);
+        return;
+    }
+    if (off == 0x184) {
+        if ((v != 0 && v != 2) || s->channels[2].pending) {
+            fail(s, off, true, v); return;
+        }
+        s->regs[off / 4] = v;
         return;
     }
     if (off == 0x360) {
@@ -265,7 +367,9 @@ static void write_reg32(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (off == 0x4dc && !(v & ~15u)) { return; }
     if ((off == 0x4c0 && !(v & ~3u)) || (off == 0x4e8 && !(v & ~0x33u)) ||
         (off == 0x4d4 && v <= 1) || (off == 0x4d8 && !(v & ~15u)) ||
-        (off == 0x4ec && !v) || (off == 0x500 && !v)) {
+        (off == 0x4ec && !v) ||
+        ((off == 0x4f0 || off == 0x4f4 || off == 0x4f8) && !v) ||
+        (off == 0x500 && !v)) {
         s->regs[off / 4] = v; return;
     }
     fail(s, off, true, v);

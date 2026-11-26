@@ -35,7 +35,7 @@ static boolean encode_destination_full(j_compress_ptr codec)
     return FALSE;
 }
 
-static bool encode_huffman(ArcsJPEG *s, JPEGEncode *e, unsigned id, bool ac)
+static bool encode_huffman(ListenaiJPEG *s, JPEGEncode *e, unsigned id, bool ac)
 {
     unsigned entries = ac ? 162 : 12, first = ac ? id * 176 : 352 + id * 16;
     unsigned codes[256] = {0}, lengths[256] = {0};
@@ -73,7 +73,7 @@ static bool encode_huffman(ArcsJPEG *s, JPEGEncode *e, unsigned id, bool ac)
     return count == entries;
 }
 
-static bool encode(ArcsJPEG *s)
+static bool encode(ListenaiJPEG *s)
 {
     s->failure = "encoder configuration"; s->host_error = 0;
     unsigned width = (R(s, 0x68) >> 16) & 4095, height = R(s, 0x68) & 2047;
