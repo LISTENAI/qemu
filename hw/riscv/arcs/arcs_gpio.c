@@ -13,6 +13,21 @@ static void gpio_irq(void *opaque, unsigned first_pad, bool level)
 {
     arcs_soc_irq(opaque, first_pad ? 38 : 37, level);
 }
+/* LS26 AON_IOMUX PB0..PB9 have their own FSEL/OEN/OUT force controls. */
+static bool aon_forced_output(void *opaque, unsigned pad, bool *level)
+{
+    ArcsSoC *soc = opaque;
+    if (pad < 32 || pad >= 42) {
+        return false;
+    }
+    uint32_t config = soc->pinmux[1].config[pad - 32];
+    if ((config & 0x016001ff) != 0x01400002) {
+        return false;
+    }
+    *level = !!(config & (1U << 23));
+    return true;
+}
+
 static void gpio_output(void *opaque, unsigned pad, bool level)
 {
     ArcsSoC *soc = opaque;
@@ -45,7 +60,7 @@ void arcs_gpio_init(ArcsSoC *soc)
 {
     ListenaiGPIOCallbacks callbacks = {
         .opaque = soc, .fail = gpio_fail, .irq = gpio_irq,
-        .output = gpio_output,
+        .output = gpio_output, .forced_output = aon_forced_output,
     };
     qdev_init_gpio_in_named(DEVICE(soc), input, "pad-in", 64);
     qdev_init_gpio_out_named(DEVICE(soc), soc->pad_out, "pad-out", 64);
@@ -58,6 +73,7 @@ void arcs_gpio_init(ArcsSoC *soc)
                           0x46700000 + i * 0x100000, i * 32,
                           &soc->pinmux[0], callbacks);
     }
+    soc->pinmux[1].banks[soc->pinmux[1].bank_count++] = &soc->gpio[1];
 }
 void arcs_gpio_reset(ArcsSoC *soc)
 {

@@ -97,8 +97,8 @@ static void touch_connect(VenusABoard *s)
     if (bus < 0) {
         error_report("Unsupported VenusA touch I2C route"); exit(1);
     }
-    if (b->touch_sc919) {
-        error_report("SC919 touch is not supported on VenusA"); exit(1);
+    if (b->touch_sc919 || b->touch_bl6138) {
+        error_report("Unsupported VenusA touch controller"); exit(1);
     }
     DeviceState *dev = listenai_board_touch_new(b, OBJECT(s), DEVICE(s->soc), s->soc->i2c[bus].bus);
     listenai_board_touch_input(b, OBJECT(s), dev);
@@ -229,6 +229,7 @@ static void venusa_board_init(MachineState *machine)
     }
     qdev_prop_set_drive_err(soc, "flash", blk_by_legacy_dinfo(flash), &error_fatal);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(soc), &error_fatal);
+    board->soc->nor.xm25qh128c = b->nor_xm25qh128c[0];
     if (b->expander) {
         int bus = venusa_i2c_bus(b->extio_scl, b->extio_sda);
         if (bus < 0) {

@@ -181,6 +181,9 @@ static void adb_set(Object *obj, const char *command, Error **errp)
         qemu_chr_fe_deinit(&h->adb, true);
         g_clear_pointer(&h->listen, g_free);
     } else if (!strcmp(command, "enable")) {
+        if (h->controller->downstream) {
+            error_setg(errp, "USB0 is wired to a board device"); return;
+        }
         if (h->listen) { return; }
         if (h->connected || h->cdc.listen) { error_setg(errp, "USB host is already connected"); return; }
         Chardev *chr = qemu_chr_new("lisem-usb-adb", "tcp:127.0.0.1:0,server=on,wait=off,nodelay=on", NULL);

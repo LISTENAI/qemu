@@ -22,10 +22,12 @@ system_ss.add_all(when: 'CONFIG_I2C', if_true: i2c_ss)
 
 system_ss.add(when: 'CONFIG_LISTENAI_I2C', if_true: files('listenai_i2c.c'))
 
+system_ss.add(when: 'CONFIG_OV2659', if_true: files('ov2659.c'))
 system_ss.add(when: 'CONFIG_GC0328', if_true: files('gc0328.c'))
 
 system_ss.add(when: 'CONFIG_FT6236', if_true: files('ft6236.c'))
 
+system_ss.add(when: 'CONFIG_BL6138', if_true: files('bl6138.c'))
 system_ss.add(when: 'CONFIG_CST328', if_true: files('cst328.c'))
 system_ss.add(when: 'CONFIG_SC919', if_true: files('sc919_touch.c'))
 

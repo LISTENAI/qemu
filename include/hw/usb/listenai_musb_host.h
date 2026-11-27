@@ -56,6 +56,12 @@ struct ListenAIMUSBHost {
 };
 
 void listenai_musb_irq(ListenAIMUSB *s);
+void listenai_musb_downstream_kick(ListenAIMUSB *s);
+void listenai_musb_downstream_reset(ListenAIMUSB *s);
+void listenai_musb_downstream_finalize(ListenAIMUSB *s);
+uint8_t listenai_musb_downstream_devctl(ListenAIMUSB *s);
+uint8_t listenai_musb_downstream_target(ListenAIMUSB *s, unsigned off);
+bool listenai_musb_downstream_write(ListenAIMUSB *s, unsigned ep, unsigned off, uint8_t value);
 void listenai_musb_fifo_clear(ListenAIMUSB *s);
 void listenai_musb_cancel_dma(ListenAIMUSB *s);
 void listenai_musb_descriptors_clear(ListenAIMUSBHost *h);

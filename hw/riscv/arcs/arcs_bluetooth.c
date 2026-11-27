@@ -512,6 +512,36 @@ static void target_arm(ArcsBluetooth *s, unsigned i, uint32_t fine)
     if (delay <= INT64_MAX - now) { timer_mod(s->targets[i].event, now + delay); }
 }
 
+/* The combined BLE/BR driver programs both banks before selecting activities.
+ * These fields configure the classic radio and eSCO slots. They do not post
+ * an activity or generate a completion. DM scheduling still checks its type. */
+static uint32_t classic_config_mask(hwaddr off)
+{
+    switch (off) {
+    case 0x400: return 0x0000013f; /* LSBTCNTL */
+    case 0x40c: return 0x0001ff17; /* INTCNTL0 */
+    case 0x428: return 0x00003fff; /* CURRENTRXDESCPTR */
+    case 0x478: return 0x070f3fff; /* RADIOCNTL2 */
+    case 0x47c: return 0x3f7f3f07; /* RADIOCNTL3 */
+    case 0x48c: return 0x00ff7fff; /* RADIOPWRUPDN */
+    case 0x490: return 0xff007f7f; /* RADIOTXRXTIM */
+    case 0x4a4: return 0x3fff3fff; /* SPIPTRCNTL1 */
+    case 0x534: return 0x0001b7ff; /* EDRCNTL */
+    /* Clock/phase-shift execution requires a classic link. */
+    case 0x540: return 0x07ff1ff6; /* PCACNTL0, phase/auto correction off */
+    case 0x544: return 0x00ff07ff; /* PCACNTL1, clock shift off */
+    case 0x550: return 0xff3fffff; /* COEXIFCNTL0 */
+    case 0x558: return 0x00000f0f; /* COEXIFCNTL2 */
+    case 0x610: return 0x8000ffff; /* ESCOCHANCNTL0 */
+    case 0x614: return 0x00cfffff; /* ESCOMUTECNTL0 */
+    case 0x618: return 0x3fff3fff; /* ESCOCURRENTTXPTR0 */
+    case 0x61c: return 0x3fff3fff; /* ESCOCURRENTRXPTR0 */
+    case 0x620: return 0x00ff003f; /* ESCOLTCNTL0 */
+    case 0x624: return 0xbfff3fff; /* ESCOTRCNTL0 */
+    default: return 0;
+    }
+}
+
 static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
 {
     ArcsBluetooth *s = opaque;
@@ -522,7 +552,8 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
         if (ble_register(ble)) { return s->ble[ble / 4]; }
         goto invalid;
     }
-    if (off == 0x4a4) { return s->classic_rx_spi; }
+    if (off == 0x410 || off == 0x414) { return 0; }
+    if (classic_config_mask(off)) { return s->classic[(off - 0x400) / 4]; }
     switch (off) {
     case 0: case 0x10: case 0x14: case 0x20: case 0x60: case 0x110:
         return 0; /* Command reads do not alias completion or protocol errors. */
@@ -562,16 +593,27 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
         }
         s->ble[ble / 4] = value; return;
     }
-    /* Shared RF setup also installs classic-BT RX on/off APB pointers.
-     * Only store the two 14-bit addresses; no classic activity is accepted. */
-    if (off == 0x4a4) {
-        if (value & ~0x3fff3fffu) { goto invalid; }
-        s->classic_rx_spi = value; return;
+    /* No classic scheduler activity is accepted, hence no pending BR IRQ. */
+    if (off == 0x414) { return; }
+    uint32_t mask = classic_config_mask(off);
+    if (mask) {
+        if (value & ~mask) { goto invalid; }
+        s->classic[(off - 0x400) / 4] = value;
+        return;
     }
     switch (off) {
     case 0:
-        if (value & ~0x88000000u) { goto invalid; }
-        if (value & 0x80000000) { reset_controller(s); }
+        /* A master reset may also pulse the time generator and radio reset
+         * lines. The standalone master reset retains the DM time origin. */
+        if ((value & ~0xd8000000u) ||
+            ((value & 0x50000000) && !(value & 0x80000000))) { goto invalid; }
+        if (value & 0x80000000) {
+            reset_controller(s);
+            if (value & 0x40000000) {
+                s->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                s->sampled_hs = 0; s->sampled_fine = 624;
+            }
+        }
         if (value & 0x08000000) { s->pending |= 8; irq(s); }
         return;
     case 0x14: return;
@@ -687,6 +729,6 @@ void arcs_bluetooth_reset(ArcsSoC *soc)
     ArcsBluetooth *s = &soc->bluetooth;
     reset_controller(s); memset(s->ble, 0, sizeof(s->ble));
     s->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    s->classic_rx_spi = 0;
+    memset(s->classic, 0, sizeof(s->classic));
     s->sampled_hs = 0; s->sampled_fine = 624;
 }

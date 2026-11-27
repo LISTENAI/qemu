@@ -243,6 +243,21 @@ static void sdhci_raise_insertion_irq(void *opaque)
     }
 }
 
+static void sdhci_data_timeout(SDHCIState *s)
+{
+    timer_del(s->transfer_timer);
+    s->prnsts &= ~(SDHC_DOING_READ | SDHC_DOING_WRITE |
+                  SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE |
+                  SDHC_DATA_AVAILABLE | SDHC_SPACE_AVAILABLE);
+    s->data_count = 0;
+    s->stopped_state = sdhc_not_stopped;
+    if (s->errintstsen & SDHC_EISEN_DATATIMEOUT) {
+        s->errintsts |= SDHC_EIS_DATATIMEOUT;
+        s->norintsts |= SDHC_NIS_ERR;
+    }
+    sdhci_update_irq(s);
+}
+
 static void sdhci_set_inserted(DeviceState *dev, bool level)
 {
     SDHCIState *s = (SDHCIState *)dev;
@@ -253,17 +268,7 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
     if (s->no_card_detect) {
         /* Media removal does not drive an unwired mechanical detect input. */
         if (!level && (s->prnsts & SDHC_DATA_INHIBIT)) {
-            timer_del(s->transfer_timer);
-            s->prnsts &= ~(SDHC_DOING_READ | SDHC_DOING_WRITE |
-                          SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE |
-                          SDHC_DATA_AVAILABLE | SDHC_SPACE_AVAILABLE);
-            s->data_count = 0;
-            s->stopped_state = sdhc_not_stopped;
-            if (s->errintstsen & SDHC_EISEN_DATATIMEOUT) {
-                s->errintsts |= SDHC_EIS_DATATIMEOUT;
-                s->norintsts |= SDHC_NIS_ERR;
-            }
-            sdhci_update_irq(s);
+            sdhci_data_timeout(s);
         }
         return;
     }
@@ -370,7 +375,8 @@ static void sdhci_send_command(SDHCIState *s)
     request.arg = s->argument;
 
     trace_sdhci_send_command(request.cmd, request.arg);
-    rlen = sdbus_do_command(&s->sdbus, &request, response, sizeof(response));
+    rlen = (!s->pads_selected || s->pads_selected(s->pads_opaque, false))
+           ? sdbus_do_command(&s->sdbus, &request, response, sizeof(response)) : 0;
 
     if (s->cmdreg & SDHC_CMD_RESPONSE) {
         if (rlen == 4) {
@@ -944,6 +950,12 @@ static void sdhci_do_adma(SDHCIState *s)
 static void sdhci_data_transfer(void *opaque)
 {
     SDHCIState *s = (SDHCIState *)opaque;
+
+    if ((s->single_lane && (s->hostctl1 & (SDHC_CTRL_4BITBUS | SDHC_CTRL_8BITBUS))) ||
+        (s->pads_selected && !s->pads_selected(s->pads_opaque, true))) {
+        sdhci_data_timeout(s);
+        return;
+    }
 
     if (s->trnmod & SDHC_TRNS_DMA) {
         switch (SDHC_DMA_TYPE(s->hostctl1)) {

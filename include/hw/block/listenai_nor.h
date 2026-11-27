@@ -15,6 +15,7 @@ typedef struct ListenAINOR {
     uint32_t size;
     BlockBackend *block;
     uint8_t status[3];
+    bool xm25qh128c;
     bool wel, asleep, reset_enabled, four_byte;
 } ListenAINOR;
 
