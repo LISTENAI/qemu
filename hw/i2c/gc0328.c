@@ -110,9 +110,13 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
     bool half_selected = r[0x5a] == 0x33 &&
         r[0x5b] == 0x02 && r[0x5c] == 0x04 && !r[0x5d] && !r[0x5e] &&
         r[0x5f] == 0x02 && r[0x60] == 0x04 && !r[0x61] && !r[0x62];
+    bool decimated = r[0x5a] == 0x03 &&
+        (r[0x59] == 0x22 || r[0x59] == 0x44) &&
+        !memcmp(r + 0x5b, integer_table, sizeof(integer_table));
     bool half = r[0x59] == 0x22 && (half_integer || half_selected);
+    unsigned step = decimated ? r[0x59] & 15 : half ? 2 : 1;
     if ((format > 3 && format != 6) || (r[0x18] & 0xe0) ||
-        (r[0x59] != 0x11 && !half) || (r[0x4c] & 7)) {
+        (r[0x59] != 0x11 && !half && !decimated) || (r[0x4c] & 7)) {
         error_setg(errp, "Unsupported GC0328 format, binning, subsampling or test pattern "
                    "(format=0x%02x analog=0x%02x subsample=0x%02x mode=0x%02x debug=0x%02x)",
                    r[0x44], r[0x18], r[0x59], r[0x5a], r[0x4c]);
@@ -122,8 +126,8 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
     *height = r[0x50] & 1 ? pair(s, 0x55) : 480;
     unsigned x = r[0x50] & 1 ? pair(s, 0x53) : 0;
     unsigned y = r[0x50] & 1 ? pair(s, 0x51) : 0;
-    if (!*width || !*height || (*width & (half ? 3 : 1)) ||
-        (half && (*height & 1)) || x + *width > 640 || y + *height > 480) {
+    if (!*width || !*height || (*width % (2 * step)) ||
+        (*height % step) || x + *width > 640 || y + *height > 480) {
         error_setg(errp, "Unsupported GC0328 crop window"); return false;
     }
     *bpp = 2;
@@ -133,14 +137,14 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
     uint64_t row_clocks = (uint64_t)line * *pixel_clocks;
     *lead_clocks = (r[0x12] + 8) * row_clocks;
     *frame_clocks = row_clocks * rows;
-    *line_clocks = row_clocks * (half ? 2 : 1);
+    *line_clocks = row_clocks * step;
     /* Subsampling keeps the readout frame period. Only 0x5a[0]
      * extends the output PCLK over the skipped column. */
-    if (half) {
-        *width /= 2;
-        *height /= 2;
+    if (step > 1) {
+        *width /= step;
+        *height /= step;
         if (r[0x5a] & 1) {
-            *pixel_clocks *= 2;
+            *pixel_clocks *= step;
         }
     }
     memcpy(s->frame_regs, r, sizeof(s->frame_regs));
@@ -151,16 +155,20 @@ bool gc0328_frame_info(DeviceState *dev, unsigned *width, unsigned *height,
 
 static void rgb(GC0328State *s, unsigned x, unsigned y, int *r, int *g, int *b)
 {
-    unsigned step = s->frame_regs[0x59] == 0x22 ? 2 : 1;
+    unsigned step = s->frame_regs[0x59] & 15;
     x *= step;
     y *= step;
     x += (s->frame_regs[0x50] & 1) ? ((s->frame_regs[0x53] << 8) | s->frame_regs[0x54]) : 0;
     y += (s->frame_regs[0x50] & 1) ? ((s->frame_regs[0x51] << 8) | s->frame_regs[0x52]) : 0;
     /* The optical input is calibrated RGB after the ideal ISP. Neighbor
      * averaging is applied before RGB565/YUV packing, not to packed bytes. */
+    /* Mode 03 decimates the post-ISP stream from phase zero. The scene
+     * already represents processed RGB, not Bayer samples; the sensor's
+     * internal neighbor processing must not average this stream again. */
+    unsigned neighborhood = s->frame_regs[0x5a] == 0x03 ? 1 : step;
     unsigned sum[3] = {0};
-    for (unsigned dy = 0; dy < step; dy++) {
-        for (unsigned dx = 0; dx < step; dx++) {
+    for (unsigned dy = 0; dy < neighborhood; dy++) {
+        for (unsigned dx = 0; dx < neighborhood; dx++) {
             unsigned sx = x + dx, sy = y + dy;
             if (s->frame_regs[0x17] & 1) { sx = 639 - sx; }
             if (s->frame_regs[0x17] & 2) { sy = 479 - sy; }
@@ -168,7 +176,7 @@ static void rgb(GC0328State *s, unsigned x, unsigned y, int *r, int *g, int *b)
             for (unsigned c = 0; c < 3; c++) { sum[c] += p[c]; }
         }
     }
-    unsigned count = step * step;
+    unsigned count = neighborhood * neighborhood;
     *r = (sum[0] + count / 2) / count;
     *g = (sum[1] + count / 2) / count;
     *b = (sum[2] + count / 2) / count;
@@ -215,7 +223,7 @@ uint8_t gc0328_sample(DeviceState *dev, unsigned byte, unsigned line)
     unsigned y = (s->frame_regs[0x50] & 1) ?
         (s->frame_regs[0x51] << 8) | s->frame_regs[0x52] : 0;
     /* Geometry was latched and validated before any FIFO event. */
-    unsigned step = s->frame_regs[0x59] == 0x22 ? 2 : 1;
+    unsigned step = s->frame_regs[0x59] & 15;
     assert(x + ((byte / 4) * 2 + 2) * step <= 640 &&
            y + (line + 1) * step <= 480);
     /* Four byte samples share one converted pixel pair. Cache only the
