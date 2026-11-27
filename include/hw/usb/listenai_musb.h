@@ -25,6 +25,7 @@ typedef struct ListenAIMUSB {
     unsigned bulk_count[16], bulk_position[16], bulk_tx_count[16];
     uint32_t dma[6][3], dma_pending;
     ListenAIMUSBHost *host;
+    struct ListenAIMUSBDownstream *downstream;
     qemu_irq host_connected;
 } ListenAIMUSB;
 
@@ -33,6 +34,7 @@ void listenai_musb_init(ListenAIMUSB *s, DeviceState *owner, hwaddr base,
                        void (*irq)(void *, bool),
                        void (*fail)(void *, hwaddr, unsigned, bool, uint64_t),
                        void *opaque, bool adb);
+BusState *listenai_musb_downstream_init(ListenAIMUSB *s, DeviceState *owner);
 void listenai_musb_destroy(ListenAIMUSB *s);
 void listenai_musb_reset(ListenAIMUSB *s);
 void listenai_musb_clock(ListenAIMUSB *s, bool enabled);

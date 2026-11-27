@@ -236,6 +236,9 @@ static void set(Object *obj, const char *command, Error **errp)
         qemu_chr_fe_deinit(&c->chr, true);
         g_clear_pointer(&c->listen, g_free);
     } else if (!strcmp(command, "enable")) {
+        if (h->controller->downstream) {
+            error_setg(errp, "USB controller is wired to a board device"); return;
+        }
         if (c->listen) { return; }
         if (h->connected || h->listen) { error_setg(errp, "USB host is already in use"); return; }
         Chardev *chr = qemu_chr_new("lisem-usb-cdc", "tcp:127.0.0.1:0,server=on,wait=off,nodelay=on", NULL);

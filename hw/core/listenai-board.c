@@ -17,6 +17,8 @@
 #include "hw/sysbus.h"
 #include "hw/i2c/cst328.h"
 #include "hw/i2c/cst836u.h"
+#include "hw/usb/nt26.h"
+#include "hw/i2c/bl6138.h"
 #include "hw/i2c/sc919_touch.h"
 #include "hw/i2c/axs15231e_touch.h"
 #include "hw/i2c/ls8500.h"
@@ -129,16 +131,25 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             (strcmp(chip, "ls2684") && strcmp(chip, "ls2663"))) { invalid("modem"); }
         const char *model = qdict_get_try_str(p, "model");
         ObjectClass *klass = model ? object_class_by_name(model) : NULL;
-        if (!klass || !object_class_dynamic_cast(klass, TYPE_LISTENAI_MODEM) ||
+        b->modem_usb = model && !strcmp(model, TYPE_LIERDA_NT26);
+        if (!klass || (!b->modem_usb && !object_class_dynamic_cast(klass, TYPE_LISTENAI_MODEM)) ||
             object_class_is_abstract(klass)) {
             invalid("modem model");
         }
         b->modem_model = g_strdup(model);
         b->modem_id = g_strdup(id);
-        b->modem_tx = pad(p, "TX", pa_pads, pb_pads);
-        b->modem_rx = pad(p, "RX", pa_pads, pb_pads);
-        if (!((b->modem_tx == 8 && b->modem_rx == 9) ||
-              (b->modem_tx == 39 && b->modem_rx == 38))) { invalid("UART2 pad route"); }
+        if (b->modem_usb) {
+            number(p, "usb", 0);
+            b->modem_dtr = pad(p, "DTR", pa_pads, pb_pads);
+            b->modem_pwrkey = pad(p, "PWRKEY", pa_pads, pb_pads);
+            b->modem_ri = pad(p, "RI", pa_pads, pb_pads);
+            b->modem_pwrkey_inverted = boolean(p, "pwrkey_inverted");
+        } else {
+            b->modem_tx = pad(p, "TX", pa_pads, pb_pads);
+            b->modem_rx = pad(p, "RX", pa_pads, pb_pads);
+            if (!((b->modem_tx == 8 && b->modem_rx == 9) ||
+                  (b->modem_tx == 39 && b->modem_rx == 38))) { invalid("UART2 pad route"); }
+        }
     }
     b->nor_cs1 = qdict_haskey(dict, "nor_cs1");
     if (b->nor_cs1) {
@@ -159,6 +170,13 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             uint32_t size = number(p, "capacity_bytes", LISTENAI_NOR_SIZE);
             if (b->nor_bytes[cs] || size < 65536 || (size & (size - 1)) ||
                 (cs && !strcmp(chip, "venusa"))) { invalid("NOR geometry"); }
+            if (qdict_haskey(p, "part")) {
+                const char *part = qdict_get_try_str(p, "part");
+                if (!part || strcmp(part, "xm25qh128c") || size != LISTENAI_NOR_SIZE) {
+                    invalid("NOR part");
+                }
+                b->nor_xm25qh128c[cs] = true;
+            }
             b->nor_bytes[cs] = size;
         }
         if (!b->nor_bytes[0]) { invalid("missing primary NOR"); }
@@ -207,11 +225,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (b->panel) {
         QDict *p = qdict_get_qdict(dict, "panel");
         const char *controller = qdict_get_try_str(p, "model");
-        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_SC919) && strcmp(controller, TYPE_AXS15231E) && strcmp(controller, TYPE_JD79651C)) {
+        if (controller && strcmp(controller, TYPE_ST7789) && strcmp(controller, TYPE_JD9853) && strcmp(controller, TYPE_SC919) && strcmp(controller, TYPE_AXS15231E) && strcmp(controller, TYPE_JD79651C)) {
             invalid("display controller model");
         }
         b->epaper = controller && !strcmp(controller, TYPE_JD79651C);
         b->panel_otp_luts = g_strdup(qdict_get_try_str(p, "otp_luts"));
+        b->lcd_jd9853 = controller && !strcmp(controller, TYPE_JD9853);
         b->lcd_axs = controller && !strcmp(controller, TYPE_AXS15231E);
         b->lcd_boot_te = qdict_haskey(p, "boot_te") && boolean(p, "boot_te");
         if (qdict_haskey(p, "boot_te") && !b->lcd_axs) { invalid("boot_te requires AXS15231E"); }
@@ -267,7 +286,9 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         QDict *p = qdict_get_qdict(dict, "camera");
         if (!p) { invalid("camera object"); }
         const char *model = qdict_get_try_str(p, "model");
-        if (model && strcmp(model, "gc0328") && strcmp(model, "bf3901")) { invalid("camera model"); }
+        if (model && strcmp(model, "gc0328") && strcmp(model, "bf3901") && strcmp(model, "ov2659")) { invalid("camera model"); }
+        b->camera_ov2659 = model && !strcmp(model, "ov2659");
+        if (b->camera_ov2659 && !strcmp(chip, "venusa")) { invalid("OV2659 chip adapter"); }
         b->camera_bf3901 = model && !strcmp(model, "bf3901");
         QDict *pins = p ? qdict_get_qdict(p, "pads") : NULL;
         static const char *names[] = {"SCL", "SDA", "MCLK", "PCLK", "HSYNC",
@@ -279,6 +300,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         }
         b->camera_pads[LISTENAI_CAM_RESET] = qdict_haskey(pins, "RESET") ? gpio_endpoint(b, pins, "RESET", pa_pads, pb_pads) : UINT_MAX;
         b->camera_pads[LISTENAI_CAM_PWDN] = qdict_haskey(pins, "PWDN") ? gpio_endpoint(b, pins, "PWDN", pa_pads, pb_pads) : UINT_MAX;
+        if (qdict_haskey(p, "pwdn_strap")) {
+            if (!b->camera_ov2659 || b->camera_pads[LISTENAI_CAM_PWDN] != UINT_MAX) {
+                invalid("camera PWDN strap");
+            }
+            b->camera_pwdn_strap = boolean(p, "pwdn_strap");
+        }
     }
     if (b->amplifier) {
         QDict *p = qdict_get_qdict(dict, "amplifier");
@@ -314,8 +341,15 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             b->sd_detect_active = number(p, "detect_active_level", 1);
         }
         static const char *names[] = {"CLK", "CMD", "DAT0", "DAT1", "DAT2", "DAT3"};
+        unsigned width = qdict_haskey(p, "bus_width") ? number(p, "bus_width", 4) : 4;
+        if ((width != 1 && width != 4) || !pins) { invalid("SD bus width"); }
+        b->sd_single_lane = width == 1;
         for (unsigned i = 0; i < ARRAY_SIZE(names); i++) {
-            pad(pins, names[i], pa_pads, pb_pads);
+            if (i < width + 2) {
+                pad(pins, names[i], pa_pads, pb_pads);
+            } else if (qdict_haskey(pins, names[i])) {
+                invalid("unwired SD data lane");
+            }
         }
     }
     if (qdict_haskey(dict, "pwm_leds")) {
@@ -340,8 +374,9 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
     if (b->touch) {
         QDict *p = qdict_get_qdict(dict, "touch");
         const char *model = qdict_get_try_str(p, "model");
-        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1") && strcmp(model, TYPE_AXS15231E_TOUCH) && strcmp(model, TYPE_CST836U)) { invalid("touch model"); }
+        if (model && strcmp(model, "cst328") && strcmp(model, "sc919-touch-v1") && strcmp(model, TYPE_AXS15231E_TOUCH) && strcmp(model, TYPE_BL6138) && strcmp(model, TYPE_CST836U)) { invalid("touch model"); }
         b->touch_sc919 = model && !strcmp(model, "sc919-touch-v1");
+        b->touch_bl6138 = model && !strcmp(model, TYPE_BL6138);
         b->touch_axs = model && !strcmp(model, TYPE_AXS15231E_TOUCH);
         b->touch_cst836u = model && !strcmp(model, TYPE_CST836U);
         if (b->touch_cst836u) {
@@ -355,7 +390,7 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
             b->touch_height = number(p, "height", 4096);
             if (!b->touch_width || !b->touch_height) { invalid("touch dimensions"); }
         }
-        if (b->touch_sc919 || b->touch_axs) { b->touch_reset = pad(p, "RESET", pa_pads, pb_pads); }
+        if (b->touch_sc919 || b->touch_axs || b->touch_bl6138) { b->touch_reset = pad(p, "RESET", pa_pads, pb_pads); }
         b->touch_scl = pad(p, "SCL", pa_pads, pb_pads);
         b->touch_sda = pad(p, "SDA", pa_pads, pb_pads);
         b->touch_irq = pad(p, "INT", pa_pads, pb_pads);
@@ -392,6 +427,12 @@ void listenai_board_load(ListenaiBoard *b, const char *path, const char *chip,
         if (button->analog) {
             if (!b->keypad) { invalid("button ADC receiver"); }
             button->resistance_ohms = number(p, "resistance_ohms", 1000000);
+            if (qdict_haskey(p, "diode_drop_uv")) {
+                button->diode_drop_uv = number(p, "diode_drop_uv", b->keypad_supply_uv);
+                if (button->diode_drop_uv && button->resistance_ohms) {
+                    invalid("diode keypad branch with series resistance");
+                }
+            }
         }
         button->pressed_level = number(p, "pressed_level", 1);
         button->released_level = number(p, "released_level", 1);
@@ -484,17 +525,30 @@ void listenai_board_cleanup(ListenaiBoard *b)
     g_free(b->panel_otp_luts);
 }
 
-void listenai_board_attach_modem(ListenaiBoard *b, Object *owner)
+void listenai_board_attach_modem(ListenaiBoard *b, Object *owner, DeviceState *soc, BusState *usb)
 {
     if (!b->modem_id) { return; }
     b->modem_device = qdev_new(b->modem_model);
     object_property_add_child(owner, "modem", OBJECT(b->modem_device));
-    qdev_prop_set_bit(b->modem_device, "host-network",
-                     !g_strcmp0(getenv("LISEM_MODEM_NETWORK"), "1"));
-    qdev_realize_and_unref(b->modem_device, NULL, &error_fatal);
-    b->modem_uart = listenai_modem_uart(b->modem_device);
+    if (b->modem_usb) {
+        qdev_prop_set_string(b->modem_device, "port", "1");
+        qdev_realize_and_unref(b->modem_device, usb, &error_fatal);
+        qemu_irq key = qdev_get_gpio_in_named(b->modem_device, "pwrkey", 0);
+        listenai_board_connect_pad(soc, b->modem_pwrkey,
+                                   b->modem_pwrkey_inverted ? qemu_irq_invert(key) : key);
+        listenai_board_connect_pad(soc, b->modem_dtr,
+                                   qdev_get_gpio_in_named(b->modem_device, "dtr", 0));
+        qdev_connect_gpio_out_named(b->modem_device, "ri", 0,
+                                    qdev_get_gpio_in_named(soc, "pad-in", b->modem_ri));
+        object_property_add_alias(owner, "x-lisem-nt26-control", OBJECT(b->modem_device), "run-control");
+    } else {
+        qdev_prop_set_bit(b->modem_device, "host-network",
+                         !g_strcmp0(getenv("LISEM_MODEM_NETWORK"), "1"));
+        qdev_realize_and_unref(b->modem_device, NULL, &error_fatal);
+        b->modem_uart = listenai_modem_uart(b->modem_device);
+        object_property_add_alias(owner, "x-lisem-modem-sim-present", OBJECT(b->modem_device), "sim-present");
+    }
     object_property_add_alias(owner, "x-lisem-modem-status", OBJECT(b->modem_device), "status");
-    object_property_add_alias(owner, "x-lisem-modem-sim-present", OBJECT(b->modem_device), "sim-present");
 }
 
 QDict *listenai_board_display_snapshot(ListenaiBoard *b)
@@ -572,7 +626,7 @@ void listenai_board_attach_typec(ListenaiBoard *b, Object *owner, DeviceState *s
 
 DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
 {
-    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : (b->lcd_axs ? TYPE_AXS15231E : b->lcd_qspi ? TYPE_SC919 : TYPE_ST7789));
+    DeviceState *panel = qdev_new(b->epaper ? TYPE_JD79651C : (b->lcd_axs ? TYPE_AXS15231E : b->lcd_qspi ? TYPE_SC919 : b->lcd_jd9853 ? TYPE_JD9853 : TYPE_ST7789));
     b->panel_device = panel;
     object_property_add_child(owner, "screen", OBJECT(panel));
     if (b->lcd_axs) { qdev_prop_set_bit(panel, "boot-te", b->lcd_boot_te); }
@@ -589,15 +643,19 @@ DeviceState *listenai_board_panel_new(ListenaiBoard *b, Object *owner)
 
 uint32_t listenai_board_keypad_voltage(ListenaiBoard *b)
 {
+    unsigned clamp_uv = b->keypad_supply_uv;
     double load = 1.0;
     for (unsigned i = 0; i < b->button_count; i++) {
         if (b->buttons[i].analog && b->buttons[i].pressed) {
             unsigned resistance = b->buttons[i].resistance_ohms;
-            if (!resistance) { return 0; }
-            load += (double)b->keypad_pull_up_ohms / resistance;
+            if (!resistance) {
+                clamp_uv = MIN(clamp_uv, b->buttons[i].diode_drop_uv);
+            } else {
+                load += (double)b->keypad_pull_up_ohms / resistance;
+            }
         }
     }
-    return b->keypad_supply_uv / load;
+    return MIN(clamp_uv, b->keypad_supply_uv / load);
 }
 
 void listenai_board_panel_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *panel)
@@ -621,6 +679,8 @@ void listenai_board_camera_wire(ListenaiBoard *b, DeviceState *soc, DeviceState 
         unsigned pad = b->camera_pads[controls[i]];
         if (pad != UINT_MAX) {
             listenai_board_connect_gpio(b, soc, pad, qdev_get_gpio_in_named(sensor, "control", i));
+        } else if (controls[i] == LISTENAI_CAM_PWDN && b->camera_ov2659) {
+            qemu_set_irq(qdev_get_gpio_in_named(sensor, "control", i), b->camera_pwdn_strap);
         }
     }
 }
@@ -687,7 +747,7 @@ QDict *listenai_board_devices_snapshot(ListenaiBoard *b)
     QDict *devices = qdict_new();
     if (b->modem_device) {
         qdict_put_obj(devices, b->modem_id,
-                      QOBJECT(listenai_modem_snapshot(b->modem_device)));
+                      QOBJECT(b->modem_usb ? nt26_snapshot(b->modem_device) : listenai_modem_snapshot(b->modem_device)));
     }
     if (b->aw8737_device) {
         qdict_put_obj(devices, b->aw8737_id,
@@ -790,6 +850,7 @@ void listenai_board_rotaries_drive(ListenaiBoard *b)
 
 void listenai_board_sd_wire(ListenaiBoard *b, DeviceState *soc, DeviceState *sd_host)
 {
+    SYSBUS_SDHCI(sd_host)->single_lane = b->sd_single_lane;
     if (!b->sd_external_detect) { return; }
     unsigned endpoint = b->sd_detect_endpoint;
     qemu_irq input = endpoint < 64 ? qdev_get_gpio_in_named(soc, "pad-in", endpoint) :
@@ -812,6 +873,7 @@ void listenai_board_pulls_apply(ListenaiBoard *b, DeviceState *soc)
         }
     }
     /* Peripheral reset can precede the receiving GPIO controller's reset. */
+    if (b->bl6138_device) { bl6138_redrive(b->bl6138_device); }
     if (b->panel_device) {
         if (b->epaper) { jd79651c_redrive(b->panel_device); }
         else { serial_lcd_redrive(b->panel_device); }
@@ -840,18 +902,28 @@ void listenai_board_panel_save(ListenaiBoard *b, const char *path)
 DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
                                      DeviceState *soc, I2CBus *bus)
 {
-    I2CSlave *touch = i2c_slave_new(b->touch_cst836u ? TYPE_CST836U : b->touch_axs ? TYPE_AXS15231E_TOUCH : b->touch_sc919 ? TYPE_SC919_TOUCH : TYPE_CST328,
-                                   b->touch_cst836u ? b->touch_address : b->touch_axs ? 0x3b : b->touch_sc919 ? 0x28 : 0x1d);
+    I2CSlave *touch = i2c_slave_new(b->touch_cst836u ? TYPE_CST836U : b->touch_axs ? TYPE_AXS15231E_TOUCH : b->touch_sc919 ? TYPE_SC919_TOUCH : b->touch_bl6138 ? TYPE_BL6138 : TYPE_CST328,
+                                   b->touch_cst836u ? b->touch_address : b->touch_axs ? 0x3b : b->touch_sc919 ? 0x28 : b->touch_bl6138 ? 0x2c : 0x1d);
     if (b->touch_cst836u) { qdev_prop_set_uint32(DEVICE(touch), "chip-type", b->touch_chip_type); }
     if (b->touch_axs || b->touch_cst836u) {
         qdev_prop_set_uint32(DEVICE(touch), "width", b->touch_width);
         qdev_prop_set_uint32(DEVICE(touch), "height", b->touch_height);
     }
+    if (b->touch_bl6138) {
+        b->bl6138_device = DEVICE(touch);
+        if (b->touch_flash_file) {
+            qdev_prop_set_string(DEVICE(touch), "flash-file", b->touch_flash_file);
+        }
+    }
     object_property_add_child(owner, "touch", OBJECT(touch));
     i2c_slave_realize_and_unref(touch, bus, &error_fatal);
     qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
                                 qdev_get_gpio_in_named(soc, "pad-in", b->touch_irq));
-    if (b->touch_sc919 || b->touch_axs ||
+    if (b->touch_bl6138) {
+        listenai_board_connect_pad(soc, b->touch_irq,
+                                   qdev_get_gpio_in_named(DEVICE(touch), "int-level", 0));
+    }
+    if (b->touch_sc919 || b->touch_axs || b->touch_bl6138 ||
         (b->touch_cst836u && b->touch_reset != UINT_MAX)) {
         listenai_board_connect_pad(soc, b->touch_reset,
                                   qdev_get_gpio_in_named(DEVICE(touch), "reset", 0));
@@ -862,6 +934,7 @@ DeviceState *listenai_board_touch_new(ListenaiBoard *b, Object *owner,
 void listenai_board_touch_input(ListenaiBoard *b, Object *owner, DeviceState *touch)
 {
     if (b->touch_cst836u) { cst836u_add_input(owner, touch, "x-lisa-touch"); }
+    else if (b->touch_bl6138) { bl6138_add_input(owner, touch, "x-lisa-touch"); }
     else if (b->touch_axs) { axs15231e_touch_add_input(owner, touch, "x-lisa-touch"); }
     else if (b->touch_sc919) { sc919_touch_add_input(owner, touch, "x-lisa-touch"); }
     else { cst328_add_input(owner, touch, "x-lisa-touch"); }

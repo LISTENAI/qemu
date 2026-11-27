@@ -31,10 +31,11 @@ typedef struct SerialLCDState {
     int64_t scan_start, line_ns;
     unsigned scanned_rows;
     bool scanning, blanking, scan_reverse;
-    bool sc919, axs15231e, command2;
+    bool sc919, axs15231e, jd9853, command2;
+    uint8_t page;
     uint8_t packet[4];
     unsigned packet_count, lanes;
-    int64_t reset_start, ready_ns, sleep_ready_ns;
+    int64_t reset_start, ready_ns, sleep_ready_ns, sleep_in_ready_ns;
     void (*failure)(void *, const char *);
     void *failure_opaque;
 } SerialLCDState;
@@ -42,8 +43,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SerialLCDState, SERIAL_LCD)
 
 static void fail(SerialLCDState *s, const char *message, unsigned value)
 {
+    g_autofree char *model = g_ascii_strup(object_get_typename(OBJECT(s)), -1);
     error_report("%s %s (command=0x%02x value=0x%x)",
-                 s->axs15231e ? "AXS15231E" : s->sc919 ? "SC919" : "ST7789", message, s->command, value);
+                 model, message, s->command, value);
     if (s->failure) { s->failure(s->failure_opaque, "unsupported-panel"); }
     exit(1);
 }
@@ -66,9 +68,9 @@ static void scan_rows(SerialLCDState *s, int64_t now)
 
 static int64_t line_period(SerialLCDState *s)
 {
-    /* AXS15231E normal refresh is modeled at an estimated 60 Hz. */
-    if (s->axs15231e) {
-        /* V0.5 vertical TE timing: high (blanking) lasts at least 1 ms. */
+    /* AXS15231E and JD9853 normal refresh are estimated at 60 Hz. */
+    if (s->axs15231e || s->jd9853) {
+        /* 1 ms vertical blank; AXS15231E V0.5 specifies a 1 ms minimum. */
         return (16666667 - 1000000) / s->ram_height;
     }
     /* ST7789P3 FRCTRL2 / SC919 v0.0 FRCTRL1: 10 MHz oscillator,
@@ -78,7 +80,7 @@ static int64_t line_period(SerialLCDState *s)
 
 static int64_t blank_period(SerialLCDState *s, bool initial)
 {
-    if (s->axs15231e) { return 16666667 - s->ram_height * s->line_ns; }
+    if (s->axs15231e || s->jd9853) { return 16666667 - s->ram_height * s->line_ns; }
     return (s->analog[0xb2][0] + (initial ? 0 : s->analog[0xb2][1])) * s->line_ns;
 }
 
@@ -133,6 +135,7 @@ static void reset_controller(SerialLCDState *s, bool boot)
     s->analog[0xc6][0] = 15;
     s->analog[0xb3][0] = 15;
     s->command2 = false;
+    s->page = 0;
     s->analog[0xb2][0] = s->analog[0xb2][1] = 12;
     s->sleeping = true; s->on = s->inverted = false;
     /* Module Flash/OTP startup configuration; DCS software reset bypasses it. */
@@ -142,6 +145,31 @@ static void reset_controller(SerialLCDState *s, bool boot)
     s->dirty = true; qemu_set_irq(s->te, 0); schedule(s);
 }
 
+/* Digital interface observed in the JD9853 panel driver. Page-specific
+ * analog drive, power and gamma values are accepted at their wire lengths.
+ * None of these registers uses the ST7789 porch or scan-rate encoding. */
+static unsigned jd9853_vendor_length(SerialLCDState *s, uint8_t command)
+{
+    static const uint8_t lengths[2][256] = {
+        { [0xb2] = 1, [0xb7] = 4, [0xbb] = 6, [0xc0] = 2, [0xc1] = 1,
+          [0xc3] = 8, [0xc4] = 12, [0xc8] = 32, [0xd0] = 5,
+          [0xd7] = 2, [0xe6] = 1 },
+        { [0xb7] = 5, [0xc1] = 3, [0xc2] = 2, [0xc4] = 2, [0xbe] = 1 },
+    };
+    if (command == 0xdf) { return 2; }
+    if (!s->command2) { return 0; }
+    return command == 0xde ? 1 : lengths[s->page][command];
+}
+
+static unsigned jd9853_parameter_length(SerialLCDState *s, uint8_t command)
+{
+    switch (command) {
+    case 0x2a: case 0x2b: return 4;
+    case 0x35: case 0x36: case 0x3a: return 1;
+    default: return jd9853_vendor_length(s, command);
+    }
+}
+
 static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
 {
     SerialLCDState *s = SERIAL_LCD(dev);
@@ -149,8 +177,46 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
     scan_rows(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (!s->data_mode) {
         if (s->pixel_high >= 0) { fail(s, "incomplete RGB565 pixel", data); }
+        if (s->jd9853 && s->count != jd9853_parameter_length(s, s->command)) {
+            fail(s, "incomplete command parameters", s->count);
+        }
         s->command = data; s->count = 0;
         trace_serial_lcd_command(object_get_typename(OBJECT(s)), data);
+        if (s->jd9853) {
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            if (now < s->ready_ns || (data == 0x11 && now < s->sleep_ready_ns) ||
+                (data == 0x10 && now < s->sleep_in_ready_ns)) {
+                fail(s, "command during recovery", data);
+            }
+            if (data >= 0xb0) {
+                if (!jd9853_vendor_length(s, data)) {
+                    fail(s, "unsupported vendor page or command", data);
+                }
+                return 0;
+            }
+            switch (data) {
+            case 0: case 1: case 0x10: case 0x11: case 0x13:
+            case 0x20: case 0x21: case 0x28: case 0x29: case 0x2a:
+            case 0x2b: case 0x2c: case 0x34: case 0x35: case 0x36:
+            case 0x3a: case 0x3c: break;
+            default: fail(s, "unimplemented DCS command", data);
+            }
+            if (data == 1) {
+                /* Preliminary V0.00 9.2.2: SWRESET in sleep-in requires
+                 * 120 ms before SLPOUT. Other commands require 5 ms. */
+                s->ready_ns = now + 5000000;
+                s->sleep_ready_ns = now + (s->sleeping ? 120000000 : 5000000);
+                s->sleep_in_ready_ns = 0;
+            } else if (data == 0x11 && s->sleeping) {
+                /* JD9853 9.2.11-12: ordinary commands need 5 ms; only
+                 * the opposite sleep transition has the 120 ms limit. */
+                s->ready_ns = now + 5000000;
+                s->sleep_in_ready_ns = now + 120000000;
+            } else if (data == 0x10 && !s->sleeping) {
+                s->ready_ns = now + 5000000;
+                s->sleep_ready_ns = now + 120000000;
+            }
+        }
         if (s->axs15231e) {
             switch (data) {
             case 0: case 1: case 0x10: case 0x11: case 0x13: case 0x20: case 0x21:
@@ -170,7 +236,7 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
         case 0x29: s->dirty = true; s->on = true; break;
         case 0x2c: s->x = s->x_start; s->y = s->y_start; break;
         case 0x3c:
-            if (!s->sc919 && !s->axs15231e) { fail(s, "unimplemented command", data); }
+            if (!s->sc919 && !s->axs15231e && !s->jd9853) { fail(s, "unimplemented command", data); }
             break;
         case 0x34: s->tear = false; qemu_set_irq(s->te, 0); break;
         case 0x2a: case 0x2b: case 0x35: case 0x36: case 0x3a:
@@ -185,7 +251,7 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
         }
         schedule(s); return 0;
     }
-    if (s->command == 0x2c || ((s->sc919 || s->axs15231e) && s->command == 0x3c)) {
+    if (s->command == 0x2c || ((s->sc919 || s->axs15231e || s->jd9853) && s->command == 0x3c)) {
         if (s->format != 5) { fail(s, "requires RGB565", s->format); }
         if (s->pixel_high < 0) { s->pixel_high = data; }
         else {
@@ -200,8 +266,23 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
         }
         return 0;
     }
+    if (s->jd9853 && s->count >= jd9853_parameter_length(s, s->command)) {
+        fail(s, "unexpected command parameter", data);
+    }
     if (s->count == sizeof(s->parameters)) { fail(s, "too many parameters", data); }
     s->parameters[s->count++] = data;
+    if (s->jd9853 && s->command >= 0xb0) {
+        if (s->command == 0xdf) {
+            if (data != (s->count == 1 ? 0x98 : 0x53)) {
+                fail(s, "unsupported command unlock", data);
+            }
+            s->command2 = s->count == 2;
+        } else if (s->command == 0xde) {
+            if (data > 1) { fail(s, "unsupported command page", data); }
+            s->page = data;
+        }
+        return 0;
+    }
     if (s->sc919 && s->command >= 0x70) {
         if (s->command != 0xdf && !s->command2) {
             /* Command-table 2 writes are gated by CMD2EN, with EXTC low. */
@@ -387,7 +468,14 @@ static void input(void *opaque, int pin, int level)
                 s->ready_ns = now + (s->axs15231e ? 10000000 : 5000000);
                 s->sleep_ready_ns = s->axs15231e ? s->ready_ns : now + 120000000;
             }
-        } else if (asserted) { reset_controller(s, true); }
+        } else if (asserted) {
+            reset_controller(s, true);
+            if (s->jd9853) { s->ready_ns = s->sleep_ready_ns = s->sleep_in_ready_ns = 0; }
+        } else if (s->jd9853) {
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            s->ready_ns = now + 5000000;
+            s->sleep_ready_ns = now + 120000000;
+        }
         s->dirty = true; schedule(s);
     }
 }
@@ -445,7 +533,7 @@ static void reset(DeviceState *dev)
 {
     SerialLCDState *s = SERIAL_LCD(dev);
     s->packet_count = 0;
-    s->ready_ns = s->sleep_ready_ns = 0;
+    s->ready_ns = s->sleep_ready_ns = s->sleep_in_ready_ns = 0;
     reset_controller(s, true); memset(s->gram, 0, sizeof(s->gram)); s->pixels = 0;
     memset(s->scanned, 0, sizeof(s->scanned));
     memset(s->presented, 0, sizeof(s->presented));
@@ -508,6 +596,7 @@ static const TypeInfo info = {
     .name = TYPE_SERIAL_LCD, .parent = TYPE_SSI_PERIPHERAL, .abstract = true,
     .instance_size = sizeof(SerialLCDState), .instance_init = base_init, .class_init = class_init,
 };
+static void jd9853_init(Object *obj) { SERIAL_LCD(obj)->jd9853 = true; }
 static void sc919_init(Object *obj) { SERIAL_LCD(obj)->sc919 = true; }
 static void quad_class(ObjectClass *klass, const void *data)
 {
@@ -523,6 +612,7 @@ static void axs15231e_init(Object *obj)
 static const TypeInfo variants[] = {
     { .name = TYPE_AXS15231E, .parent = TYPE_SERIAL_LCD,
       .instance_init = axs15231e_init, .class_init = quad_class },
+    { .name = TYPE_JD9853, .parent = TYPE_SERIAL_LCD, .instance_init = jd9853_init },
     { .name = TYPE_ST7789, .parent = TYPE_SERIAL_LCD },
     { .name = TYPE_SC919, .parent = TYPE_SERIAL_LCD,
       .instance_init = sc919_init, .class_init = quad_class },

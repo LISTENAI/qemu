@@ -54,6 +54,10 @@ config LISTENAI_I2C
     bool
     select I2C
 
+config OV2659
+    bool
+    depends on I2C
+
 config GC0328
     bool
     select I2C
@@ -61,6 +65,10 @@ config GC0328
 config FT6236
     bool
     select I2C
+
+config BL6138
+    bool
+    depends on I2C
 
 config CST328
     bool

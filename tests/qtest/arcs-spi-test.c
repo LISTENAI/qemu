@@ -552,6 +552,23 @@ static void controller_reset_keeps_panel(void)
     qtest_quit(q);
 }
 
+static void aon_vmem_register(void)
+{
+    QTestState *q = qtest_init("-machine arcs-evb");
+    const uint64_t reg = 0x480000d8;
+
+    /* The PSRAM rail is powered at reset, so power-good reads as asserted. */
+    g_assert_cmphex(qtest_readl(q, reg), ==, 2);
+
+    /* Bit 1 is power-good status. It is read-only and remains asserted while
+     * the current-limit and trim controls retain their written values. */
+    qtest_writel(q, reg, 0xffffffff);
+    g_assert_cmphex(qtest_readl(q, reg), ==, 0x7f);
+    qtest_writel(q, reg, 0);
+    g_assert_cmphex(qtest_readl(q, reg), ==, 2);
+    qtest_quit(q);
+}
+
 static void duplicate_wire(void)
 {
     if (g_test_subprocess()) {
@@ -613,6 +630,7 @@ int main(int argc, char **argv)
     }
     qtest_add_func("arcs-spi/controller-reset-keeps-panel",
                    controller_reset_keeps_panel);
+    qtest_add_func("arcs-sysctl/aon-vmem-register", aon_vmem_register);
     qtest_add_func("arcs-spi/wire-single-driver", duplicate_wire);
     qtest_add_func("arcs-spi/pad-directions", pad_directions);
     qtest_add_func("arcs-spi/reset-before-last-bit", reset_before_last_bit);

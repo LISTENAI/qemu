@@ -11,6 +11,7 @@ typedef struct ListenaiGPIOCallbacks {
                  uint64_t value);
     void (*irq)(void *opaque, unsigned first_pad, bool level);
     void (*output)(void *opaque, unsigned pad, bool level);
+    bool (*forced_output)(void *opaque, unsigned pad, bool *level);
 } ListenaiGPIOCallbacks;
 
 typedef struct ListenaiPinmux {

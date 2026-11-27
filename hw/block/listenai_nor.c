@@ -134,7 +134,8 @@ bool listenai_nor_command(ListenAINOR *chip, uint8_t op, uint32_t address,
     address &= op == 0x5a ? 0xffffff : chip->size - 1;
     uint8_t *bytes = memory_region_get_ram_ptr(&chip->rom);
     const uint8_t density = ctz32(chip->size);
-    const uint8_t jedec[] = { 0xef, 0x40, density };
+    /* XM25QH128C rev. 1.3, section 7.1.1. */
+    const uint8_t jedec[] = { chip->xm25qh128c ? 0x20 : 0xef, 0x40, density };
     static const uint8_t uid[] = { 0x52, 0x45, 0x4e, 0x4f, 0x44, 0x45, 0, 1 };
     *received = 0;
     switch (op) {
@@ -155,7 +156,7 @@ bool listenai_nor_command(ListenAINOR *chip, uint8_t op, uint32_t address,
         for (unsigned i = 0; i < length; i++) { rx[i] = jedec[i % 3]; }
         break;
     case 0x90:
-        for (unsigned i = 0; i < length; i++) { rx[i] = ((address + i) & 1) ? density - 1 : 0xef; }
+        for (unsigned i = 0; i < length; i++) { rx[i] = ((address + i) & 1) ? density - 1 : jedec[0]; }
         break;
     case 0x4b:
         for (unsigned i = 0; i < length; i++) { rx[i] = uid[i % 8]; }

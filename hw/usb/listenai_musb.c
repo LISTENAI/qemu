@@ -61,11 +61,17 @@ void listenai_musb_descriptors_clear(ListenAIMUSBHost *h)
     memset(h->string_length, 0, sizeof(h->string_length));
 }
 
+static bool sof_enabled(ListenAIMUSB *s)
+{
+    return s->clock_enabled && (s->downstream ? s->session && !(s->power & 8) :
+                                s->host->connected && (s->power & 0x40));
+}
+
 static void sof_tick(void *opaque)
 {
     ListenAIMUSBHost *h = opaque;
     ListenAIMUSB *s = h->controller;
-    if (!s->clock_enabled || !h->connected || !(s->power & 0x40)) { return; }
+    if (!sof_enabled(s)) { return; }
     h->frame = (h->frame + 1) & 2047;
     s->interrupt |= 8;
     listenai_musb_irq(s);
@@ -74,7 +80,7 @@ static void sof_tick(void *opaque)
 
 void listenai_musb_sof_update(ListenAIMUSBHost *h)
 {
-    if (h->controller->clock_enabled && h->connected && (h->controller->power & 0x40)) {
+    if (sof_enabled(h->controller)) {
         if (!timer_pending(h->sof)) { timer_mod(h->sof, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PACKET_NS); }
     } else { timer_del(h->sof); }
 }
@@ -340,6 +346,12 @@ void listenai_musb_dma_service(ListenAIMUSB *s)
             s->bulk_position[ep] += n;
             if ((csr[7] & 0x80) && s->bulk_position[ep] == max) {
                 csr[6] &= ~1; s->bulk_count[ep] = s->bulk_position[ep] = 0;
+                if (s->downstream && mode1) {
+                    s->rx_pending &= ~(1U << ep);
+                    if (d[2] && (csr[7] & 0x40)) {
+                        csr[6] |= 0x20; /* AUTOREQ for the next full-size packet */
+                    }
+                }
             }
         }
         if (!d[2]) {
@@ -350,14 +362,18 @@ void listenai_musb_dma_service(ListenAIMUSB *s)
     listenai_musb_irq(s);
 }
 
-static bool usb_dma_register(hwaddr off, unsigned size)
+static bool usb_dma_register(ListenAIMUSB *s, hwaddr off, unsigned size)
 {
-    return size == 4 && off >= 0x204 && off <= 0x25c &&
+    return (size == 4 || (s->downstream && size == 2 && ((off - 0x204) % 16 == 0))) && off >= 0x204 && off <= 0x25c &&
            ((off - 0x204) % 16) <= 8 && !(off & 3);
 }
 
-static bool usb_valid(hwaddr off, unsigned size)
+static bool usb_valid(ListenAIMUSB *s, hwaddr off, unsigned size)
 {
+    if (s->downstream && size == 1 &&
+        ((off >= 0x1a && off <= 0x1d) || (off >= 0x80 && off < 0x100))) {
+        return true;
+    }
     return (off >= 0x20 && off <= 0x5c && !(off & 3) &&
             (size == 1 || size == 2 || size == 4)) ||
            (off == 0x200 && size == 4) ||
@@ -368,9 +384,9 @@ static bool usb_valid(hwaddr off, unsigned size)
 
 /* MUSB exposes the endpoint CSR bank both through INDEX and directly at
  * 0x100 + endpoint * 0x10. Direct access must not alter INDEX. */
-static hwaddr usb_endpoint_offset(hwaddr off, unsigned *endpoint)
+static hwaddr usb_endpoint_offset(ListenAIMUSB *s, hwaddr off, unsigned *endpoint)
 {
-    if (off >= 0x100 && off < 0x200 && (off & 15) <= 9) {
+    if (off >= 0x100 && off < 0x200 && (off & 15) <= (s->downstream ? 13 : 9)) {
         *endpoint = (off - 0x100) / 16;
         return 0x10 + (off & 15);
     }
@@ -379,6 +395,12 @@ static hwaddr usb_endpoint_offset(hwaddr off, unsigned *endpoint)
 
 static uint8_t usb_byte(ListenAIMUSB *s, unsigned off, unsigned endpoint)
 {
+    if (s->downstream && off >= 0x80 && off < 0x100) {
+        return listenai_musb_downstream_target(s, off);
+    }
+    if (s->downstream && off >= 0x1a && off <= 0x1d) {
+        return s->endpoint[endpoint][off - 0x10];
+    }
     if (off >= 0x10 && off <= 0x19) {
         if (endpoint && off == 0x12) {
             return (s->endpoint[endpoint][2] & ~2) | (s->bulk_tx_count[endpoint] ? 2 : 0);
@@ -404,7 +426,9 @@ static uint8_t usb_byte(ListenAIMUSB *s, unsigned off, unsigned endpoint)
     case 12: case 13:
         return s->host->frame >> (8 * (off - 12));
     case 14: return s->index;
-    case 0x60: return 0x80 | s->session | (s->host->connected ? 0x18 : 0);
+    case 0x60:
+        if (s->downstream) { return listenai_musb_downstream_devctl(s); }
+        return 0x80 | s->session | (s->host->connected ? 0x18 : 0);
     default: return 0;
     }
 }
@@ -415,12 +439,12 @@ static uint64_t usb_read(void *opaque, hwaddr off, unsigned size)
     hwaddr original_off = off;
     unsigned endpoint = s->index;
     if (!s->clock_enabled) { s->fail(s->opaque, s->base + off, size, false, 0); return 0; }
-    off = usb_endpoint_offset(off, &endpoint);
-    if (usb_dma_register(off, size)) { return s->dma[(off - 0x204) / 16][((off - 0x204) % 16) / 4]; }
+    off = usb_endpoint_offset(s, off, &endpoint);
+    if (usb_dma_register(s, off, size)) { return s->dma[(off - 0x204) / 16][((off - 0x204) % 16) / 4]; }
     if (off == 0x200 && size == 4) {
         uint32_t pending = s->dma_pending; s->dma_pending = 0; listenai_musb_irq(s); return pending;
     }
-    if (!usb_valid(off, size)) { s->fail(s->opaque, s->base + original_off, size, false, 0); }
+    if (!usb_valid(s, off, size)) { s->fail(s->opaque, s->base + original_off, size, false, 0); }
     uint32_t value = 0;
     if (off >= 0x24 && off <= 0x5c) {
         unsigned ep = (off - 0x20) / 4;
@@ -460,14 +484,15 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     hwaddr original_off = off;
     unsigned endpoint = s->index;
     if (!s->clock_enabled) { s->fail(s->opaque, s->base + off, size, true, value); return; }
-    off = usb_endpoint_offset(off, &endpoint);
-    if (usb_dma_register(off, size)) {
+    off = usb_endpoint_offset(s, off, &endpoint);
+    if (usb_dma_register(s, off, size)) {
         unsigned ch = (off - 0x204) / 16, reg = ((off - 0x204) % 16) / 4;
         if (reg == 0 && (value & ~0x7ffU || ((value & 1) && !((value >> 4) & 15)))) { goto fail; }
         s->dma[ch][reg] = value;
+        listenai_musb_downstream_kick(s);
         return;
     }
-    if (!usb_valid(off, size)) { goto fail; }
+    if (!usb_valid(s, off, size)) { goto fail; }
     if (off >= 0x24 && off <= 0x5c) {
         unsigned ep = (off - 0x20) / 4;
         if (s->bulk_tx_count[ep] + size > sizeof(s->bulk_tx[ep]) || (s->endpoint[ep][2] & 1)) { goto fail; }
@@ -485,6 +510,9 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     for (unsigned i = 0; i < size; i++) {
         uint8_t byte = value >> (8 * i);
         unsigned at = off + i;
+        if (s->downstream && listenai_musb_downstream_write(s, endpoint, at, byte)) {
+            continue;
+        }
         if (at >= 0x62 && at <= 0x67) {
             if (at <= 0x63 && ((byte & 15) > 9 || (byte & 0xe0))) { goto fail; }
             s->fifo_config[s->index][at - 0x62] = byte; continue;
@@ -589,6 +617,7 @@ static void controller_reset(ListenAIMUSB *s, bool soft)
         }
         listenai_musb_sof_update(h);
     }
+    listenai_musb_downstream_reset(s);
     listenai_musb_irq(s);
 }
 
@@ -600,6 +629,7 @@ void listenai_musb_clock(ListenAIMUSB *s, bool enabled)
         host_fail(s->host, "controller-clock-disabled");
     }
     listenai_musb_sof_update(s->host);
+    listenai_musb_downstream_kick(s);
     listenai_musb_irq(s);
 }
 
@@ -659,6 +689,9 @@ static void lab_set(Object *obj, const char *command, Error **errp)
 {
     ListenAIMUSB *s = LISTENAI_MUSB(obj);
     ListenAIMUSBHost *h = s->host;
+    if (s->downstream) {
+        error_setg(errp, "USB controller is wired to a board device"); return;
+    }
     if ((h->listen || h->cdc.listen) && strcmp(command, "clear")) {
         error_setg(errp, "Disable the USB bridge before controlling the USB host"); return;
     }
@@ -712,6 +745,7 @@ void listenai_musb_destroy(ListenAIMUSB *s)
 {
     ListenAIMUSBHost *h = s->host;
     if (!h) { return; }
+    listenai_musb_downstream_finalize(s);
     listenai_musb_cdc_finalize(h);
     if (h->bulk) { listenai_musb_adb_finalize(h); }
     timer_free(h->timer); timer_free(h->sof); g_free(h); s->host = NULL;

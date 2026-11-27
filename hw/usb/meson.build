@@ -1,4 +1,7 @@
 hw_usb_modules = {}
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: [
+  files('dev-nt26.c'), dependency('gmodule-2.0')
+])
 
 # usb subsystem core
 system_ss.add(when: 'CONFIG_USB', if_true: files(
@@ -91,4 +94,4 @@ system_ss.add(when: ['CONFIG_USB', 'CONFIG_XEN_BUS', libusb], if_true: files('xe
 
 modules += { 'hw-usb': hw_usb_modules }
 
-system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai_musb.c', 'listenai_musb_adb.c', 'listenai_musb_cdc.c'))
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: files('listenai_musb.c', 'listenai_musb_downstream.c', 'listenai_musb_adb.c', 'listenai_musb_cdc.c'))

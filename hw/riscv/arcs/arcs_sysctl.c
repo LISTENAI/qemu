@@ -349,9 +349,10 @@ static void rc_complete(void *opaque)
 static bool aon_storage(hwaddr off)
 {
     switch (off) {
-    case 0x2c: case 0x50: case 0x54: case 0x64: case 0x84: case 0x90:
+    case 0x08: case 0x0c: case 0x2c: case 0x50: case 0x54: case 0x64: case 0x84: case 0x90:
     case 0x94: case 0x98: case 0xa0: case 0xc4: case 0xc8:
     case 0x100: case 0x104: case 0x108: case 0x114: case 0x124: case 0x140:
+    case 0xd8:
     case 0x168: case 0x16c: case 0x170: case 0x174: case 0x178:
     case 0x190:
         return true;
@@ -363,8 +364,8 @@ static uint32_t aon_word(ArcsConfigIO *io, hwaddr off)
 {
     ArcsSysctl *s = &io->soc->sysctl;
     if (aon_storage(off)) { return s->aon_regs[off / 4]; }
-    /* Cold boot has no enabled wake source or wake event. Wake-source writes
-     * remain rejected until their sleep-domain routing is implemented. */
+    /* The wake interrupt clear register is a strobe. */
+    if (off == 0x20) { return 0; }
     if (off == 0x10 || off == 0x24) { return s->aon_regs[off / 4]; }
     if (off == 0x68) { return 0; }
     if (off == 0xa4) {
@@ -398,6 +399,12 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     hwaddr original_off = off;
     uint64_t original_value = value;
     if (off & (size - 1)) { goto fail; }
+    /* WAKEUP_ICR is a write-one clear strobe; a narrow store only
+     * acknowledges the corresponding byte lanes of the latched ISR. */
+    if ((off & ~3u) == 0x20) {
+        s->aon_regs[0x24 / 4] &= ~((uint32_t)value << (8 * (off & 3)));
+        return;
+    }
     if (size != 4) {
         uint32_t shift = 8 * (off & 3), mask = size == 1 ? 255 : 65535;
         value = (aon_word(io, off & ~3u) & ~(mask << shift)) | ((uint32_t)value << shift);
@@ -406,6 +413,15 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     uint32_t *reg = off < sizeof(s->aon_regs) ? &s->aon_regs[off / 4] : NULL;
     if (off >= 0x168 && off <= 0x178) { *reg = value; return; }
     switch (off) {
+    /* PMU power-on sequence counters. Programming them in the active domain
+     * does not request a power transition. */
+    case 0x08: *reg = value & 0x7fff3f3f; return;
+    case 0x0c: *reg = value & 0x003f3f3f; return;
+    case 0x10:
+        /* Per-source wake enables can be disarmed during normal operation.
+         * Enabling a source requires its real sleep-domain routing. */
+        if (value & 0x03ff007f) { goto fail; }
+        *reg = 0; return;
     case 0x190:
         /* Analog trim source selectors retain intent; ideal analog rails
          * have no settling or voltage model. Memory redundancy remains
@@ -454,6 +470,11 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     case 0xc0:
         arcs_codec_power(soc, value & 0x4000);
         *reg = value & 0x3fdf80; return;
+    case 0xd8:
+        /* The emulated PSRAM rail is always powered while the SoC runs.
+         * Preserve that power-good state and retain the modeled control bits.
+         * The analog voltage and settling behavior have no host-side model. */
+        *reg = (*reg & 2) | (value & 0x7d); return;
     case 0x58:
         if (value != 0xcafe000a) { goto fail; }
         request_chip_reset(soc, 1u << 1, false);
@@ -580,6 +601,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
         s->aon_regs[0x12c / 4] = tsf_hi;
     }
     s->aon_regs[0x84 / 4] = 3;
+    s->aon_regs[0xd8 / 4] = 2;
     s->aon_regs[0x190 / 4] = 0;
     s->aon_regs[0x54 / 4] = s->reset_status ? s->reset_status :
                              (s->warm_reset ? 0 : 1);
