@@ -190,8 +190,10 @@ static void event(void *opaque, QEMUChrEvent event)
     h->enumerating = false; h->phase = HOST_IDLE;
     h->status = h->connected ? "connected" : "disconnected";
     timer_del(h->timer); timer_del(c->timer);
-    listenai_musb_descriptors_clear(h); listenai_musb_fifo_clear(s);
-    s->tx_pending = s->rx_pending = 0;
+    listenai_musb_descriptors_clear(h); listenai_musb_cancel_dma(s);
+    /* A socket edge cancels host queues, not a packet already delivered to
+     * the controller. Firmware may be between RXCOUNT and its FIFO reads.
+     * The next USB bus reset clears endpoint state before re-enumeration. */
     s->interrupt |= h->connected ? 0x10 : 0x20;
     if (h->connected) {
         c->error = NULL;

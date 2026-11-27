@@ -57,6 +57,7 @@ struct ListenAIMUSBHost {
 
 void listenai_musb_irq(ListenAIMUSB *s);
 void listenai_musb_fifo_clear(ListenAIMUSB *s);
+void listenai_musb_cancel_dma(ListenAIMUSB *s);
 void listenai_musb_descriptors_clear(ListenAIMUSBHost *h);
 void listenai_musb_sof_update(ListenAIMUSBHost *h);
 void listenai_musb_bus_reset(ListenAIMUSBHost *h, bool enumerate);

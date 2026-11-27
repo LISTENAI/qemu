@@ -85,6 +85,12 @@ static void ep0_clear(ListenAIMUSB *s)
     s->endpoint[0][2] = 0;
 }
 
+void listenai_musb_cancel_dma(ListenAIMUSB *s)
+{
+    memset(s->dma, 0, sizeof(s->dma));
+    s->dma_pending = 0;
+}
+
 void listenai_musb_fifo_clear(ListenAIMUSB *s)
 {
     ep0_clear(s);
@@ -95,7 +101,7 @@ void listenai_musb_fifo_clear(ListenAIMUSB *s)
     memset(s->bulk_count, 0, sizeof(s->bulk_count));
     memset(s->bulk_position, 0, sizeof(s->bulk_position));
     memset(s->bulk_tx_count, 0, sizeof(s->bulk_tx_count));
-    memset(s->dma, 0, sizeof(s->dma)); s->dma_pending = 0;
+    listenai_musb_cancel_dma(s);
 }
 
 static void schedule(ListenAIMUSBHost *h, int64_t delay)

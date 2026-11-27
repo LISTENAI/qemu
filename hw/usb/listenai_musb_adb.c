@@ -140,8 +140,9 @@ static void adb_event(void *opaque, QEMUChrEvent event)
     h->enumerating = false; h->phase = HOST_IDLE;
     h->status = h->connected ? "connected" : "disconnected";
     timer_del(h->timer); timer_del(h->bulk);
-    listenai_musb_descriptors_clear(h); listenai_musb_fifo_clear(s);
-    s->tx_pending = s->rx_pending = 0;
+    listenai_musb_descriptors_clear(h); listenai_musb_cancel_dma(s);
+    /* Preserve packets already delivered to PIO until firmware services
+     * them or the next USB bus reset clears the endpoint state. */
     s->interrupt |= h->connected ? 0x10 : 0x20;
     if (h->connected) {
         h->adb_error = NULL;
