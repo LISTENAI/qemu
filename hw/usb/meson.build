@@ -1,4 +1,7 @@
 hw_usb_modules = {}
+system_ss.add(when: 'CONFIG_LISTENAI_BOARD', if_true: [
+  files('dev-nt26.c'), dependency('gmodule-2.0')
+])
 
 # usb subsystem core
 system_ss.add(when: 'CONFIG_USB', if_true: files(

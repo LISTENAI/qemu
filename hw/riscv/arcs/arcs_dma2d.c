@@ -4,6 +4,9 @@
 #include "hw/riscv/arcs/arcs.h"
 #include "system/address-spaces.h"
 #define BASE 0x45900000
+#define FLOW_PERIPHERAL (1u << 18)
+#define JPEG_PIXELS 0x45002800
+#define JPEG_ENTROPY 0x45003000
 #define R(s, off) ((s)->regs[(off) / 4])
 
 static void irq(ArcsDMA2D *s)
@@ -130,6 +133,39 @@ static void service_memory(ArcsDMA2D *s, unsigned i)
     }
 }
 
+/* Each asserted JPEG request permits one word. DMA flow ends on its
+ * programmed count, independently of codec completion or FIFO exhaustion. */
+static void service_jpeg_counted(ArcsDMA2D *s, unsigned i)
+{
+    ArcsDMA2DChannel *c = &s->channel[i];
+    unsigned request = c->control >> 28;
+    bool input = (c->control & 0x30) == 0x10;
+    for (unsigned item = 0; item < 8 && s->requests[request] && c->remaining; item++) {
+        uint8_t data[4];
+        uint32_t address = input ? c->source : c->destination;
+        if ((address & 3) || !memory_address(address, 4, !input) ||
+            address_space_read(&address_space_memory, c->source,
+                               MEMTXATTRS_UNSPECIFIED, data, 4) != MEMTX_OK ||
+            address_space_write(&address_space_memory, c->destination,
+                                MEMTXATTRS_UNSPECIFIED, data, 4) != MEMTX_OK) {
+            arcs_soc_fail(s->soc, BASE + 4 * (i + 6), 4, true, c->control);
+        }
+        if (input) { c->source += 4; } else { c->destination += 4; }
+        c->remaining--;
+        c->written++;
+        s->bytes += 4;
+        if (!c->half_sent && c->remaining <= c->total / 2) {
+            s->pending |= 16u << i;
+            c->half_sent = true;
+        }
+        if (!c->remaining) {
+            c->busy = false;
+            s->pending |= 1u << i;
+            s->blocks++;
+        }
+    }
+}
+
 static void service(void *opaque)
 {
     ArcsDMA2D *s = opaque;
@@ -138,6 +174,10 @@ static void service(void *opaque)
         ArcsDMA2DChannel *c = &s->channel[i];
         if (!ready(s, i)) { continue; }
         if (c->memory) { service_memory(s, i); continue; }
+        if (!(c->control & FLOW_PERIPHERAL)) {
+            service_jpeg_counted(s, i);
+            continue;
+        }
         uint32_t remaining, input_bytes;
         bool complete;
         if (!arcs_jpeg_dma_output_info(s->soc, c->control >> 28, &remaining, &input_bytes, &complete)) { continue; }
@@ -236,7 +276,8 @@ void arcs_dma2d_write(ArcsSoC *soc, hwaddr off, uint64_t value, unsigned size)
     if (off == 0x2a4) {
         if (value & ~17u) { goto fail; }
         for (unsigned i = 0; i < 4; i++) {
-            if ((value & 16) && s->channel[i].busy && !s->channel[i].memory) { goto fail; }
+            if ((value & 16) && s->channel[i].busy && !s->channel[i].memory &&
+                (s->channel[i].control & FLOW_PERIPHERAL)) { goto fail; }
         }
     }
     if ((off == 0x2b0 && (value & ~(15u << 16))) ||
@@ -302,18 +343,26 @@ void arcs_dma2d_write(ArcsSoC *soc, hwaddr off, uint64_t value, unsigned size)
                         c->image_bytes) { goto fail; }
                 }
             } else {
-                /* ECS still uses the observed equal-count peripheral-flow
-                 * contract; image transforms and half IRQ are uncalibrated. */
-                const uint32_t expected = (6u << 28) | 0x40000 | 0x280 | 1;
+                unsigned request = value >> 28;
+                bool input = (value & 0x30) == 0x10;
+                uint32_t fifo = request == 7 ? JPEG_PIXELS : JPEG_ENTROPY;
+                uint32_t port = input ? c->destination : c->source;
+                uint32_t expected = (request << 28) | (input ? 0x491 : 0x281);
+                if (value & FLOW_PERIPHERAL) {
+                    if (input || request != 6) { goto fail; }
+                    expected |= FLOW_PERIPHERAL;
+                }
                 const uint32_t flexible = 0x03000000 | 0x300000 | 0x3c000 | 6;
                 if ((value & ~flexible) != expected || ((value >> 14) & 3) != 3 ||
-                    ((value >> 16) & 3) != 3 || width != 2 || (R(s, 0x2a4) & 16) ||
+                    ((value >> 16) & 3) != 3 || width != 2 ||
+                    ((value & FLOW_PERIPHERAL) && (R(s, 0x2a4) & 16)) ||
                     R(s, 0x1f4) || (R(s, 0x2b0) & (bit << 16)) ||
                     (R(s, 0x16c) & bit) || (R(s, 0x164) & (bit | (bit << 4))) != (bit | (bit << 4)) ||
                     !(R(s, 0x168) & bit)) { goto fail; }
-                if (c->remaining != R(s, out_len[i]) || (c->source & 3) ||
-                    c->source < 0x45003000 || c->source >= 0x45003800 ||
-                    !destination(c->destination)) { goto fail; }
+                uint32_t ram = input ? c->source : c->destination;
+                if ((request != 6 && request != 7) || c->remaining != R(s, out_len[i]) ||
+                    (port & 3) || port < fifo || port >= fifo + 0x800 ||
+                    (ram & 3) || !memory_address(ram, 4, !input)) { goto fail; }
             }
             c->busy = true;
         }

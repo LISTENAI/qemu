@@ -37,6 +37,7 @@ typedef struct ArcsUSB {
     unsigned bulk_count[16], bulk_position[16], bulk_tx_count[16];
     uint32_t dma[6][3], dma_pending;
     ArcsUSBHost *host;
+    struct ArcsUSBDownstream *downstream;
     qemu_irq host_connected;
 } ArcsUSB;
 void arcs_aux_init(ArcsSoC *s);
@@ -44,6 +45,7 @@ void arcs_adc_reset(ArcsSoC *s);
 void arcs_i2c_init(ArcsSoC *s);
 void arcs_i2c_reset(ArcsSoC *s, unsigned index);
 void arcs_sd_reset(ArcsSoC *s);
+BusState *arcs_usb_downstream_init(ArcsSoC *s);
 void arcs_usb_reset(ArcsSoC *s);
 void arcs_usb_init(ArcsSoC *s);
 void arcs_usb_finalize(ArcsSoC *s);

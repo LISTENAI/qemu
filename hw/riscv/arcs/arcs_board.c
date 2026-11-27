@@ -80,6 +80,7 @@ void arcs_board_load(ListenaiBoard *b, bool evb)
             if (b->camera_pads[i + 2] != dvp[i]) { invalid("camera DVP pad route"); }
         }
     }
+    if (b->touch_bl6138) { b->touch_flash_file = getenv("ARCS_QEMU_BL6138_FLASH"); }
     if (b->touch) { b->touch_i2c = i2c_route(b->touch_scl, b->touch_sda); }
     if (b->expander) { b->extio_i2c = i2c_route(b->extio_scl, b->extio_sda); }
     if (b->typec) { b->typec_i2c = i2c_route(b->typec_scl, b->typec_sda); }

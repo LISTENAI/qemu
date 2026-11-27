@@ -349,7 +349,7 @@ static void rc_complete(void *opaque)
 static bool aon_storage(hwaddr off)
 {
     switch (off) {
-    case 0x2c: case 0x50: case 0x54: case 0x64: case 0x84: case 0x90:
+    case 0x08: case 0x0c: case 0x2c: case 0x50: case 0x54: case 0x64: case 0x84: case 0x90:
     case 0x94: case 0x98: case 0xa0: case 0xc4: case 0xc8:
     case 0x100: case 0x104: case 0x108: case 0x114: case 0x124: case 0x140:
     case 0xd8:
@@ -364,8 +364,8 @@ static uint32_t aon_word(ArcsConfigIO *io, hwaddr off)
 {
     ArcsSysctl *s = &io->soc->sysctl;
     if (aon_storage(off)) { return s->aon_regs[off / 4]; }
-    /* Cold boot has no enabled wake source or wake event. Wake-source writes
-     * remain rejected until their sleep-domain routing is implemented. */
+    /* The wake interrupt clear register is a strobe. */
+    if (off == 0x20) { return 0; }
     if (off == 0x10 || off == 0x24) { return s->aon_regs[off / 4]; }
     if (off == 0x68) { return 0; }
     if (off == 0xa4) {
@@ -399,6 +399,12 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     hwaddr original_off = off;
     uint64_t original_value = value;
     if (off & (size - 1)) { goto fail; }
+    /* WAKEUP_ICR is a write-one clear strobe; a narrow store only
+     * acknowledges the corresponding byte lanes of the latched ISR. */
+    if ((off & ~3u) == 0x20) {
+        s->aon_regs[0x24 / 4] &= ~((uint32_t)value << (8 * (off & 3)));
+        return;
+    }
     if (size != 4) {
         uint32_t shift = 8 * (off & 3), mask = size == 1 ? 255 : 65535;
         value = (aon_word(io, off & ~3u) & ~(mask << shift)) | ((uint32_t)value << shift);
@@ -407,6 +413,15 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     uint32_t *reg = off < sizeof(s->aon_regs) ? &s->aon_regs[off / 4] : NULL;
     if (off >= 0x168 && off <= 0x178) { *reg = value; return; }
     switch (off) {
+    /* PMU power-on sequence counters. Programming them in the active domain
+     * does not request a power transition. */
+    case 0x08: *reg = value & 0x7fff3f3f; return;
+    case 0x0c: *reg = value & 0x003f3f3f; return;
+    case 0x10:
+        /* Per-source wake enables can be disarmed during normal operation.
+         * Enabling a source requires its real sleep-domain routing. */
+        if (value & 0x03ff007f) { goto fail; }
+        *reg = 0; return;
     case 0x190:
         /* Analog trim source selectors retain intent; ideal analog rails
          * have no settling or voltage model. Memory redundancy remains

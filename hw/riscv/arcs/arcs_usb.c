@@ -61,7 +61,8 @@ static void sof_tick(void *opaque)
 {
     ArcsUSBHost *h = opaque;
     ArcsUSB *s = h->controller;
-    if (!h->connected || !(s->power & 0x40)) { return; }
+    if (s->downstream ? !s->session || (s->power & 8) :
+                        !h->connected || !(s->power & 0x40)) { return; }
     h->frame = (h->frame + 1) & 2047;
     s->interrupt |= 8;
     arcs_usb_irq(s);
@@ -70,7 +71,9 @@ static void sof_tick(void *opaque)
 
 void arcs_usb_sof_update(ArcsUSBHost *h)
 {
-    if (h->connected && (h->controller->power & 0x40)) {
+    ArcsUSB *s = h->controller;
+    if (s->downstream ? s->session && !(s->power & 8) :
+                        h->connected && (s->power & 0x40)) {
         if (!timer_pending(h->sof)) { timer_mod(h->sof, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PACKET_NS); }
     } else { timer_del(h->sof); }
 }
@@ -313,6 +316,12 @@ void arcs_usb_dma_service(ArcsUSB *s)
             s->bulk_position[ep] += n;
             if ((csr[7] & 0x80) && s->bulk_position[ep] == max) {
                 csr[6] &= ~1; s->bulk_count[ep] = s->bulk_position[ep] = 0;
+                if (s->downstream && mode1) {
+                    s->rx_pending &= ~(1U << ep);
+                    if (d[2] && (csr[7] & 0x40)) {
+                        csr[6] |= 0x20; /* AUTOREQ for the next full-size packet */
+                    }
+                }
             }
         }
         if (!d[2]) {
@@ -323,14 +332,18 @@ void arcs_usb_dma_service(ArcsUSB *s)
     arcs_usb_irq(s);
 }
 
-static bool usb_dma_register(hwaddr off, unsigned size)
+static bool usb_dma_register(ArcsUSB *s, hwaddr off, unsigned size)
 {
-    return size == 4 && off >= 0x204 && off <= 0x25c &&
+    return (size == 4 || (s->downstream && size == 2 && ((off - 0x204) % 16 == 0))) && off >= 0x204 && off <= 0x25c &&
            ((off - 0x204) % 16) <= 8 && !(off & 3);
 }
 
-static bool usb_valid(hwaddr off, unsigned size)
+static bool usb_valid(ArcsUSB *s, hwaddr off, unsigned size)
 {
+    if (s->downstream && size == 1 &&
+        ((off >= 0x1a && off <= 0x1d) || (off >= 0x80 && off < 0x100))) {
+        return true;
+    }
     return (off >= 0x20 && off <= 0x5c && !(off & 3) &&
             (size == 1 || size == 2 || size == 4)) ||
            (off == 0x200 && size == 4) ||
@@ -341,9 +354,9 @@ static bool usb_valid(hwaddr off, unsigned size)
 
 /* MUSB exposes the endpoint CSR bank both through INDEX and directly at
  * 0x100 + endpoint * 0x10. Direct access must not alter INDEX. */
-static hwaddr usb_endpoint_offset(hwaddr off, unsigned *endpoint)
+static hwaddr usb_endpoint_offset(ArcsUSB *s, hwaddr off, unsigned *endpoint)
 {
-    if (off >= 0x100 && off < 0x200 && (off & 15) <= 9) {
+    if (off >= 0x100 && off < 0x200 && (off & 15) <= (s->downstream ? 13 : 9)) {
         *endpoint = (off - 0x100) / 16;
         return 0x10 + (off & 15);
     }
@@ -352,6 +365,12 @@ static hwaddr usb_endpoint_offset(hwaddr off, unsigned *endpoint)
 
 static uint8_t usb_byte(ArcsUSB *s, unsigned off, unsigned endpoint)
 {
+    if (s->downstream && off >= 0x80 && off < 0x100) {
+        return arcs_usb_downstream_target(s, off);
+    }
+    if (s->downstream && off >= 0x1a && off <= 0x1d) {
+        return s->endpoint[endpoint][off - 0x10];
+    }
     if (off >= 0x10 && off <= 0x19) {
         if (endpoint && off == 0x12) {
             return (s->endpoint[endpoint][2] & ~2) | (s->bulk_tx_count[endpoint] ? 2 : 0);
@@ -377,7 +396,9 @@ static uint8_t usb_byte(ArcsUSB *s, unsigned off, unsigned endpoint)
     case 12: case 13:
         return s->host->frame >> (8 * (off - 12));
     case 14: return s->index;
-    case 0x60: return 0x80 | s->session | (s->host->connected ? 0x18 : 0);
+    case 0x60:
+        if (s->downstream) { return arcs_usb_downstream_devctl(s); }
+        return 0x80 | s->session | (s->host->connected ? 0x18 : 0);
     default: return 0;
     }
 }
@@ -387,12 +408,12 @@ static uint64_t usb_read(void *opaque, hwaddr off, unsigned size)
     ArcsUSB *s = opaque;
     hwaddr original_off = off;
     unsigned endpoint = s->index;
-    off = usb_endpoint_offset(off, &endpoint);
-    if (usb_dma_register(off, size)) { return s->dma[(off - 0x204) / 16][((off - 0x204) % 16) / 4]; }
+    off = usb_endpoint_offset(s, off, &endpoint);
+    if (usb_dma_register(s, off, size)) { return s->dma[(off - 0x204) / 16][((off - 0x204) % 16) / 4]; }
     if (off == 0x200 && size == 4) {
         uint32_t pending = s->dma_pending; s->dma_pending = 0; arcs_usb_irq(s); return pending;
     }
-    if (!usb_valid(off, size)) { arcs_soc_fail(s->soc, 0x41000000 + original_off, size, false, 0); }
+    if (!usb_valid(s, off, size)) { arcs_soc_fail(s->soc, 0x41000000 + original_off, size, false, 0); }
     uint32_t value = 0;
     if (off >= 0x24 && off <= 0x5c) {
         unsigned ep = (off - 0x20) / 4;
@@ -431,14 +452,15 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     ArcsUSB *s = opaque;
     hwaddr original_off = off;
     unsigned endpoint = s->index;
-    off = usb_endpoint_offset(off, &endpoint);
-    if (usb_dma_register(off, size)) {
+    off = usb_endpoint_offset(s, off, &endpoint);
+    if (usb_dma_register(s, off, size)) {
         unsigned ch = (off - 0x204) / 16, reg = ((off - 0x204) % 16) / 4;
         if (reg == 0 && (value & ~0x7ffU || ((value & 1) && !((value >> 4) & 15)))) { goto fail; }
         s->dma[ch][reg] = value;
+        arcs_usb_downstream_kick(s);
         return;
     }
-    if (!usb_valid(off, size)) { goto fail; }
+    if (!usb_valid(s, off, size)) { goto fail; }
     if (off >= 0x24 && off <= 0x5c) {
         unsigned ep = (off - 0x20) / 4;
         if (s->bulk_tx_count[ep] + size > sizeof(s->bulk_tx[ep]) || (s->endpoint[ep][2] & 1)) { goto fail; }
@@ -456,6 +478,9 @@ static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     for (unsigned i = 0; i < size; i++) {
         uint8_t byte = value >> (8 * i);
         unsigned at = off + i;
+        if (s->downstream && arcs_usb_downstream_write(s, endpoint, at, byte)) {
+            continue;
+        }
         if (at >= 0x62 && at <= 0x67) {
             if (at <= 0x63 && ((byte & 15) > 9 || (byte & 0xe0))) { goto fail; }
             s->fifo_config[s->index][at - 0x62] = byte; continue;
@@ -558,6 +583,7 @@ static void controller_reset(ArcsUSB *s, bool soft)
         }
         arcs_usb_sof_update(h);
     }
+    arcs_usb_downstream_reset(s);
     arcs_usb_irq(s);
 }
 
@@ -617,6 +643,9 @@ static void lab_set(Object *obj, const char *command, Error **errp)
 {
     ArcsUSB *s = &ARCS_SOC(obj)->usb;
     ArcsUSBHost *h = s->host;
+    if (s->downstream) {
+        error_setg(errp, "USB0 is wired to a board device"); return;
+    }
     if (h->listen && strcmp(command, "clear")) {
         error_setg(errp, "Disable the ADB bridge before controlling the USB host"); return;
     }
@@ -658,5 +687,6 @@ void arcs_usb_finalize(ArcsSoC *soc)
 {
     ArcsUSBHost *h = soc->usb.host;
     if (!h) { return; }
+    arcs_usb_downstream_finalize(&soc->usb);
     arcs_usb_adb_finalize(h); timer_free(h->timer); timer_free(h->sof); g_free(h); soc->usb.host = NULL;
 }

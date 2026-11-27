@@ -28,6 +28,7 @@ config VENUSA
     select LISTENAI_UART
 
 config ARCS
+    select OV2659
     select LISTENAI_BOARD
     select LISTENAI_I2S
     select LISTENAI_I2S_PEER

@@ -42,6 +42,12 @@ struct ArcsUSBHost {
 };
 
 void arcs_usb_irq(ArcsUSB *s);
+void arcs_usb_downstream_kick(ArcsUSB *s);
+void arcs_usb_downstream_reset(ArcsUSB *s);
+void arcs_usb_downstream_finalize(ArcsUSB *s);
+uint8_t arcs_usb_downstream_devctl(ArcsUSB *s);
+uint8_t arcs_usb_downstream_target(ArcsUSB *s, unsigned off);
+bool arcs_usb_downstream_write(ArcsUSB *s, unsigned ep, unsigned off, uint8_t value);
 void arcs_usb_fifo_clear(ArcsUSB *s);
 void arcs_usb_descriptors_clear(ArcsUSBHost *h);
 void arcs_usb_sof_update(ArcsUSBHost *h);

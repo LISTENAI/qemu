@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* ARCS Mini board: external storage, wiring and bounded bring-up harness. */
 #include "qemu/osdep.h"
+#include "hw/sd/sdhci.h"
 #include "hw/i2c/fs1815.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
@@ -13,6 +14,7 @@
 #include "hw/riscv/arcs/arcs_network.h"
 #include "hw/display/serial_lcd.h"
 #include "hw/i2c/gc0328.h"
+#include "hw/i2c/ov2659.h"
 #include "hw/i2c/bf3901.h"
 #include "ui/lisa_display.h"
 #include "hw/audio/lisa_stream.h"
@@ -841,6 +843,15 @@ static void connect_panel(ArcsMachine *s)
     }
 }
 
+/* LS26 1-bit TF route. CMD and CLK operate before the card uses DAT0. */
+static bool sd_pads_selected(void *opaque, bool data)
+{
+    ArcsMachine *s = opaque;
+    return arcs_pinmux_function(&s->soc.pinmux[0], 6, 15) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], 7, 15) &&
+           (!data || arcs_pinmux_function(&s->soc.pinmux[0], 5, 15));
+}
+
 static bool extio_route(void *opaque)
 {
     ArcsMachine *s = opaque;
@@ -894,7 +905,11 @@ static void camera_clock_changed(void *opaque)
         bf3901_set_clock(s->camera, hz);
         return;
     }
-    gc0328_set_clock(s->camera, clock);
+    if (s->board.camera_ov2659) {
+        ov2659_set_clock(s->camera, clock);
+    } else {
+        gc0328_set_clock(s->camera, clock);
+    }
     if (!clock) {
         timer_del(s->soc.dvp.event);
         s->soc.dvp.capturing = false;
@@ -945,8 +960,38 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
     if (listenai_camera_scene_receive(&s->camera_scene, errp) < 0) { return false; }
     for (unsigned pin = 10; pin <= 20; pin++) {
         if (!arcs_pinmux_function(&s->soc.pinmux[0], pin, 16)) {
-            error_setg(errp, "GC0328 DVP pins are not routed to the receiver"); return false;
+            error_setg(errp, "Camera DVP pins are not routed to the receiver"); return false;
         }
+    }
+    uint64_t hz = arcs_hclk_hz(&s->soc) /
+        (2 * ((s->soc.dvp.regs[0x18 / 4] & 63) + 1));
+    if (!hz) { error_setg(errp, "Invalid camera MCLK"); return false; }
+    if (s->board.camera_ov2659) {
+        OV2659Output mode;
+        if (!ov2659_begin_frame(s->camera, &mode, errp)) {
+            return false;
+        }
+        unsigned polarity = s->soc.dvp.regs[0x14 / 4];
+        if ((polarity & 6) != ((mode.invert_href << 2) | (mode.invert_vsync << 1))) {
+            error_setg(errp, "Unsupported OV2659/DVP sync polarity mismatch");
+            return false;
+        }
+        frame->width = mode.width; frame->height = mode.height; frame->bpp = 2;
+        /* Use half PCLK periods and a rational clock to avoid rounding each
+         * pixel. First HREF uses ideal horizontal blanking; porch distribution
+         * is not calibrated for these scaled readout modes. */
+        frame->hz = 2 * hz * mode.pll_multiplier;
+        frame->byte_clocks = 2 * mode.pll_divisor;
+        frame->sample_clocks = (polarity & 1) * mode.pll_divisor;
+        frame->line_clocks = 2 * mode.hts * frame->byte_clocks;
+        frame->lead_clocks = 2 * (mode.hts - mode.width) * frame->byte_clocks;
+        frame->frame_clocks = mode.vts * frame->line_clocks;
+        frame->sample = ov2659_sample;
+        frame->opaque = s->camera;
+        if (!mode.colorbar) {
+            listenai_camera_scene_latch(&s->camera_scene);
+        }
+        return true;
     }
     unsigned sync = gc0328_sync_mode(s->camera);
     /* V_SYNC selects the frame edge, not the active level of the sync
@@ -960,9 +1005,6 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
     uint64_t pixel, line, lead, total;
     if (!gc0328_frame_info(s->camera, &frame->width, &frame->height,
             &frame->bpp, &pixel, &line, &lead, &total, errp)) { return false; }
-    uint64_t hz = arcs_hclk_hz(&s->soc) /
-        (2 * ((s->soc.dvp.regs[0x18 / 4] & 63) + 1));
-    if (!hz) { error_setg(errp, "Invalid camera MCLK"); return false; }
     /* Half-MCLK units preserve both sampling edges. The ideal digital
      * source is stable for the pixel period; falling-edge sampling arrives
      * half a PCLK later, and sensor PCLK inversion exchanges these phases. */
@@ -1074,8 +1116,9 @@ static void connect_camera(ArcsMachine *s)
     if (!s->board.camera) { return; }
     unsigned i2c = s->board.camera_i2c;
     I2CSlave *sensor = i2c_slave_new(
-        s->board.camera_bf3901 ? TYPE_BF3901 : TYPE_GC0328,
-        s->board.camera_bf3901 ? 0x6e : 0x21);
+        s->board.camera_bf3901 ? TYPE_BF3901 :
+        s->board.camera_ov2659 ? TYPE_OV2659 : TYPE_GC0328,
+        s->board.camera_bf3901 ? 0x6e : s->board.camera_ov2659 ? 0x30 : 0x21);
     s->camera = DEVICE(sensor);
     object_property_add_child(OBJECT(s), "camera", OBJECT(sensor));
     i2c_slave_realize_and_unref(sensor, s->soc.i2c[i2c].controller.bus, &error_fatal);
@@ -1109,10 +1152,16 @@ static void connect_camera(ArcsMachine *s)
     s->soc.dvp.begin_frame = camera_begin;
     s->soc.dvp.clock_changed = camera_clock_changed;
     s->soc.dvp.opaque = s;
-    gc0328_set_notify(s->camera, camera_sensor_changed, s);
+    if (s->board.camera_ov2659) {
+        ov2659_set_notify(s->camera, camera_sensor_changed, s);
+    } else {
+        gc0328_set_notify(s->camera, camera_sensor_changed, s);
+    }
     arcs_board_connect_pad(&s->soc, s->board.camera_pads[LISTENAI_CAM_MCLK],
                           qemu_allocate_irq(camera_pad, s, 0));
-    listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera, gc0328_set_frame, gc0328_clear_frame,
+    listenai_camera_scene_init(&s->camera_scene, OBJECT(s), s->camera,
+        s->board.camera_ov2659 ? ov2659_set_frame : gc0328_set_frame,
+        s->board.camera_ov2659 ? ov2659_clear_frame : gc0328_clear_frame,
         getenv("ARCS_QEMU_CAMERA_SHM"), camera_source_changed, camera_receiver_enabled, s);
     camera_clock_changed(s);
 }
@@ -1128,7 +1177,7 @@ static void connect_touch(ArcsMachine *s)
 {
     s->touch = listenai_board_touch_new(&s->board, OBJECT(s), DEVICE(&s->soc),
                                         s->soc.i2c[s->board.touch_i2c].controller.bus);
-    if (s->board.configured && !s->camera) {
+    if (s->board.configured && (!s->camera || s->board.touch_i2c != s->board.camera_i2c)) {
         s->soc.i2c[s->board.touch_i2c].controller.route_valid = touch_route;
         s->soc.i2c[s->board.touch_i2c].controller.route_opaque = s;
     }
@@ -1201,6 +1250,7 @@ static void signals_apply(ArcsMachine *s)
     listenai_board_inputs_apply(&s->board, &s->inputs, DEVICE(&s->soc));
     s->soc.adc.voltage_mask = s->inputs.adc_mask;
     memcpy(s->soc.adc.voltage_uv, s->inputs.adc_uv, sizeof(s->inputs.adc_uv));
+    keypad_drive(s);
 }
 
 static void signals_set(Object *obj, const char *value, Error **errp)
@@ -1255,7 +1305,6 @@ static void machine_reset(MachineState *machine, ResetType type)
                                            b->pressed ? b->pressed_level : b->released_level);
             }
         }
-        keypad_drive(s);
     } else if (s->desktop_directory) {
         qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !s->desktop_pressed);
     }
@@ -1305,6 +1354,8 @@ static void machine_init(MachineState *machine)
                                    getenv("ARCS_QEMU_FLASH_CS1_IMAGE"), persist,
                                    s->board.nor_bytes[1]);
     }
+    s->flash.xm25qh128c = s->board.nor_xm25qh128c[0];
+    s->flash_cs1.xm25qh128c = s->board.nor_xm25qh128c[1];
     object_initialize_child(OBJECT(machine), "soc", &s->soc, TYPE_ARCS_SOC);
     qdev_prop_set_uint64(DEVICE(&s->soc), "entry", entry);
     qdev_prop_set_uint32(DEVICE(&s->soc), "boot-hart", boot_hart);
@@ -1319,8 +1370,9 @@ static void machine_init(MachineState *machine)
         s->soc.flash.chips[1] = &s->flash_cs1;
     }
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
-    listenai_board_attach_modem(&s->board, OBJECT(s));
-    if (s->board.modem_device) {
+    listenai_board_attach_modem(&s->board, OBJECT(s), DEVICE(&s->soc),
+                                s->board.modem_usb ? arcs_usb_downstream_init(&s->soc) : NULL);
+    if (s->board.modem_uart) {
         arcs_uart_attach_peer(&s->soc, s->board.modem_uart,
                               s->board.modem_tx, s->board.modem_rx);
     }
@@ -1350,6 +1402,11 @@ static void machine_init(MachineState *machine)
         listenai_board_attach_typec(&s->board, OBJECT(s), DEVICE(&s->soc), s->soc.i2c[bus].controller.bus);
         s->soc.i2c[bus].controller.route_valid = typec_route;
         s->soc.i2c[bus].controller.route_opaque = s;
+    }
+    if (s->board.sd_single_lane) {
+        SDHCIState *host = SYSBUS_SDHCI(s->soc.sd.host);
+        host->pads_selected = sd_pads_selected;
+        host->pads_opaque = s;
     }
     listenai_board_sd_wire(&s->board, DEVICE(&s->soc), s->soc.sd.host);
     connect_panel(s);
@@ -1532,16 +1589,16 @@ static void keypad_drive(ArcsMachine *s)
     ListenaiBoard *b = &s->board;
     if (!b->keypad) { return; }
     double load = 1.0;
-    bool grounded = false;
+    unsigned clamp_uv = b->keypad_supply_uv;
     for (unsigned i = 0; i < b->button_count; i++) {
         if (b->buttons[i].analog && b->buttons[i].pressed) {
             unsigned resistance = b->buttons[i].resistance_ohms;
-            if (!resistance) { grounded = true; }
+            if (!resistance) { clamp_uv = MIN(clamp_uv, b->buttons[i].diode_drop_uv); }
             else { load += (double)b->keypad_pull_up_ohms / resistance; }
         }
     }
     s->soc.adc.voltage_mask |= 1u << b->keypad_channel;
-    s->soc.adc.voltage_uv[b->keypad_channel] = grounded ? 0 : b->keypad_supply_uv / load;
+    s->soc.adc.voltage_uv[b->keypad_channel] = MIN(clamp_uv, b->keypad_supply_uv / load);
 }
 
 static void button_drive(ArcsMachine *s, bool pressed)

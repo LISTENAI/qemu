@@ -3,6 +3,7 @@
 #define HW_DISPLAY_SERIAL_LCD_H
 #include "hw/qdev-core.h"
 #include "qobject/qdict.h"
+#define TYPE_JD9853 "jd9853"
 #define TYPE_ST7789 "st7789"
 #define TYPE_AXS15231E "axs15231e"
 #define TYPE_SC919 "sc919"

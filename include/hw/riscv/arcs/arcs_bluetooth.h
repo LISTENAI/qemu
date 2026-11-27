@@ -51,7 +51,8 @@ struct ArcsBluetooth {
                      unsigned channel, uint32_t access_address, uint64_t half_microseconds);
     void *medium_opaque;
     uint32_t dm[0x200 / 4], ble[0x200 / 4];
-    uint32_t pending, sampled_hs, sampled_fine, classic_rx_spi;
+    uint32_t classic[0x228 / 4];
+    uint32_t pending, sampled_hs, sampled_fine;
     int64_t epoch;
 };
 void arcs_bluetooth_init(ArcsSoC *soc);

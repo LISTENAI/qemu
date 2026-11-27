@@ -30,6 +30,11 @@ bool listenai_pinmux_function(ListenaiPinmux *s, unsigned pin, unsigned function
 
 static bool output_enabled(ListenaiPinmux *s, unsigned pin, bool direction)
 {
+    bool forced;
+    if (s->callbacks.forced_output &&
+        s->callbacks.forced_output(s->callbacks.opaque, pin, &forced)) {
+        return true;
+    }
     uint32_t config = s->config[pin];
     uint32_t function = 1u << (config & 31);
     bool peripheral = (s->peripheral_valid[pin] & function) && !(config & 0x1e0);
@@ -44,6 +49,10 @@ static bool resolve(ListenaiPinmux *s, unsigned pin, bool direction,
     uint32_t config = s->config[pin];
     uint32_t function = 1u << (config & 31);
     bool peripheral = (s->peripheral_valid[pin] & function) && !(config & 0x1e0);
+    if (s->callbacks.forced_output &&
+        s->callbacks.forced_output(s->callbacks.opaque, pin, &output)) {
+        return output;
+    }
     if (!output_enabled(s, pin, direction)) { return undriven; }
     if (peripheral) { output = !!(s->peripheral_level[pin] & function); }
     return config & 0x1000000 ? !!(config & 0x800000) : output;
