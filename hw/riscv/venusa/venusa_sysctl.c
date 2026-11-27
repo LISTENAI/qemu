@@ -4,6 +4,7 @@
 #include "hw/riscv/venusa/venusa.h"
 #include "exec/icount.h"
 #include "qemu/error-report.h"
+#include "system/runstate.h"
 
 void venusa_hclk_ratio(VenusASoC *s, uint64_t *n, uint64_t *d)
 {
@@ -95,6 +96,13 @@ bool venusa_sysctl_read(VenusASoC *s, hwaddr address, uint32_t *value)
 
 bool venusa_sysctl_write(VenusASoC *s, hwaddr address, uint32_t value)
 {
+    if (address == 0x45000050) {
+        if (value != 0xcafe000a) { return false; }
+        s->reset_cause = 2; /* SYSRST_STATUS.AON_RST_STATUS */
+        s->reset_preserve_aon = false;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        return true;
+    }
     uint32_t *reg = configuration(s, address);
     if (reg) {
         uint32_t previous = *reg;
